@@ -3,5 +3,16 @@ name = "gpx-to-fit"
 version = "0.1.0"
 requires-python = ">=3.14"
 dependencies = [
+    "fit-tool>=0.9.16",
+    "gpxpy>=1.6.2",
     "pyrefly>=0.60.0",
 ]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gpx2fit"]
+
+[tool.hatch.build.targets.wheel.sources]
+"src/gpx2fit" = "gpx2fit"
+
+[tool.uv]
+package = true
