@@ -1,4 +1,4 @@
-from gpx2fit.models import TrackPoint, Track
+from gpx2fit.core.models import TrackPoint, Track
 import gpxpy
 
 
@@ -25,7 +25,7 @@ def parse_gpx_bytes(gpx_bytes: bytes, device: str | None = None) -> Track:
                 track_points.append(TrackPoint(
                     lat=point.latitude,
                     lon=point.longitude,
-                    elevation=point.elevation,
+                    elevation=point.elevation if point.elevation is not None else 0.0, # todo: check if the 0.0 is correct, perhaps throw an error
                     distance_from_start=cumulative_distance,
                     timestamp=None,
                 ))

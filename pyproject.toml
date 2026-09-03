@@ -9,10 +9,11 @@ dependencies = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/gpx2fit"]
+packages = ["src/gpx2fit/core", "src/gpx2fit/pacing"]
 
 [tool.hatch.build.targets.wheel.sources]
-"src/gpx2fit" = "gpx2fit"
+"src/gpx2fit/core" = "core"
+"src/gpx2fit/pacing" = "pacing"
 
 [tool.uv]
 package = true

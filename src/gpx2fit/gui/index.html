@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GPX to FIT test harness</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, sans-serif;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: #101827;
+        color: #e5eefb;
+      }
+      .panel {
+        width: min(560px, calc(100vw - 2rem));
+        background: rgba(15, 23, 42, 0.9);
+        border: 1px solid rgba(148, 163, 184, 0.3);
+        border-radius: 16px;
+        padding: 1.25rem;
+        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+      }
+      h1 {
+        margin-top: 0;
+        font-size: 1.5rem;
+      }
+      label {
+        display: block;
+        margin-top: 1rem;
+        font-weight: 600;
+      }
+      input, button {
+        width: 100%;
+        box-sizing: border-box;
+        margin-top: 0.35rem;
+        padding: 0.7rem 0.8rem;
+        border-radius: 10px;
+        border: 1px solid rgba(148, 163, 184, 0.45);
+        font: inherit;
+      }
+      input {
+        background: rgba(15, 23, 42, 0.8);
+        color: inherit;
+      }
+      button {
+        cursor: pointer;
+        border: none;
+        background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+        color: white;
+        font-weight: 700;
+        margin-top: 1rem;
+      }
+      #status {
+        margin-top: 1rem;
+        min-height: 4rem;
+        border-radius: 10px;
+        padding: 0.75rem;
+        background: rgba(2, 6, 23, 0.7);
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      a.download-link {
+        display: inline-block;
+        margin-top: 1rem;
+        color: #93c5fd;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="panel">
+      <h1>GPX → FIT test harness</h1>
+
+      <label>
+        GPX file
+        <input id="gpxFile" type="file" accept=".gpx" />
+      </label>
+
+      <label>
+        Start time
+        <input id="startTime" type="datetime-local" />
+      </label>
+
+      <label>
+        Duration (seconds)
+        <input id="duration" type="number" min="1" step="1" value="1800" />
+      </label>
+
+      <button id="runButton" type="button">Convert to FIT</button>
+
+      <div id="status">Ready.</div>
+      <a id="downloadLink" class="download-link" hidden download="activity.fit">Download FIT</a>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/pyodide/v0.27.3/full/pyodide.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
