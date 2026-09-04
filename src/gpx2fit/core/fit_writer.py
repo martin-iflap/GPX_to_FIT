@@ -11,8 +11,7 @@ from gpx2fit.core.models import Track
 
 
 def _fit_timestamp(value: datetime) -> int:
-    # fit-tool expects "unix epoch milliseconds" for date_time fields.
-    # It applies the FIT epoch conversion internally during encoding.
+    """Convert a datetime to a FIT timestamp (unix epoch milliseconds) which fit-tool expects."""
     if value.tzinfo is None:
         utc_value = value.replace(tzinfo=timezone.utc)
     else:
@@ -21,11 +20,17 @@ def _fit_timestamp(value: datetime) -> int:
 
 
 def _to_semicircles(degrees: float) -> int:
+    """Convert degrees to semicircles for FIT file encoding."""
     return round(degrees * ((1 << 31) / 180.0))
 
 
 def write_fit(track: Track) -> bytes:
-    """Write a fit file from provided track data."""
+    """Write a .fit file from provided track data.
+     - Create a FileIdMessage, SportMessage, RecordMessages for each track point.
+     - Create LapMessage, SessionMessage, and ActivityMessage with appropriate timestamps and metrics.
+
+     Returns: the bytes of the FIT file.
+    """
     builder = FitFileBuilder(auto_define=True, min_string_size=50)
 
     if not track.points:
@@ -71,23 +76,18 @@ def write_fit(track: Track) -> bytes:
         builder.add(record)
 
     lap = LapMessage()
-    lap.start_time = _fit_timestamp(start_time)
-    lap.timestamp = _fit_timestamp(end_time)
-    lap.total_elapsed_time = total_elapsed_seconds
-    lap.total_timer_time = total_elapsed_seconds
-    lap.total_distance = track.total_distance
-    lap.total_ascent = round(track.total_elevation_gain) # todo: do something about the duplication later!!
-    lap.sport = sport
-    builder.add(lap)
-
     session = SessionMessage()
-    session.start_time = _fit_timestamp(start_time)
-    session.timestamp = _fit_timestamp(end_time)
-    session.total_elapsed_time = total_elapsed_seconds
-    session.total_timer_time = total_elapsed_seconds
-    session.total_distance = track.total_distance
-    session.total_ascent = round(track.total_elevation_gain)
-    session.sport = sport
+    # assign the same values to both lap and session messages
+    for message in (lap, session):
+        message.start_time = _fit_timestamp(start_time)
+        message.timestamp = _fit_timestamp(end_time)
+        message.total_elapsed_time = total_elapsed_seconds
+        message.total_timer_time = total_elapsed_seconds
+        message.total_distance = track.total_distance
+        message.total_ascent = round(track.total_elevation_gain)
+        message.sport = sport
+
+    builder.add(lap)
     builder.add(session)
 
     activity = ActivityMessage()

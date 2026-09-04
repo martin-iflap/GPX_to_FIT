@@ -4,7 +4,10 @@ import gpxpy
 
 
 def parse_gpx_bytes(gpx_bytes: bytes, device: str | None = None) -> Track:
-    """Parse GPX file contents (as bytes) and return a list of TrackPoint objects."""
+    """Parse GPX file contents (as bytes) and return a list of TrackPoint objects.
+     - For each point added, compute the cumulative distance from the start of the track.
+     - If the GPX file has a creator, it will be used as the device name.
+    """
     xml_text = gpx_bytes.decode('utf-8')
     gpx = gpxpy.parse(xml_text)
 
@@ -32,3 +35,5 @@ def parse_gpx_bytes(gpx_bytes: bytes, device: str | None = None) -> Track:
                 prev_point = point
 
     return Track(points=track_points, device=device)
+
+# add a possibility for the user to input the device name and add it to the Track object here.

@@ -36,6 +36,8 @@ await micropip.install('fit-tool')
     ['src/gpx2fit/core/models.py', await fetchText('/src/gpx2fit/core/models.py')],
     ['src/gpx2fit/core/gpx_reader.py', await fetchText('/src/gpx2fit/core/gpx_reader.py')],
     ['src/gpx2fit/core/fit_writer.py', await fetchText('/src/gpx2fit/core/fit_writer.py')],
+    ['src/gpx2fit/core/pacing/anchors.py', await fetchText('/src/gpx2fit/core/pacing/anchors.py')],
+    ['src/gpx2fit/core/pacing/gradient.py', await fetchText('/src/gpx2fit/core/pacing/gradient.py')],
     ['src/gpx2fit/core/pacing/combine.py', await fetchText('/src/gpx2fit/core/pacing/combine.py')],
   ];
 
@@ -101,18 +103,21 @@ import datetime as dt
 
 from gpx2fit.core.gpx_reader import parse_gpx_bytes
 from gpx2fit.core.fit_writer import write_fit
-from gpx2fit.core.pacing.combine import simple_uniform_speed
+from gpx2fit.core.models import SportType
+from gpx2fit.core.pacing.anchors import add_start_end_anchors
+from gpx2fit.core.pacing.combine import combine
 
 track = parse_gpx_bytes(bytes(gpx_bytes.to_py()))
 if not track.points:
     raise ValueError('No points were found in the GPX file.')
 
 start = dt.datetime.fromisoformat(start_iso)
-end = start + dt.timedelta(seconds=int(duration_seconds))
-
-track.points[0].timestamp = start
-track.points[-1].timestamp = end
-simple_uniform_speed(track)
+anchors = add_start_end_anchors(
+    track=track,
+    start_time=start,
+    duration=dt.timedelta(seconds=float(duration_seconds)),
+)
+combine(track=track, anchors=anchors, sport=SportType.HIKING)
 fit_bytes = write_fit(track)
 `);
 

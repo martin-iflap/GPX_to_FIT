@@ -5,12 +5,14 @@ from enum import Enum
 
 
 class SportType(Enum):
+    """Allowed sport types of the activity used for pacing and FIT file generation."""
     RUNNING = "running"
     HIKING = "hiking"
     # CYCLING = "cycling" will be added later
 
 @dataclass
 class TrackPoint:
+    """Represents a single point in a track with geographic and temporal information."""
     lat: float
     lon: float
     elevation: float  # meters
@@ -20,6 +22,7 @@ class TrackPoint:
 
 @dataclass
 class Track:
+    """Represents a sequence of TrackPoints forming a route or activity."""
     points: list[TrackPoint]
     sport: SportType | None = None  # sport type, optional for now
     device: str | None = None  # device name to be embedded if available
@@ -27,18 +30,21 @@ class Track:
 
     @property
     def start_time(self) -> datetime | None: # todo: make sure the @property is correct, PyCharm is complaining about it
+        """Return the timestamp of the first point in the track, or None if no points exist or the first point has no timestamp."""
         if not self.points or self.points[0].timestamp is None:
             return None
         return self.points[0].timestamp
 
     @property
     def total_distance(self) -> float:
+        """Return the total distance of the track based on the last point's distance_from_start."""
         if not self.points:
             return 0.0
         return self.points[-1].distance_from_start
 
     @property
     def total_elevation_gain(self) -> float:
+        """Return the total elevation gain of the track."""
         gain = 0.0
         for prev, curr in zip(self.points, self.points[1:]):
             delta = curr.elevation - prev.elevation
@@ -48,7 +54,23 @@ class Track:
 
 
 @dataclass
+class RawAnchor:
+    """Frontend-provided anchor candidate before normalization."""
+    timestamp: datetime
+    distance_from_start: float | None = None
+    lat: float | None = None
+    lon: float | None = None
+    source: str = "user"
+
+
+@dataclass
 class Anchor:
+    """Represents a point in the track that is used as a reference for pacing."""
     distance_from_start: float  # position along the route
     timestamp: datetime
     source: str  # "user" | "photo"
+
+
+# TODO: add better documentation to the codebase, consider adding a gradient model for gradients
+
+# if bored at school tmrw try to install the mp3 downloader inside virtualbox and see whether it works.
