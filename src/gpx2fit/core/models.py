@@ -71,6 +71,14 @@ class Anchor:
     source: str  # "user" | "photo"
 
 
-# TODO: add better documentation to the codebase, consider adding a gradient model for gradients
+# TODO: add better documentation to the codebase, photo_anchors, and surface
 
-# if bored at school tmrw try to install the mp3 downloader inside virtualbox and see whether it works.
+# push to github and perhaps make the repo public
+# solve the out and back anchor point problem.
+# add a bigger hit box around the track so anchor points are easier to add.
+
+# the over map upload gpx first text doesn't go away.
+# try to get some more colors and icons for the map, and perhaps a better map style. basically try to turn it to mapy.cz
+# remove the box around the sun/moon icon and make them only black white not emojis if possible
+# auto scroll down to the output box when the generation completes so the user sees it. rn its confusing a bit.
+# openstreetmap trace track

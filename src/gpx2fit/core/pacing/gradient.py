@@ -3,15 +3,6 @@ from gpx2fit.core.models import Track
 
 
 
-# add a function to calculate the gradient of a path based on elevation and distance between points
-# implement the minetti gradient model to adjust pacing based on the gradient of the path.
-# also implement the tobler gradient model to adjust pacing based on the gradient of the path.
-# compute the speeds according to the gradient models and then scale so that the total time matches the given total time for the track.
-# use tobler for slower hiking or walking and minetti for running or fast hiking.
-# perhaps consider choosing the right model based off of the average speed of the track and consider also the sport type.
-# also later add surface modeling to adjust pacing based on the surface type.
-
-
 def calculate_gradient(track: Track) -> list[float]:
     """Calculate the gradient of the track based on elevation and distance between points."""
     gradients = []
@@ -60,6 +51,3 @@ def calculate_tobler_speeds(track: Track) -> list[float]:
         speed_kmh = 6.0 * math.exp(-3.5 * abs(gradient + 0.05))
         speeds_mps.append(speed_kmh / 3.6)
     return speeds_mps
-
-# start implementing the speed calculation functions and then update the combine function.
-# then we can start implementing the anchors better and then improve the frontend properly.

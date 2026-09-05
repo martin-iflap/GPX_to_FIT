@@ -5,7 +5,7 @@ from gpx2fit.core.pacing.gradient import calculate_tobler_speeds, calculate_mine
 HIKING_TOBLER_THRESHOLD_MPS = 1.8
 
 
-def simple_uniform_speed(track: Track) -> Track:
+def simple_uniform_speed(track: Track) -> Track: # probably remove this function later once useless
     """Assign timestamps so the route is traveled at a constant speed.
      - Good for testing or some random stuff.
     """
@@ -31,6 +31,7 @@ def simple_uniform_speed(track: Track) -> Track:
 
 
 def combine(track: Track, anchors: list[Anchor], sport: SportType) -> Track:
+    """"""
     workout_total_time = (anchors[-1].timestamp - anchors[0].timestamp).total_seconds()
     workout_avg_speed_mps = (
         track.total_distance / workout_total_time if workout_total_time > 0 else 0.0
@@ -79,4 +80,4 @@ def combine(track: Track, anchors: list[Anchor], sport: SportType) -> Track:
 
 
 # later perhaps extract some of the logic from combine() into a separate function
-# improve the threshold for running speed, probably come up with some formula that also takes ascent into account
+# improve the threshold for running speed, and probably come up with some formula that also takes ascent into account

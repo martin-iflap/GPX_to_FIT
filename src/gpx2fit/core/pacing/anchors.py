@@ -69,7 +69,4 @@ def build_user_anchors(track: Track, raw_anchors: list[RawAnchor]) -> list[Ancho
     return anchors
 
 
-# Notes: check what is the best way to find the closest track point
-# call the add function at the start to add anchors to the right track points,
-# then split the track into segments based on the anchors and then pace each segment separately.
-# later add the ability to fetch the anchors from a photo or perhaps video metadata and use that so users don't have to manually add anchors.
+# check what is the best way to find the closest track point
