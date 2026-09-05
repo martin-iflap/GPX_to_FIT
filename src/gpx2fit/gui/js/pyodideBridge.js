@@ -4,6 +4,13 @@
 // this is what lets the GPX be parsed exactly once per upload and reused
 // for the map preview, anchor resolution, and the final conversion.
 
+/* global loadPyodide */
+// loadPyodide is loaded globally via the <script> tag in index.html, not
+// imported — this directive just tells the IDE/linter it's an intentional
+// external global, not a typo. Everything chained off its return value
+// (`.loadPackage`, `.globals.get(...).toJs()`, etc.) is untyped for the same
+// reason; that's expected, not a bug.
+
 let pyodidePromise = null;
 let pyodide = null;
 
@@ -69,6 +76,18 @@ for rel_path, content in json.loads(backend_files_json):
   return pyodidePromise;
 }
 
+/**
+ * Parses uploaded GPX bytes into a `Track` (kept alive Python-side as
+ * `_track`) and returns a JS-friendly preview of it. Call this once per
+ * upload — `resolveAnchorCandidates` and `convert` both reuse `_track`
+ * rather than reparsing.
+ *
+ * @param {Uint8Array} bytes - raw contents of the uploaded .gpx file
+ * @returns {Promise<{
+ *   points: {lat: number, lon: number, elevation: number, distance: number}[],
+ *   summary: {total_distance: number, total_elevation_gain: number},
+ * }>}
+ */
 export async function parseGpx(bytes) {
   const runtime = await ensurePyodide();
   runtime.globals.set('gpx_bytes', bytes);
@@ -96,21 +115,43 @@ route_summary = {
   return { points, summary };
 }
 
-export async function resolveAnchorDistance(lat, lon) {
+/**
+ * Finds the track point(s) nearest to a map click. Returns more than one
+ * candidate when the route passes near this spot multiple times (e.g. an
+ * out-and-back) — the caller is responsible for disambiguating.
+ *
+ * @param {number} lat
+ * @param {number} lon
+ * @returns {Promise<{lat: number, lon: number, distance_from_start: number}[]>}
+ */
+export async function resolveAnchorCandidates(lat, lon) {
   const runtime = await ensurePyodide();
   runtime.globals.set('click_lat', lat);
   runtime.globals.set('click_lon', lon);
 
   await runtime.runPythonAsync(`
-from gpx2fit.core.pacing.anchors import nearest_point_distance_from_start
+from gpx2fit.core.pacing.anchors import nearest_point_candidates
 
-_clicked_distance = nearest_point_distance_from_start(_track, float(click_lat), float(click_lon))
+_anchor_candidates = nearest_point_candidates(_track, float(click_lat), float(click_lon))
 `);
 
-  const distance = runtime.globals.get('_clicked_distance');
-  return Number(distance);
+  const toJsOpts = { create_proxies: false, dict_converter: Object.fromEntries };
+  return runtime.globals.get('_anchor_candidates').toJs(toJsOpts);
 }
 
+/**
+ * Runs the full pacing + FIT-encoding pipeline over the already-parsed
+ * `_track`: builds start/end anchors from the given duration, merges in any
+ * mid-route anchors, fits per-leg speeds, and writes a FIT file.
+ *
+ * @param {object} args
+ * @param {string} args.startIso - route start time, ISO 8601
+ * @param {number} args.durationSeconds - total planned duration of the activity
+ * @param {'RUNNING'|'HIKING'} args.sportEnumName - name of a `SportType` member
+ * @param {{distanceFromStart: number, timestamp: string, source: string}[]} args.anchors -
+ *   mid-route anchors (timestamp as ISO 8601); start/end anchors are added internally
+ * @returns {Promise<Uint8Array>} the encoded FIT file
+ */
 export async function convert({ startIso, durationSeconds, sportEnumName, anchors }) {
   const runtime = await ensurePyodide();
   runtime.globals.set('start_iso', startIso);

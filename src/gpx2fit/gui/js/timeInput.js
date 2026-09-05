@@ -5,31 +5,44 @@
 // popover ("Duration since start" / "Time of day") — same shape, different
 // mode pair, selected via `variant`.
 
-function pad(n) {
-  return String(n).padStart(2, '0');
-}
+import { formatClock, formatDateTime, formatDuration } from './format.js';
+import { createDateTimeField, createTimeField } from './dateTimeField.js';
 
-function formatDuration(totalSeconds) {
-  const clamped = Math.max(0, Math.round(totalSeconds));
-  const hours = Math.floor(clamped / 3600);
-  const minutes = Math.floor((clamped % 3600) / 60);
-  return `${hours}h ${pad(minutes)}m`;
-}
-
-function formatClock(date) {
-  return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-function formatDateTime(date) {
-  return date.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
-export function createTimeToggle({ container, variant, getReferenceTime, onChange }) {
+/**
+ * Builds the segmented Duration/Absolute toggle described above and mounts
+ * it into `container`.
+ *
+ * @param {object} opts
+ * @param {HTMLElement} opts.container - element to mount the toggle into
+ * @param {'durationOrEnd'|'durationOrTimeOfDay'} opts.variant - which pair of
+ *   modes to offer: elapsed-duration vs. either an absolute end time (main
+ *   start-time control) or a same-day time-of-day (anchor popovers)
+ * @param {() => Date|null} opts.getReferenceTime - the moment durations are
+ *   measured from (the route's start time); re-read on every resolve, so the
+ *   toggle stays correct if the reference changes after mount
+ * @param {(result: {isValid: boolean, mode?: string, resolvedDate?: Date, durationSeconds?: number}) => void} opts.onChange -
+ *   called with the freshly-resolved value whenever the user edits a field,
+ *   switches mode, or the caller calls `refresh()`
+ * @param {{hours: number, minutes: number}} [opts.initialTimeOfDay] - for the
+ *   'durationOrTimeOfDay' variant only: pre-fills the "Time of day" field and
+ *   opens on that tab instead of "Duration since start" (used to seed an
+ *   anchor popover with its estimated arrival time)
+ * @param {number} [opts.initialDurationSeconds] - pre-fills the Duration
+ *   fields (hours/minutes) regardless of which mode ends up active, so
+ *   switching tabs later still shows a sensible value instead of 0h 00m
+ * @returns {{ refresh: () => void, getResult: () => object }} `refresh()`
+ *   re-resolves and re-renders the preview against the current reference
+ *   time (call this if `getReferenceTime()`'s value changes elsewhere);
+ *   `getResult()` re-resolves without touching the DOM.
+ */
+export function createTimeToggle({
+  container,
+  variant,
+  getReferenceTime,
+  onChange,
+  initialTimeOfDay,
+  initialDurationSeconds,
+}) {
   const state = { mode: 'duration' };
   const otherKey = variant === 'durationOrEnd' ? 'end' : 'timeOfDay';
 
@@ -86,13 +99,37 @@ export function createTimeToggle({ container, variant, getReferenceTime, onChang
 
   const otherFields = document.createElement('div');
   otherFields.className = 'other-fields hidden';
-
-  const otherInput = document.createElement('input');
-  otherInput.className = 'text-input';
-  otherInput.type = variant === 'durationOrEnd' ? 'datetime-local' : 'time';
-  otherFields.append(otherInput);
-
   fieldsEl.append(durationFields, otherFields);
+
+  // 'end': a full Date from createDateTimeField. 'timeOfDay': just
+  // {hours, minutes} from createTimeField (the day is always the reference's).
+  let otherValue = null;
+  let timeOfDayField = null; // only set for the 'timeOfDay' branch, so initialTimeOfDay can prefill it
+  let endDateTimeField = null; // only set for the 'end' branch, so its date can default to the start's
+
+  if (otherKey === 'end') {
+    endDateTimeField = createDateTimeField({
+      container: otherFields,
+      dateAriaLabel: 'End date',
+      timeAriaLabel: 'End time',
+      onChange: (date) => {
+        otherValue = date;
+        updatePreview();
+      },
+    });
+  } else {
+    // No quick-picks here: an anchor's arrival time is meant to be precise
+    // (that's the whole point of adding it), not rounded to a half-hour.
+    timeOfDayField = createTimeField({
+      container: otherFields,
+      ariaLabel: 'Time of day',
+      quickPicks: false,
+      onChange: (value) => {
+        otherValue = value;
+        updatePreview();
+      },
+    });
+  }
 
   const previewEl = document.createElement('p');
   previewEl.className = 'time-toggle-preview';
@@ -125,29 +162,21 @@ export function createTimeToggle({ container, variant, getReferenceTime, onChang
     }
 
     if (otherKey === 'end') {
-      if (!otherInput.value) {
+      if (!otherValue) {
         return { isValid: false };
       }
-      const resolvedDate = new Date(otherInput.value);
-      if (Number.isNaN(resolvedDate.getTime())) {
-        return { isValid: false };
-      }
-      const durationSeconds = (resolvedDate.getTime() - reference.getTime()) / 1000;
+      const durationSeconds = (otherValue.getTime() - reference.getTime()) / 1000;
       if (durationSeconds <= 0) {
         return { isValid: false };
       }
-      return { isValid: true, mode: 'end', resolvedDate, durationSeconds };
+      return { isValid: true, mode: 'end', resolvedDate: otherValue, durationSeconds };
     }
 
-    if (!otherInput.value) {
-      return { isValid: false };
-    }
-    const [hh, mm] = otherInput.value.split(':').map(Number);
-    if (!Number.isFinite(hh) || !Number.isFinite(mm)) {
+    if (!otherValue) {
       return { isValid: false };
     }
     const resolvedDate = new Date(reference);
-    resolvedDate.setHours(hh, mm, 0, 0);
+    resolvedDate.setHours(otherValue.hours, otherValue.minutes, 0, 0);
     const durationSeconds = (resolvedDate.getTime() - reference.getTime()) / 1000;
     return { isValid: durationSeconds >= 0, mode: 'timeOfDay', resolvedDate, durationSeconds };
   }
@@ -189,14 +218,33 @@ export function createTimeToggle({ container, variant, getReferenceTime, onChang
     otherBtn.setAttribute('aria-selected', String(mode !== 'duration'));
     durationFields.classList.toggle('hidden', mode !== 'duration');
     otherFields.classList.toggle('hidden', mode === 'duration');
+
+    if (mode === otherKey && endDateTimeField) {
+      const reference = currentReference();
+      if (reference) {
+        endDateTimeField.prefillDateIfEmpty(reference);
+      }
+    }
+
     updatePreview();
   }
 
   durationBtn.addEventListener('click', () => setMode('duration'));
   otherBtn.addEventListener('click', () => setMode(otherKey));
-  [hoursInput, minutesInput, otherInput].forEach((el) => el.addEventListener('input', updatePreview));
+  [hoursInput, minutesInput].forEach((el) => el.addEventListener('input', updatePreview));
 
-  setMode('duration');
+  if (typeof initialDurationSeconds === 'number' && initialDurationSeconds > 0) {
+    const totalMinutes = Math.round(initialDurationSeconds / 60);
+    hoursInput.value = String(Math.floor(totalMinutes / 60));
+    minutesInput.value = String(totalMinutes % 60);
+  }
+
+  if (initialTimeOfDay && timeOfDayField) {
+    timeOfDayField.setValue(initialTimeOfDay.hours, initialTimeOfDay.minutes);
+    setMode(otherKey);
+  } else {
+    setMode('duration');
+  }
 
   return {
     refresh: updatePreview,

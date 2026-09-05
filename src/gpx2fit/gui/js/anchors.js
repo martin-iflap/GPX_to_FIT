@@ -3,28 +3,32 @@
 // cross-references happen by id, in both directions.
 
 import * as mapModule from './map.js';
+import { formatDateTime, formatDistanceKm } from './format.js';
 
+/** @typedef {{ id: number, distanceFromStart: number, timestamp: Date }} Anchor */
+
+/** @type {Anchor[]} */
 let anchors = [];
 let nextId = 1;
 let listEl = null;
 let emptyStateEl = null;
 
+/**
+ * Mounts the anchor list into the given DOM elements and does the initial
+ * (empty) render. Must be called once before `addAnchor`/`removeAnchor`.
+ *
+ * @param {HTMLElement} listElement - `<ul>` (or similar) to render rows into
+ * @param {HTMLElement} emptyElement - element toggled visible when there are no anchors
+ */
 export function initAnchorList(listElement, emptyElement) {
   listEl = listElement;
   emptyStateEl = emptyElement;
   render();
 }
 
+/** Anchor ids in route order (nearest-to-start first) — matches the numbering shown on the map pins and sidebar rows. */
 function sortedIds() {
   return [...anchors].sort((a, b) => a.distanceFromStart - b.distanceFromStart).map((a) => a.id);
-}
-
-function formatDistance(meters) {
-  return `${(meters / 1000).toFixed(2)} km`;
-}
-
-function formatTime(date) {
-  return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
 function highlightRow(id) {
@@ -57,11 +61,11 @@ function render() {
 
     const distanceEl = document.createElement('span');
     distanceEl.className = 'anchor-row-distance';
-    distanceEl.textContent = formatDistance(anchor.distanceFromStart);
+    distanceEl.textContent = formatDistanceKm(anchor.distanceFromStart);
 
     const timeEl = document.createElement('span');
     timeEl.className = 'anchor-row-time';
-    timeEl.textContent = formatTime(anchor.timestamp);
+    timeEl.textContent = formatDateTime(anchor.timestamp);
 
     textEl.append(distanceEl, timeEl);
     info.append(numberEl, textEl);
@@ -88,6 +92,17 @@ function render() {
   mapModule.renumberMarkers(sortedIds());
 }
 
+/**
+ * Adds a mid-route anchor: assigns it an id, drops a numbered pin on the
+ * map, and re-renders the sidebar list.
+ *
+ * @param {object} anchor
+ * @param {number} anchor.lat
+ * @param {number} anchor.lon
+ * @param {number} anchor.distanceFromStart - meters along the route; used for sidebar/pin ordering
+ * @param {Date} anchor.timestamp - resolved arrival time at this point
+ * @returns {number} the assigned anchor id, for later `removeAnchor` calls
+ */
 export function addAnchor({ lat, lon, distanceFromStart, timestamp }) {
   const id = nextId++;
   anchors.push({ id, distanceFromStart, timestamp });
@@ -98,16 +113,14 @@ export function addAnchor({ lat, lon, distanceFromStart, timestamp }) {
   return id;
 }
 
+/** Removes the anchor with the given id, its map pin, and re-renders the list. */
 export function removeAnchor(id) {
   anchors = anchors.filter((a) => a.id !== id);
   mapModule.removeMarker(id);
   render();
 }
 
+/** @returns {Anchor[]} a defensive copy of the current anchors, in insertion order. */
 export function getAnchors() {
   return anchors.map((a) => ({ ...a }));
-}
-
-export function hasAnchors() {
-  return anchors.length > 0;
 }

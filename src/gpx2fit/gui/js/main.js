@@ -1,7 +1,17 @@
-import { parseGpx, resolveAnchorDistance, convert } from './pyodideBridge.js';
+// App entry point: wires DOM elements to the other modules and owns the
+// small bits of state (parsed route, chosen sport, chosen start time) that
+// several of them need to read. Anything that grows into its own concern
+// (theme, anchor-popover UI) gets split into its own module rather than
+// growing this file — see theme.js and anchorPopovers.js.
+
+import { parseGpx, convert } from './pyodideBridge.js';
 import * as mapModule from './map.js';
 import { createTimeToggle } from './timeInput.js';
+import { createDateTimeField } from './dateTimeField.js';
 import * as anchorsModule from './anchors.js';
+import { initTheme } from './theme.js';
+import { createAnchorPlacer } from './anchorPopovers.js';
+import { formatDistanceKm, formatFileSize } from './format.js';
 
 const dropzone = document.getElementById('dropzone');
 const gpxFileInput = document.getElementById('gpxFileInput');
@@ -11,7 +21,7 @@ const summaryDistanceEl = document.getElementById('summaryDistance');
 const summaryElevationEl = document.getElementById('summaryElevation');
 const mapEmptyStateEl = document.getElementById('mapEmptyState');
 const sportControlEl = document.getElementById('sportControl');
-const startTimeInput = document.getElementById('startTimeInput');
+const startTimeFieldEl = document.getElementById('startTimeField');
 const startTimeToggleContainer = document.getElementById('startTimeToggle');
 const anchorListEl = document.getElementById('anchorList');
 const anchorEmptyStateEl = document.getElementById('anchorEmptyState');
@@ -20,46 +30,41 @@ const statusEl = document.getElementById('status');
 const downloadLink = document.getElementById('downloadLink');
 const themeToggle = document.getElementById('themeToggle');
 
+// Route data from the most recently parsed GPX file, and the current values
+// of the sport/start-time controls. Read by the convert handler and by the
+// anchor placer (via the getters passed to createAnchorPlacer below).
 let routePoints = null;
+let totalDistance = null;
 let sportValue = 'hiking';
 let startTimeResult = { isValid: false };
 
 anchorsModule.initAnchorList(anchorListEl, anchorEmptyStateEl);
 mapModule.initMap('map');
-
-/* ---------- theme ---------- */
-
-function applyTheme(theme) {
-  document.documentElement.setAttribute('data-theme', theme);
-  themeToggle.textContent = theme === 'dark' ? '☀️' : '🌙';
-  mapModule.setMapTheme(theme);
-  const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
-  mapModule.updateRouteColor(accent);
-}
-
-function initTheme() {
-  const stored = localStorage.getItem('theme');
-  if (stored === 'light' || stored === 'dark') {
-    applyTheme(stored);
-    return;
-  }
-  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-  applyTheme(prefersDark ? 'dark' : 'light');
-}
-
-themeToggle.addEventListener('click', () => {
-  const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-  localStorage.setItem('theme', next);
-  applyTheme(next);
-});
-
-initTheme();
+initTheme(themeToggle);
 
 /* ---------- status ---------- */
 
+const STATUS_ERROR_TIMEOUT_MS = 5000;
+let statusTimeoutId = null;
+
+// Errors are transient nudges ("set a start time first"), not permanent
+// state, so they clear themselves after a few seconds instead of sitting
+// there until the next unrelated status update happens to overwrite them.
 function setStatus(message, isError = false) {
   statusEl.textContent = message;
   statusEl.classList.toggle('status-error', isError);
+
+  if (statusTimeoutId) {
+    clearTimeout(statusTimeoutId);
+    statusTimeoutId = null;
+  }
+  if (isError) {
+    statusTimeoutId = setTimeout(() => {
+      statusEl.textContent = 'Ready.';
+      statusEl.classList.remove('status-error');
+      statusTimeoutId = null;
+    }, STATUS_ERROR_TIMEOUT_MS);
+  }
 }
 
 /* ---------- sport segmented control ---------- */
@@ -80,41 +85,40 @@ function updateConvertAvailability() {
   runButton.disabled = !(routePoints && startTimeResult.isValid);
 }
 
+const startTimeField = createDateTimeField({
+  container: startTimeFieldEl,
+  dateAriaLabel: 'Start date',
+  timeAriaLabel: 'Start time',
+  onChange: () => startTimeToggle.refresh(),
+});
+
+function getStartTime() {
+  return startTimeField.getValue();
+}
+
 const startTimeToggle = createTimeToggle({
   container: startTimeToggleContainer,
   variant: 'durationOrEnd',
-  getReferenceTime: () => (startTimeInput.value ? new Date(startTimeInput.value) : null),
+  getReferenceTime: getStartTime,
   onChange: (result) => {
     startTimeResult = result;
     updateConvertAvailability();
   },
 });
 
-startTimeInput.addEventListener('input', () => startTimeToggle.refresh());
-
-const defaultStart = new Date(Date.now() + 60_000);
-startTimeInput.value = new Date(defaultStart.getTime() - defaultStart.getTimezoneOffset() * 60000)
-  .toISOString()
-  .slice(0, 16);
+startTimeField.setValue(new Date(Date.now() + 60_000));
 startTimeToggle.refresh();
 
-/* ---------- file upload ---------- */
+/* ---------- anchor placement ---------- */
 
-function findNearestRoutePoint(distance) {
-  if (!routePoints || routePoints.length === 0) {
-    return null;
-  }
-  let nearest = routePoints[0];
-  let bestDelta = Math.abs(nearest.distance - distance);
-  for (const point of routePoints) {
-    const delta = Math.abs(point.distance - distance);
-    if (delta < bestDelta) {
-      nearest = point;
-      bestDelta = delta;
-    }
-  }
-  return nearest;
-}
+const anchorPlacer = createAnchorPlacer({
+  getStartTime,
+  getStartTimeResult: () => startTimeResult,
+  getTotalDistance: () => totalDistance,
+  setStatus,
+});
+
+/* ---------- file upload ---------- */
 
 async function handleFile(file) {
   if (!file) {
@@ -128,13 +132,14 @@ async function handleFile(file) {
     const bytes = new Uint8Array(await file.arrayBuffer());
     const { points, summary } = await parseGpx(bytes);
     routePoints = points;
+    totalDistance = summary.total_distance;
 
-    summaryDistanceEl.textContent = `${(summary.total_distance / 1000).toFixed(2)} km`;
+    summaryDistanceEl.textContent = formatDistanceKm(summary.total_distance);
     summaryElevationEl.textContent = `${Math.round(summary.total_elevation_gain)} m`;
     routeSummaryEl.hidden = false;
     mapEmptyStateEl.hidden = true;
 
-    mapModule.renderRoute(points, handleRouteClick);
+    mapModule.renderRoute(points, anchorPlacer.handleRouteClick);
     setStatus('Route loaded. Set a start time and duration, or click the route to add anchors.');
   } catch (error) {
     console.error(error);
@@ -150,7 +155,9 @@ dropzone.addEventListener('keydown', (event) => {
     gpxFileInput.click();
   }
 });
-gpxFileInput.addEventListener('change', () => handleFile(gpxFileInput.files[0]));
+// handleFile is async but fire-and-forget here: it reports its own errors via
+// setStatus and never rejects, so there's nothing for the caller to await.
+gpxFileInput.addEventListener('change', () => void handleFile(gpxFileInput.files[0]));
 
 ['dragenter', 'dragover'].forEach((eventName) => {
   dropzone.addEventListener(eventName, (event) => {
@@ -166,66 +173,8 @@ gpxFileInput.addEventListener('change', () => handleFile(gpxFileInput.files[0]))
 });
 dropzone.addEventListener('drop', (event) => {
   const file = event.dataTransfer.files && event.dataTransfer.files[0];
-  handleFile(file);
+  void handleFile(file);
 });
-
-/* ---------- anchor placement ---------- */
-
-async function handleRouteClick(lat, lon) {
-  if (!startTimeResult.isValid) {
-    setStatus('Set a valid start time before adding anchors.', true);
-    return;
-  }
-
-  try {
-    const distanceFromStart = await resolveAnchorDistance(lat, lon);
-    const snapped = findNearestRoutePoint(distanceFromStart) || { lat, lon };
-
-    mapModule.openAnchorPopup(snapped.lat, snapped.lon, (container, close) => {
-      const heading = document.createElement('p');
-      heading.className = 'popover-heading';
-      heading.textContent = `${(distanceFromStart / 1000).toFixed(2)} km`;
-      container.append(heading);
-
-      const toggleContainer = document.createElement('div');
-      container.append(toggleContainer);
-
-      const confirmBtn = document.createElement('button');
-      confirmBtn.type = 'button';
-      confirmBtn.className = 'primary-button popover-confirm';
-      confirmBtn.textContent = 'Add anchor';
-      confirmBtn.disabled = true;
-      container.append(confirmBtn);
-
-      let lastResult = { isValid: false };
-      createTimeToggle({
-        container: toggleContainer,
-        variant: 'durationOrTimeOfDay',
-        getReferenceTime: () => (startTimeInput.value ? new Date(startTimeInput.value) : null),
-        onChange: (result) => {
-          lastResult = result;
-          confirmBtn.disabled = !result.isValid;
-        },
-      });
-
-      confirmBtn.addEventListener('click', () => {
-        if (!lastResult.isValid) {
-          return;
-        }
-        anchorsModule.addAnchor({
-          lat: snapped.lat,
-          lon: snapped.lon,
-          distanceFromStart,
-          timestamp: lastResult.resolvedDate,
-        });
-        close();
-      });
-    });
-  } catch (error) {
-    console.error(error);
-    setStatus(`Error: ${error instanceof Error ? error.message : String(error)}`, true);
-  }
-}
 
 /* ---------- convert ---------- */
 
@@ -251,18 +200,18 @@ runButton.addEventListener('click', async () => {
     }));
 
     const fitBytes = await convert({
-      startIso: new Date(startTimeInput.value).toISOString(),
+      startIso: startTimeField.getValue().toISOString(),
       durationSeconds: startTimeResult.durationSeconds,
       sportEnumName,
       anchors: anchorsPayload,
     });
 
     const blob = new Blob([fitBytes], { type: 'application/octet-stream' });
-    const url = URL.createObjectURL(blob);
-    downloadLink.href = url;
+    downloadLink.href = URL.createObjectURL(blob);
     downloadLink.hidden = false;
-    downloadLink.textContent = `Download FIT (${blob.size} bytes)`;
+    downloadLink.textContent = `Download FIT (${formatFileSize(blob.size)})`;
     setStatus('FIT file generated successfully.');
+    downloadLink.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } catch (error) {
     console.error(error);
     setStatus(`Error: ${error instanceof Error ? error.message : String(error)}`, true);
