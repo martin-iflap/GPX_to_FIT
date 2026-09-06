@@ -6,6 +6,7 @@ dependencies = [
     "fit-tool>=0.9.16",
     "gpxpy>=1.6.2",
     "pyrefly>=0.60.0",
+    "pytest-cov>=7.1.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -13,3 +14,8 @@ packages = ["src/gpx2fit"]
 
 [tool.uv]
 package = true
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

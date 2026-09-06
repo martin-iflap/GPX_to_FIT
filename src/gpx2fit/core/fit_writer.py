@@ -1,4 +1,7 @@
+"""Build a Garmin FIT activity file from a fully-paced Track."""
+
 from datetime import datetime, timezone
+
 from fit_tool.fit_file_builder import FitFileBuilder
 from fit_tool.profile.messages.activity_message import ActivityMessage
 from fit_tool.profile.messages.file_id_message import FileIdMessage
@@ -7,11 +10,20 @@ from fit_tool.profile.messages.record_message import RecordMessage
 from fit_tool.profile.messages.session_message import SessionMessage
 from fit_tool.profile.messages.sport_message import SportMessage
 from fit_tool.profile.profile_type import Activity, FileType, Manufacturer, Sport
+
 from gpx2fit.core.models import Track
 
 
 def _fit_timestamp(value: datetime) -> int:
-    """Convert a datetime to a FIT timestamp (unix epoch milliseconds) which fit-tool expects."""
+    """Convert a datetime to a FIT timestamp (Unix epoch milliseconds), which fit-tool expects.
+
+    Args:
+        value: A naive or timezone-aware datetime. A naive value is treated
+            as already being in UTC rather than the local timezone.
+    Returns:
+        Milliseconds since the Unix epoch (1970-01-01T00:00:00 UTC), rounded
+        to the nearest millisecond.
+    """
     if value.tzinfo is None:
         utc_value = value.replace(tzinfo=timezone.utc)
     else:
@@ -19,17 +31,24 @@ def _fit_timestamp(value: datetime) -> int:
     return round(utc_value.timestamp() * 1000)
 
 
-def _to_semicircles(degrees: float) -> int:
-    """Convert degrees to semicircles for FIT file encoding."""
-    return round(degrees * ((1 << 31) / 180.0))
-
-
 def write_fit(track: Track) -> bytes:
-    """Write a .fit file from provided track data.
-     - Create a FileIdMessage, SportMessage, RecordMessages for each track point.
-     - Create LapMessage, SessionMessage, and ActivityMessage with appropriate timestamps and metrics.
+    """Write a .fit file from a fully-paced track.
 
-     Returns: the bytes of the FIT file.
+    Builds a FileIdMessage and SportMessage, one RecordMessage per track
+    point (position/elevation/distance/timestamp), and a LapMessage,
+    SessionMessage, and ActivityMessage summarizing the whole activity.
+    Every point must already have a timestamp — this is the last step in the
+    pipeline, run after pacing.combine has stamped them all.
+
+    Args:
+        track: A track whose points all have a timestamp, in route order.
+    Returns:
+        The complete .fit file contents as bytes.
+    Raises:
+        RuntimeError: If the track has no points, if the first or last point
+            has no timestamp, if the last timestamp isn't strictly later
+            than the first, or if any point in between is missing a
+            timestamp.
     """
     builder = FitFileBuilder(auto_define=True, min_string_size=50)
 
@@ -68,6 +87,8 @@ def write_fit(track: Track) -> bytes:
         record.position_lat = point.lat
         record.position_long = point.lon
         if point.elevation is not None and point.elevation != 0.0:
+            # 0.0 means "no elevation data" (gpx_reader's default for a point
+            # missing <ele>), not literal sea level, so it's left unset here.
             record.altitude = point.elevation
         record.distance = point.distance_from_start
         if point.timestamp is None:

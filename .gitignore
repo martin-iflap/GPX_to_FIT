@@ -1,3 +1,5 @@
 .idea/
 *.egg-info/
 src/gpx2fit/gui/js/config.js
+node_modules/
+.coverage

@@ -1,12 +1,26 @@
-from gpx2fit.core.models import TrackPoint, Track
-import gpxpy
+"""Read GPX route files and convert them into the core Track representation."""
 
+import gpxpy
+from gpx2fit.core.models import Track, TrackPoint
 
 
 def parse_gpx_bytes(gpx_bytes: bytes, device: str | None = None) -> Track:
-    """Parse GPX file contents (as bytes) and return a list of TrackPoint objects.
-     - For each point added, compute the cumulative distance from the start of the track.
-     - If the GPX file has a creator, it will be used as the device name.
+    """Parse GPX file contents into a Track.
+
+    Args:
+        gpx_bytes: Raw contents of a .gpx file.
+        device: Device name to embed in the resulting Track. If not given,
+            falls back to the GPX file's <creator> attribute.
+    Returns:
+        A Track with one TrackPoint per GPX trackpoint, in file order, with
+        distance_from_start computed as the cumulative 3D (falling back to
+        2D) distance from the first point. Points have no timestamp yet —
+        that's assigned later by pacing.
+
+    Note:
+        If a point is missing elevation, it inherits the previous point's
+        elevation (0.0 if it's the very first point) rather than introducing
+        a fake cliff that would distort gradient-based pacing.
     """
     xml_text = gpx_bytes.decode('utf-8')
     gpx = gpxpy.parse(xml_text)
@@ -14,6 +28,7 @@ def parse_gpx_bytes(gpx_bytes: bytes, device: str | None = None) -> Track:
     track_points = []
     prev_point = None
     cumulative_distance = 0.0
+    last_elevation = 0.0
     device = device or gpx.creator
 
     for track in gpx.tracks:
@@ -25,15 +40,16 @@ def parse_gpx_bytes(gpx_bytes: bytes, device: str | None = None) -> Track:
                         segment_distance = prev_point.distance_2d(point) or 0.0
                     cumulative_distance += segment_distance
 
+                elevation = point.elevation if point.elevation is not None else last_elevation
+                last_elevation = elevation
+
                 track_points.append(TrackPoint(
                     lat=point.latitude,
                     lon=point.longitude,
-                    elevation=point.elevation if point.elevation is not None else 0.0, # todo: check if the 0.0 is correct, perhaps throw an error
+                    elevation=elevation,
                     distance_from_start=cumulative_distance,
                     timestamp=None,
                 ))
                 prev_point = point
 
     return Track(points=track_points, device=device)
-
-# add a possibility for the user to input the device name and add it to the Track object here.
