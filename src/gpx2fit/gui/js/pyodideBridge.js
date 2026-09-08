@@ -48,8 +48,10 @@ await micropip.install('fit-tool')
       ['src/gpx2fit/core/gpx_reader.py', await fetchText('/src/gpx2fit/core/gpx_reader.py')],
       ['src/gpx2fit/core/fit_writer.py', await fetchText('/src/gpx2fit/core/fit_writer.py')],
       ['src/gpx2fit/core/pacing/anchors.py', await fetchText('/src/gpx2fit/core/pacing/anchors.py')],
+      ['src/gpx2fit/core/pacing/photo_anchors.py', await fetchText('/src/gpx2fit/core/pacing/photo_anchors.py')],
       ['src/gpx2fit/core/pacing/gradient.py', await fetchText('/src/gpx2fit/core/pacing/gradient.py')],
       ['src/gpx2fit/core/pacing/combine.py', await fetchText('/src/gpx2fit/core/pacing/combine.py')],
+      ['src/gpx2fit/core/pacing/stops.py', await fetchText('/src/gpx2fit/core/pacing/stops.py')],
     ];
 
     runtime.globals.set('backend_files_json', JSON.stringify(backendFiles));
@@ -140,9 +142,55 @@ _anchor_candidates = nearest_point_candidates(_track, float(click_lat), float(cl
 }
 
 /**
+ * Resolves a batch of photo-derived GPS+timestamp readings against the
+ * already-parsed route. For each reading, finds the nearest track point
+ * (`photo_anchors.resolve_photo_anchors`, reusing the same nearest-point
+ * lookup map-click anchors use) and reports whether it's close enough to
+ * trust — the frontend never computes distances itself, it just reads
+ * `status` per reading.
+ *
+ * @param {{lat: number, lon: number, timestamp: string}[]} photoReadings -
+ *   EXIF-derived GPS+timestamp per photo, timestamp as ISO 8601
+ * @returns {Promise<{status: 'ok'|'too_far', lat: number, lon: number, distanceFromStart: number, timestamp: string, gapM: number}[]>}
+ */
+export async function resolvePhotoAnchors(photoReadings) {
+  const runtime = await ensurePyodide();
+  runtime.globals.set('photo_readings_json', JSON.stringify(photoReadings));
+
+  await runtime.runPythonAsync(`
+import datetime as dt
+import json
+
+from gpx2fit.core.pacing.photo_anchors import RawPhotoAnchor, resolve_photo_anchors
+
+_raw_photo_anchors = [
+    RawPhotoAnchor(lat=r["lat"], lon=r["lon"], timestamp=dt.datetime.fromisoformat(r["timestamp"]))
+    for r in json.loads(photo_readings_json)
+]
+_resolved_photo_anchors = [
+    {
+        "status": r.status,
+        "lat": r.lat,
+        "lon": r.lon,
+        "distanceFromStart": r.distance_from_start,
+        "timestamp": r.timestamp.isoformat(),
+        "gapM": r.gap_m,
+    }
+    for r in resolve_photo_anchors(_track, _raw_photo_anchors)
+]
+`);
+
+  const toJsOpts = { create_proxies: false, dict_converter: Object.fromEntries };
+  return runtime.globals.get('_resolved_photo_anchors').toJs(toJsOpts);
+}
+
+/**
  * Runs the full pacing + FIT-encoding pipeline over the already-parsed
  * `_track`: builds start/end anchors from the given duration, merges in any
- * mid-route anchors, fits per-leg speeds, and writes a FIT file.
+ * mid-route anchors and stops, fits per-leg speeds, and writes a FIT file.
+ * Pacing runs against a fresh working copy of `_track`'s points (expanded
+ * with a duplicate point per stop) — `_track` itself is never structurally
+ * mutated, since it's a persistent global reused across repeated calls.
  *
  * @param {object} args
  * @param {string} args.startIso - route start time, ISO 8601
@@ -150,23 +198,33 @@ _anchor_candidates = nearest_point_candidates(_track, float(click_lat), float(cl
  * @param {'RUNNING'|'HIKING'} args.sportEnumName - name of a `SportType` member
  * @param {{distanceFromStart: number, timestamp: string, source: string}[]} args.anchors -
  *   mid-route anchors (timestamp as ISO 8601); start/end anchors are added internally
+ * @param {{distanceFromStart: number, durationSeconds?: number, startIso?: string, endIso?: string}[]} [args.stops] -
+ *   mid-route stops: exactly one of durationSeconds (Mode A) or
+ *   startIso+endIso (Mode B) per entry
+ * @param {string} [args.device] - device name to embed in the FIT file, applied to `_track.device`
  * @returns {Promise<Uint8Array>} the encoded FIT file
  */
-export async function convert({ startIso, durationSeconds, sportEnumName, anchors }) {
+export async function convert({ startIso, durationSeconds, sportEnumName, anchors, stops, device }) {
   const runtime = await ensurePyodide();
   runtime.globals.set('start_iso', startIso);
   runtime.globals.set('duration_seconds', durationSeconds);
   runtime.globals.set('sport_enum_name', sportEnumName);
   runtime.globals.set('raw_anchors_json', JSON.stringify(anchors));
+  runtime.globals.set('raw_stops_json', JSON.stringify(stops ?? []));
+  runtime.globals.set('device_name', device ?? null);
 
   await runtime.runPythonAsync(`
 import datetime as dt
 import json
 
-from gpx2fit.core.models import RawAnchor, SportType
+from gpx2fit.core.models import Anchor, RawAnchor, RawStop, SportType, Track
 from gpx2fit.core.pacing.anchors import add_start_end_anchors, build_user_anchors
 from gpx2fit.core.pacing.combine import combine
+from gpx2fit.core.pacing.stops import expand_track_with_stops, resolve_stops
 from gpx2fit.core.fit_writer import write_fit
+
+if device_name:
+    _track.device = device_name
 
 start = dt.datetime.fromisoformat(start_iso)
 boundary = add_start_end_anchors(
@@ -185,11 +243,35 @@ raw_anchors = [
     for a in raw_anchor_dicts
 ]
 mid_route = build_user_anchors(_track, raw_anchors)
-
-all_anchors = sorted(boundary + mid_route, key=lambda a: (a.distance_from_start, a.timestamp))
+hard_anchors = sorted(boundary + mid_route, key=lambda a: (a.distance_from_start, a.timestamp))
 sport = SportType[sport_enum_name]
-combine(track=_track, anchors=all_anchors, sport=sport)
-fit_bytes = write_fit(_track)
+
+raw_stop_dicts = json.loads(raw_stops_json)
+raw_stops = [
+    RawStop(
+        distance_from_start=s["distanceFromStart"],
+        duration=dt.timedelta(seconds=float(s["durationSeconds"])) if s.get("durationSeconds") is not None else None,
+        start_timestamp=dt.datetime.fromisoformat(s["startIso"]) if s.get("startIso") else None,
+        end_timestamp=dt.datetime.fromisoformat(s["endIso"]) if s.get("endIso") else None,
+    )
+    for s in raw_stop_dicts
+]
+
+resolved_mode_b, mode_a_stops = resolve_stops(_track, raw_stops, hard_anchors)
+stop_anchors = [
+    a
+    for rs in resolved_mode_b
+    for a in (
+        Anchor(rs.distance_from_start, rs.arrival, source="stop_arrival"),
+        Anchor(rs.distance_from_start, rs.departure, source="stop_departure"),
+    )
+]
+all_anchors = sorted(hard_anchors + stop_anchors, key=lambda a: (a.distance_from_start, a.timestamp))
+
+working_points = expand_track_with_stops(_track.points, [*resolved_mode_b, *mode_a_stops])
+working_track = Track(points=working_points, sport=_track.sport, device=_track.device, activity_name=_track.activity_name)
+combine(track=working_track, anchors=all_anchors, sport=sport, mode_a_stops=mode_a_stops)
+fit_bytes = write_fit(working_track)
 `);
 
   return runtime.globals.get('fit_bytes').toJs({ create_proxies: false });

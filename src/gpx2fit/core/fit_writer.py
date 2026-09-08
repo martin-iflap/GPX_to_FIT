@@ -74,6 +74,8 @@ def write_fit(track: Track) -> bytes:
     file_id.manufacturer = Manufacturer.DEVELOPMENT.value
     file_id.product = 0
     file_id.time_created = _fit_timestamp(start_time)
+    if track.device:
+        file_id.product_name = track.device
     builder.add(file_id)
 
     sport_message = SportMessage()

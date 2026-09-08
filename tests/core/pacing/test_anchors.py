@@ -5,7 +5,7 @@ import pytest
 
 from gpx2fit.core.models import RawAnchor, Track, TrackPoint
 from gpx2fit.core.pacing.anchors import (
-    _distance_meters,
+    distance_meters,
     add_start_end_anchors,
     build_user_anchors,
     nearest_point_candidates,
@@ -29,18 +29,18 @@ def _haversine_m(lat_a: float, lon_a: float, lat_b: float, lon_b: float) -> floa
 
 class TestDistanceMeters:
     def test_same_point_is_zero(self):
-        assert _distance_meters(45.0, 7.0, 45.0, 7.0) == pytest.approx(0.0)
+        assert distance_meters(45.0, 7.0, 45.0, 7.0) == pytest.approx(0.0)
 
     def test_matches_reference_haversine_formula(self):
         # Turin to Milan, roughly.
         lat_a, lon_a = 45.0703, 7.6869
         lat_b, lon_b = 45.4642, 9.1900
-        assert _distance_meters(lat_a, lon_a, lat_b, lon_b) == pytest.approx(
+        assert distance_meters(lat_a, lon_a, lat_b, lon_b) == pytest.approx(
             _haversine_m(lat_a, lon_a, lat_b, lon_b)
         )
 
     def test_one_degree_of_latitude_is_about_111km(self):
-        assert _distance_meters(0.0, 0.0, 1.0, 0.0) == pytest.approx(111_195, rel=0.01)
+        assert distance_meters(0.0, 0.0, 1.0, 0.0) == pytest.approx(111_195, rel=0.01)
 
 
 class TestNearestPointDistanceFromStart:

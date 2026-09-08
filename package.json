@@ -1,0 +1,14 @@
+{
+  "name": "gpx-to-fit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "eslint src/gpx2fit/gui/js"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.10.0",
+    "globals": "^17.12.0"
+  }
+}

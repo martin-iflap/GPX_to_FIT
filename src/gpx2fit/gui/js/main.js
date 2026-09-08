@@ -4,13 +4,15 @@
 // (theme, anchor-popover UI) gets split into its own module rather than
 // growing this file — see theme.js and anchorPopovers.js.
 
-import { parseGpx, convert } from './pyodideBridge.js';
+import { parseGpx, convert, resolvePhotoAnchors } from './pyodideBridge.js';
 import * as mapModule from './map.js';
 import { createTimeToggle } from './timeInput.js';
 import { createDateTimeField } from './dateTimeField.js';
 import * as anchorsModule from './anchors.js';
+import * as stopsModule from './stops.js';
 import { initTheme } from './theme.js';
 import { createAnchorPlacer } from './anchorPopovers.js';
+import { initPhotoDrop } from './photoAnchors.js';
 import { formatDistanceKm, formatFileSize } from './format.js';
 
 const dropzone = document.getElementById('dropzone');
@@ -21,10 +23,17 @@ const summaryDistanceEl = document.getElementById('summaryDistance');
 const summaryElevationEl = document.getElementById('summaryElevation');
 const mapEmptyStateEl = document.getElementById('mapEmptyState');
 const sportControlEl = document.getElementById('sportControl');
+const deviceInputEl = document.getElementById('deviceInput');
 const startTimeFieldEl = document.getElementById('startTimeField');
 const startTimeToggleContainer = document.getElementById('startTimeToggle');
 const anchorListEl = document.getElementById('anchorList');
 const anchorEmptyStateEl = document.getElementById('anchorEmptyState');
+const stopListEl = document.getElementById('stopList');
+const stopEmptyStateEl = document.getElementById('stopEmptyState');
+const photoDropzoneEl = document.getElementById('photoDropzone');
+const photoFileInputEl = document.getElementById('photoFileInput');
+const photoListEl = document.getElementById('photoList');
+const photoEmptyStateEl = document.getElementById('photoEmptyState');
 const runButton = document.getElementById('runButton');
 const statusEl = document.getElementById('status');
 const downloadLink = document.getElementById('downloadLink');
@@ -39,6 +48,7 @@ let sportValue = 'hiking';
 let startTimeResult = { isValid: false };
 
 anchorsModule.initAnchorList(anchorListEl, anchorEmptyStateEl);
+stopsModule.initStopList(stopListEl, stopEmptyStateEl);
 mapModule.initMap('map');
 initTheme(themeToggle);
 
@@ -115,6 +125,19 @@ const anchorPlacer = createAnchorPlacer({
   getStartTime,
   getStartTimeResult: () => startTimeResult,
   getTotalDistance: () => totalDistance,
+  setStatus,
+});
+
+/* ---------- photo drop ---------- */
+
+initPhotoDrop({
+  dropzoneEl: photoDropzoneEl,
+  inputEl: photoFileInputEl,
+  listEl: photoListEl,
+  emptyStateEl: photoEmptyStateEl,
+  isTrackReady: () => routePoints !== null,
+  resolvePhotoAnchors,
+  addAnchor: anchorsModule.addAnchor,
   setStatus,
 });
 
@@ -196,7 +219,13 @@ runButton.addEventListener('click', async () => {
     const anchorsPayload = anchorsModule.getAnchors().map((a) => ({
       distanceFromStart: a.distanceFromStart,
       timestamp: a.timestamp.toISOString(),
-      source: 'user',
+      source: a.source ?? 'user',
+    }));
+    const stopsPayload = stopsModule.getStops().map((s) => ({
+      distanceFromStart: s.distanceFromStart,
+      durationSeconds: s.mode === 'duration' ? s.durationSeconds : undefined,
+      startIso: s.mode === 'startEnd' ? s.arrival.toISOString() : undefined,
+      endIso: s.mode === 'startEnd' ? s.departure.toISOString() : undefined,
     }));
 
     const fitBytes = await convert({
@@ -204,6 +233,8 @@ runButton.addEventListener('click', async () => {
       durationSeconds: startTimeResult.durationSeconds,
       sportEnumName,
       anchors: anchorsPayload,
+      stops: stopsPayload,
+      device: deviceInputEl.value.trim() || undefined,
     });
 
     const blob = new Blob([fitBytes], { type: 'application/octet-stream' });

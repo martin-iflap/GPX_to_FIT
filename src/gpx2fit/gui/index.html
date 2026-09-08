@@ -57,6 +57,12 @@
           </section>
 
           <section class="control">
+            <label class="control-label" for="deviceInput">Device name (optional)</label>
+            <!-- maxlength matches FitFileBuilder(min_string_size=50) in fit_writer.py -->
+            <input id="deviceInput" type="text" class="text-input" placeholder="e.g. Garmin Forerunner 965" maxlength="50" />
+          </section>
+
+          <section class="control">
             <span class="control-label">Start time</span>
             <div id="startTimeField"></div>
             <div id="startTimeToggle" class="time-toggle"></div>
@@ -70,6 +76,29 @@
             <p id="anchorEmptyState" class="anchor-empty">No anchor points yet — click anywhere on the route to add one.</p>
           </section>
 
+          <section class="control">
+            <div class="control-label-row">
+              <span class="control-label">Photos</span>
+            </div>
+            <div id="photoDropzone" class="dropzone" tabindex="0">
+              <input id="photoFileInput" type="file" accept="image/*" multiple class="visually-hidden" />
+              <div class="dropzone-content">
+                <span class="dropzone-icon">📷</span>
+                <p class="dropzone-text">Drag &amp; drop photos, or <span class="dropzone-link">browse</span></p>
+              </div>
+            </div>
+            <ul id="photoList" class="anchor-list"></ul>
+            <p id="photoEmptyState" class="anchor-empty">No photos yet — geotagged photos become anchors automatically.</p>
+          </section>
+
+          <section class="control">
+            <div class="control-label-row">
+              <span class="control-label">Stops</span>
+            </div>
+            <ul id="stopList" class="anchor-list"></ul>
+            <p id="stopEmptyState" class="anchor-empty">No stops yet — click the route and choose "Add stop" to record a pause.</p>
+          </section>
+
           <button id="runButton" class="primary-button" type="button" disabled>Convert to FIT</button>
           <div id="status" class="status" role="status">Ready.</div>
           <a id="downloadLink" class="download-link" hidden download="activity.fit">Download FIT</a>
@@ -79,6 +108,7 @@
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://cdn.jsdelivr.net/pyodide/v0.27.3/full/pyodide.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/full.umd.min.js"></script>
     <script type="module" src="js/main.js"></script>
   </body>
 </html>

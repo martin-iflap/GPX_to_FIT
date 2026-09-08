@@ -14,9 +14,11 @@ import { createDateTimeField, createTimeField } from './dateTimeField.js';
  *
  * @param {object} opts
  * @param {HTMLElement} opts.container - element to mount the toggle into
- * @param {'durationOrEnd'|'durationOrTimeOfDay'} opts.variant - which pair of
+ * @param {'durationOrEnd'|'durationOrTimeOfDay'|'durationOnly'} opts.variant - which pair of
  *   modes to offer: elapsed-duration vs. either an absolute end time (main
- *   start-time control) or a same-day time-of-day (anchor popovers)
+ *   start-time control) or a same-day time-of-day (anchor popovers);
+ *   'durationOnly' omits the mode toggle entirely and always resolves in
+ *   duration mode (used by a stop's duration-only entry)
  * @param {() => Date|null} opts.getReferenceTime - the moment durations are
  *   measured from (the route's start time); re-read on every resolve, so the
  *   toggle stays correct if the reference changes after mount
@@ -43,6 +45,7 @@ export function createTimeToggle({
   initialTimeOfDay,
   initialDurationSeconds,
 }) {
+  const isDurationOnly = variant === 'durationOnly';
   const state = { mode: 'duration' };
   const otherKey = variant === 'durationOrEnd' ? 'end' : 'timeOfDay';
 
@@ -62,7 +65,9 @@ export function createTimeToggle({
   otherBtn.textContent = variant === 'durationOrEnd' ? 'End time' : 'Time of day';
   otherBtn.setAttribute('role', 'tab');
 
-  modesEl.append(durationBtn, otherBtn);
+  if (!isDurationOnly) {
+    modesEl.append(durationBtn, otherBtn);
+  }
 
   const fieldsEl = document.createElement('div');
   fieldsEl.className = 'time-toggle-fields';
@@ -107,28 +112,30 @@ export function createTimeToggle({
   let timeOfDayField = null; // only set for the 'timeOfDay' branch, so initialTimeOfDay can prefill it
   let endDateTimeField = null; // only set for the 'end' branch, so its date can default to the start's
 
-  if (otherKey === 'end') {
-    endDateTimeField = createDateTimeField({
-      container: otherFields,
-      dateAriaLabel: 'End date',
-      timeAriaLabel: 'End time',
-      onChange: (date) => {
-        otherValue = date;
-        updatePreview();
-      },
-    });
-  } else {
-    // No quick-picks here: an anchor's arrival time is meant to be precise
-    // (that's the whole point of adding it), not rounded to a half-hour.
-    timeOfDayField = createTimeField({
-      container: otherFields,
-      ariaLabel: 'Time of day',
-      quickPicks: false,
-      onChange: (value) => {
-        otherValue = value;
-        updatePreview();
-      },
-    });
+  if (!isDurationOnly) {
+    if (otherKey === 'end') {
+      endDateTimeField = createDateTimeField({
+        container: otherFields,
+        dateAriaLabel: 'End date',
+        timeAriaLabel: 'End time',
+        onChange: (date) => {
+          otherValue = date;
+          updatePreview();
+        },
+      });
+    } else {
+      // No quick-picks here: an anchor's arrival time is meant to be precise
+      // (that's the whole point of adding it), not rounded to a half-hour.
+      timeOfDayField = createTimeField({
+        container: otherFields,
+        ariaLabel: 'Time of day',
+        quickPicks: false,
+        onChange: (value) => {
+          otherValue = value;
+          updatePreview();
+        },
+      });
+    }
   }
 
   const previewEl = document.createElement('p');
@@ -201,8 +208,12 @@ export function createTimeToggle({
     }
 
     if (state.mode === 'duration') {
-      previewEl.textContent =
-        variant === 'durationOrEnd' ? `Ends at ${formatDateTime(result.resolvedDate)}` : `At ${formatClock(result.resolvedDate)}`;
+      if (isDurationOnly) {
+        previewEl.textContent = `Duration: ${formatDuration(result.durationSeconds)}`;
+      } else {
+        previewEl.textContent =
+          variant === 'durationOrEnd' ? `Ends at ${formatDateTime(result.resolvedDate)}` : `At ${formatClock(result.resolvedDate)}`;
+      }
     } else {
       previewEl.textContent = `Duration: ${formatDuration(result.durationSeconds)}`;
     }
@@ -229,8 +240,10 @@ export function createTimeToggle({
     updatePreview();
   }
 
-  durationBtn.addEventListener('click', () => setMode('duration'));
-  otherBtn.addEventListener('click', () => setMode(otherKey));
+  if (!isDurationOnly) {
+    durationBtn.addEventListener('click', () => setMode('duration'));
+    otherBtn.addEventListener('click', () => setMode(otherKey));
+  }
   [hoursInput, minutesInput].forEach((el) => el.addEventListener('input', updatePreview));
 
   if (typeof initialDurationSeconds === 'number' && initialDurationSeconds > 0) {
@@ -239,7 +252,7 @@ export function createTimeToggle({
     minutesInput.value = String(totalMinutes % 60);
   }
 
-  if (initialTimeOfDay && timeOfDayField) {
+  if (!isDurationOnly && initialTimeOfDay && timeOfDayField) {
     timeOfDayField.setValue(initialTimeOfDay.hours, initialTimeOfDay.minutes);
     setMode(otherKey);
   } else {

@@ -534,6 +534,10 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   background: rgba(255, 59, 48, 0.1);
 }
 
+.anchor-row.is-problem .anchor-row-time {
+  color: var(--danger);
+}
+
 .anchor-empty {
   margin: 0;
   padding: var(--space-4) var(--space-2);
@@ -637,6 +641,46 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 }
 
 .anchor-pin-wrapper.is-active .anchor-pin {
+  transform: scale(1.2);
+}
+
+.stop-pin {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  background: #ff9500;
+  color: var(--accent-contrast);
+  font-size: 0.72rem;
+  font-weight: 700;
+  box-shadow: 0 2px 8px var(--shadow-color);
+  border: 2px solid var(--accent-contrast);
+  transition: transform var(--transition);
+}
+
+.stop-pin-wrapper.is-active .stop-pin {
+  transform: scale(1.2);
+}
+
+.photo-pin {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #af52de;
+  color: var(--accent-contrast);
+  font-size: 0.72rem;
+  font-weight: 700;
+  box-shadow: 0 2px 8px var(--shadow-color);
+  border: 2px solid var(--accent-contrast);
+  transition: transform var(--transition);
+}
+
+.photo-pin-wrapper.is-active .photo-pin {
   transform: scale(1.2);
 }
 

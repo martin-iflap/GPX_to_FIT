@@ -8,8 +8,10 @@ from gpx2fit.core.models import Anchor, RawAnchor, Track, TrackPoint
 _EARTH_RADIUS_M = 6371000.0
 
 
-def _distance_meters(lat_a: float, lon_a: float, lat_b: float, lon_b: float) -> float:
+def distance_meters(lat_a: float, lon_a: float, lat_b: float, lon_b: float) -> float:
     """Calculate the great-circle (Haversine) distance between two lat/lon points.
+     - Also used in pacing.photo_anchors to match photos to the nearest track point.
+
     Args:
         lat_a: Latitude of the first point, in degrees.
         lon_a: Longitude of the first point, in degrees.
@@ -47,7 +49,7 @@ def nearest_point_distance_from_start(track: Track, lat: float, lon: float) -> f
     """
     if not track.points:
         raise ValueError("Track must contain points to resolve anchor position.")
-    nearest_point = min(track.points, key=lambda p: _distance_meters(p.lat, p.lon, lat, lon))
+    nearest_point = min(track.points, key=lambda p: distance_meters(p.lat, p.lon, lat, lon))
     return nearest_point.distance_from_start
 
 
@@ -96,11 +98,11 @@ def nearest_point_candidates(
     if not track.points:
         raise ValueError("Track must contain points to resolve anchor position.")
 
-    nearest_point = min(track.points, key=lambda p: _distance_meters(p.lat, p.lon, lat, lon))
+    nearest_point = min(track.points, key=lambda p: distance_meters(p.lat, p.lon, lat, lon))
 
     nearby_points = [
         p for p in track.points
-        if _distance_meters(p.lat, p.lon, nearest_point.lat, nearest_point.lon) <= proximity_radius_m
+        if distance_meters(p.lat, p.lon, nearest_point.lat, nearest_point.lon) <= proximity_radius_m
     ]
     nearby_points.sort(key=lambda p: p.distance_from_start)
 
@@ -112,7 +114,7 @@ def nearest_point_candidates(
             clusters.append([point])
 
     representatives = [
-        min(cluster, key=lambda p: _distance_meters(p.lat, p.lon, lat, lon)) for cluster in clusters
+        min(cluster, key=lambda p: distance_meters(p.lat, p.lon, lat, lon)) for cluster in clusters
     ]
     representatives.sort(key=lambda p: p.distance_from_start)
 

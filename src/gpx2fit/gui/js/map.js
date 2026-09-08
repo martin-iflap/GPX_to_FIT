@@ -133,59 +133,90 @@ function pinIcon(number) {
   });
 }
 
+/** Same shape as pinIcon, styled distinctly for a stop (a real pause, not just a timed point). */
+function stopPinIcon(number) {
+  return L.divIcon({
+    className: 'stop-pin-wrapper',
+    html: `<div class="stop-pin">${number}</div>`,
+    iconSize: [26, 26],
+    iconAnchor: [13, 13],
+  });
+}
+
+/** Same shape as pinIcon, styled distinctly for a photo-derived anchor. */
+function photoPinIcon(number) {
+  return L.divIcon({
+    className: 'photo-pin-wrapper',
+    html: `<div class="photo-pin">${number}</div>`,
+    iconSize: [26, 26],
+    iconAnchor: [13, 13],
+  });
+}
+
+function iconForKind(kind, number) {
+  if (kind === 'stop') {
+    return stopPinIcon(number);
+  }
+  if (kind === 'photo') {
+    return photoPinIcon(number);
+  }
+  return pinIcon(number);
+}
+
 /**
- * Adds a numbered anchor pin to the map.
+ * Adds a numbered pin to the map — an anchor pin (round), a stop pin
+ * (square), or a photo pin, depending on `kind`.
  *
- * @param {number} id - caller-assigned id (typically the anchor's id), used to look the marker back up
+ * @param {number} id - caller-assigned id (typically the anchor's/stop's id), used to look the marker back up
  * @param {number} lat
  * @param {number} lon
  * @param {number} number - the number drawn inside the pin
- * @param {{onClick?: (id: number) => void}} [opts]
+ * @param {{onClick?: (id: number) => void, kind?: 'anchor'|'stop'|'photo'}} [opts]
  * @returns {L.Marker}
  */
-export function addMarker(id, lat, lon, number, { onClick } = {}) {
-  const marker = L.marker([lat, lon], { icon: pinIcon(number) }).addTo(map);
+export function addMarker(id, lat, lon, number, { onClick, kind = 'anchor' } = {}) {
+  const marker = L.marker([lat, lon], { icon: iconForKind(kind, number) }).addTo(map);
   if (onClick) {
     marker.on('click', () => onClick(id));
   }
-  markers.set(id, marker);
+  markers.set(id, { marker, kind });
   return marker;
 }
 
 /** Removes the pin with the given id, if one exists. */
 export function removeMarker(id) {
-  const marker = markers.get(id);
-  if (marker) {
-    map.removeLayer(marker);
+  const entry = markers.get(id);
+  if (entry) {
+    map.removeLayer(entry.marker);
     markers.delete(id);
   }
 }
 
-/** Re-labels existing pins 1...N following `orderedIds` — call after anchors are re-sorted, without recreating markers. */
+/** Re-labels existing pins 1...N following `orderedIds` — call after anchors/stops are re-sorted, without recreating markers. */
 export function renumberMarkers(orderedIds) {
   orderedIds.forEach((id, index) => {
-    const marker = markers.get(id);
-    if (marker) {
-      marker.setIcon(pinIcon(index + 1));
+    const entry = markers.get(id);
+    if (entry) {
+      entry.marker.setIcon(iconForKind(entry.kind, index + 1));
     }
   });
 }
 
 /** Pans (without zooming) the map so the given pin is centered. */
 export function panToMarker(id) {
-  const marker = markers.get(id);
-  if (marker) {
-    map.panTo(marker.getLatLng());
+  const entry = markers.get(id);
+  if (entry) {
+    map.panTo(entry.marker.getLatLng());
   }
 }
 
 /** Toggles the `.is-active` style on a pin (used for sidebar-row hover/click sync). */
 export function highlightMarker(id, isActive) {
-  const marker = markers.get(id);
-  if (!marker) {
+  const entry = markers.get(id);
+  if (!entry) {
     return;
   }
-  const el = marker.getElement();
+  const el = entry.marker.getElement();
   if (el) {
     el.classList.toggle('is-active', isActive);
   }

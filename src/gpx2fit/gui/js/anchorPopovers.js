@@ -9,6 +9,7 @@
 import { resolveAnchorCandidates } from './pyodideBridge.js';
 import * as mapModule from './map.js';
 import * as anchorsModule from './anchors.js';
+import * as stopsModule from './stops.js';
 import { createTimeToggle } from './timeInput.js';
 import { formatClock, formatDistanceKm } from './format.js';
 
@@ -126,7 +127,7 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
         optionBtn.append(distanceEl, estimateEl);
         optionBtn.addEventListener('click', () => {
           close();
-          openAnchorTimePopover(candidate);
+          openKindChoicePopover(candidate);
         });
         list.append(optionBtn);
       });
@@ -135,10 +136,173 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
     });
   }
 
+  function openKindChoicePopover(candidate) {
+    mapModule.openAnchorPopup(candidate.lat, candidate.lon, (container, close) => {
+      const heading = document.createElement('p');
+      heading.className = 'popover-heading';
+      heading.textContent = formatDistanceKm(candidate.distance_from_start);
+      container.append(heading);
+
+      const list = document.createElement('div');
+      list.className = 'candidate-list';
+
+      const anchorBtn = document.createElement('button');
+      anchorBtn.type = 'button';
+      anchorBtn.className = 'candidate-option';
+      anchorBtn.innerHTML = '<span class="candidate-distance">Add anchor</span><span class="candidate-estimate">A single known timestamp</span>';
+      anchorBtn.addEventListener('click', () => {
+        close();
+        openAnchorTimePopover(candidate);
+      });
+
+      const stopBtn = document.createElement('button');
+      stopBtn.type = 'button';
+      stopBtn.className = 'candidate-option';
+      stopBtn.innerHTML = '<span class="candidate-distance">Add stop</span><span class="candidate-estimate">A real pause at this location</span>';
+      stopBtn.addEventListener('click', () => {
+        close();
+        openStopPopover(candidate);
+      });
+
+      list.append(anchorBtn, stopBtn);
+      container.append(list);
+    });
+  }
+
+  function openStopPopover(candidate) {
+    mapModule.openAnchorPopup(candidate.lat, candidate.lon, (container, close) => {
+      const heading = document.createElement('p');
+      heading.className = 'popover-heading';
+      heading.textContent = `Stop at ${formatDistanceKm(candidate.distance_from_start)}`;
+      container.append(heading);
+
+      const modesEl = document.createElement('div');
+      modesEl.className = 'time-toggle-modes segmented';
+      modesEl.setAttribute('role', 'tablist');
+      const durationModeBtn = document.createElement('button');
+      durationModeBtn.type = 'button';
+      durationModeBtn.className = 'segmented-option is-active';
+      durationModeBtn.textContent = 'Duration only';
+      const startEndModeBtn = document.createElement('button');
+      startEndModeBtn.type = 'button';
+      startEndModeBtn.className = 'segmented-option';
+      startEndModeBtn.textContent = 'Start & end time';
+      modesEl.append(durationModeBtn, startEndModeBtn);
+      container.append(modesEl);
+
+      const durationContainer = document.createElement('div');
+      const startEndContainer = document.createElement('div');
+      startEndContainer.className = 'hidden';
+
+      const arrivalLabel = document.createElement('p');
+      arrivalLabel.className = 'popover-hint';
+      arrivalLabel.textContent = 'Arrival';
+      const arrivalContainer = document.createElement('div');
+      const departureLabel = document.createElement('p');
+      departureLabel.className = 'popover-hint';
+      departureLabel.textContent = 'Departure';
+      const departureContainer = document.createElement('div');
+      startEndContainer.append(arrivalLabel, arrivalContainer, departureLabel, departureContainer);
+
+      container.append(durationContainer, startEndContainer);
+
+      const confirmBtn = document.createElement('button');
+      confirmBtn.type = 'button';
+      confirmBtn.className = 'primary-button popover-confirm';
+      confirmBtn.textContent = 'Add stop';
+      confirmBtn.disabled = true;
+      container.append(confirmBtn);
+
+      let mode = 'duration';
+      let durationResult = { isValid: false };
+      let arrivalResult = { isValid: false };
+      let departureResult = { isValid: false };
+
+      function updateConfirmAvailability() {
+        if (mode === 'duration') {
+          confirmBtn.disabled = !durationResult.isValid;
+        } else {
+          confirmBtn.disabled =
+            !arrivalResult.isValid || !departureResult.isValid || !(departureResult.resolvedDate > arrivalResult.resolvedDate);
+        }
+      }
+
+      createTimeToggle({
+        container: durationContainer,
+        variant: 'durationOnly',
+        getReferenceTime: getStartTime,
+        onChange: (result) => {
+          durationResult = result;
+          updateConfirmAvailability();
+        },
+      });
+
+      createTimeToggle({
+        container: arrivalContainer,
+        variant: 'durationOrTimeOfDay',
+        getReferenceTime: getStartTime,
+        onChange: (result) => {
+          arrivalResult = result;
+          updateConfirmAvailability();
+        },
+      });
+
+      createTimeToggle({
+        container: departureContainer,
+        variant: 'durationOrTimeOfDay',
+        getReferenceTime: getStartTime,
+        onChange: (result) => {
+          departureResult = result;
+          updateConfirmAvailability();
+        },
+      });
+
+      function setMode(nextMode) {
+        mode = nextMode;
+        durationModeBtn.classList.toggle('is-active', mode === 'duration');
+        startEndModeBtn.classList.toggle('is-active', mode !== 'duration');
+        durationContainer.classList.toggle('hidden', mode !== 'duration');
+        startEndContainer.classList.toggle('hidden', mode === 'duration');
+        updateConfirmAvailability();
+      }
+      durationModeBtn.addEventListener('click', () => setMode('duration'));
+      startEndModeBtn.addEventListener('click', () => setMode('startEnd'));
+
+      confirmBtn.addEventListener('click', () => {
+        if (mode === 'duration') {
+          if (!durationResult.isValid) {
+            return;
+          }
+          stopsModule.addStop({
+            lat: candidate.lat,
+            lon: candidate.lon,
+            distanceFromStart: candidate.distance_from_start,
+            mode: 'duration',
+            durationSeconds: durationResult.durationSeconds,
+          });
+        } else {
+          if (!arrivalResult.isValid || !departureResult.isValid || !(departureResult.resolvedDate > arrivalResult.resolvedDate)) {
+            return;
+          }
+          stopsModule.addStop({
+            lat: candidate.lat,
+            lon: candidate.lon,
+            distanceFromStart: candidate.distance_from_start,
+            mode: 'startEnd',
+            arrival: arrivalResult.resolvedDate,
+            departure: departureResult.resolvedDate,
+          });
+        }
+        close();
+      });
+    });
+  }
+
   /**
-   * Resolves a route click to one or more candidate track points, then
-   * walks the user through picking a time and confirming the new anchor.
-   * Pass this straight to `mapModule.renderRoute` as `onRouteClick`.
+   * Resolves a route click to one or more candidate track points, then lets
+   * the user choose whether to add an anchor or a stop there before picking
+   * its time(s). Pass this straight to `mapModule.renderRoute` as
+   * `onRouteClick`.
    */
   async function handleRouteClick(lat, lon) {
     if (!getStartTimeResult().isValid) {
@@ -151,7 +315,7 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
       if (candidates.length > 1) {
         openCandidatePicker(candidates);
       } else {
-        openAnchorTimePopover(candidates[0]);
+        openKindChoicePopover(candidates[0]);
       }
     } catch (error) {
       console.error(error);

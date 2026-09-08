@@ -5,7 +5,7 @@
 import * as mapModule from './map.js';
 import { formatDateTime, formatDistanceKm } from './format.js';
 
-/** @typedef {{ id: number, distanceFromStart: number, timestamp: Date }} Anchor */
+/** @typedef {{ id: number, distanceFromStart: number, timestamp: Date, source: 'user'|'photo' }} Anchor */
 
 /** @type {Anchor[]} */
 let anchors = [];
@@ -61,7 +61,8 @@ function render() {
 
     const distanceEl = document.createElement('span');
     distanceEl.className = 'anchor-row-distance';
-    distanceEl.textContent = formatDistanceKm(anchor.distanceFromStart);
+    const prefix = anchor.source === 'photo' ? '📷 ' : '';
+    distanceEl.textContent = prefix + formatDistanceKm(anchor.distanceFromStart);
 
     const timeEl = document.createElement('span');
     timeEl.className = 'anchor-row-time';
@@ -101,12 +102,14 @@ function render() {
  * @param {number} anchor.lon
  * @param {number} anchor.distanceFromStart - meters along the route; used for sidebar/pin ordering
  * @param {Date} anchor.timestamp - resolved arrival time at this point
+ * @param {'user'|'photo'} [anchor.source] - how this anchor was created; defaults to 'user' (map-click/manual)
  * @returns {number} the assigned anchor id, for later `removeAnchor` calls
  */
-export function addAnchor({ lat, lon, distanceFromStart, timestamp }) {
+export function addAnchor({ lat, lon, distanceFromStart, timestamp, source = 'user' }) {
   const id = nextId++;
-  anchors.push({ id, distanceFromStart, timestamp });
+  anchors.push({ id, distanceFromStart, timestamp, source });
   mapModule.addMarker(id, lat, lon, anchors.length, {
+    kind: source === 'photo' ? 'photo' : 'anchor',
     onClick: (clickedId) => highlightRow(clickedId),
   });
   render();

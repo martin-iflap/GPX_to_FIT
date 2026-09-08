@@ -1,7 +1,7 @@
 """Shared data model: the point/track/anchor types every core module reads and writes."""
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 
 
@@ -104,22 +104,121 @@ class Anchor:
     Attributes:
         distance_from_start: Distance in meters from the track start.
         timestamp: The known time at this point.
-        source: "user" | "photo".
+        source: "user" | "photo" | "stop_arrival" | "stop_departure".
     """
     distance_from_start: float
     timestamp: datetime
     source: str
 
 
+@dataclass
+class RawStop:
+    """A frontend-provided stop candidate before normalization.
+
+    A stop is a real pause at one location: distinct arrival and departure
+    timestamps at the same distance_from_start. Exactly one of
+    `distance_from_start` or (`lat`, `lon`) must be given (resolved the same
+    way as `RawAnchor`). Exactly one of `duration` (Mode A: duration-only —
+    the arrival time is derived from the normal pacing model, departure is
+    arrival + duration) or (`start_timestamp`, `end_timestamp`) (Mode B:
+    explicit arrival and departure) must be given.
+    `pacing.stops.resolve_stops` resolves a RawStop into a concrete
+    `ResolvedStop`.
+
+    Attributes:
+        distance_from_start: Distance in meters from the track start, if known directly.
+        lat: Latitude of the stop, used for nearest-point resolution when distance_from_start isn't given.
+        lon: Longitude of the stop, used the same way as lat.
+        duration: Length of the pause, for Mode A (duration-only).
+        start_timestamp: Arrival time, for Mode B (explicit start/end).
+        end_timestamp: Departure time, for Mode B (explicit start/end).
+    """
+    distance_from_start: float | None = None
+    lat: float | None = None
+    lon: float | None = None
+    duration: timedelta | None = None
+    start_timestamp: datetime | None = None
+    end_timestamp: datetime | None = None
+
+
+@dataclass
+class ResolvedStop:
+    """A stop resolved to a concrete distance and (arrival, departure) pair.
+
+    Attributes:
+        distance_from_start: Distance in meters from the track start.
+        arrival: The time the stop began.
+        departure: The time the stop ended. Always later than arrival.
+    """
+    distance_from_start: float
+    arrival: datetime
+    departure: datetime
+
+
+@dataclass
+class ModeAStop:
+    """A duration-only stop pending pacing (Mode A): not yet resolved to a
+    fixed arrival/departure — pacing.combine derives its arrival as the
+    natural gradient-paced timestamp at this distance and adds `duration`
+    for departure.
+
+    Attributes:
+        distance_from_start: Distance in meters from the track start.
+        duration: Length of the pause.
+    """
+    distance_from_start: float
+    duration: timedelta
+
+
+@dataclass
+class RawPhotoAnchor:
+    """A GPS + timestamp reading, read client-side from one photo's EXIF metadata.
+
+    Attributes:
+        lat: Latitude read from the photo's EXIF GPS tag, in degrees.
+        lon: Longitude read from the photo's EXIF GPS tag, in degrees.
+        timestamp: Capture time read from the photo's EXIF metadata.
+    """
+    lat: float
+    lon: float
+    timestamp: datetime
+
+
+@dataclass
+class ResolvedPhotoAnchor:
+    """Outcome of resolving one RawPhotoAnchor against the track.
+
+    Attributes:
+        distance_from_start: Matched track point's distance from start, in meters.
+        lat: Matched track point's latitude, in degrees.
+        lon: Matched track point's longitude, in degrees.
+        timestamp: The photo's own timestamp, carried through unchanged.
+        status: "ok" if the match is within MAX_MATCH_DISTANCE_M, "too_far" otherwise.
+        gap_m: Distance in meters between the photo's raw GPS and the matched point.
+    """
+    distance_from_start: float
+    lat: float
+    lon: float
+    timestamp: datetime
+    status: str
+    gap_m: float
+
+
 # TODO:
-# 1. Check the limits. (fallback would be Enri maps). day_1 = 1803 requests(1%).
-# 2. Read the test_files and verify they are all looking good.
-# 3. Add the padding, device name and stops to ui and also backend (and possibly think of more useful data user could add) and add JS tests while doing so.
-# 4. Add the photo anchors feature
-# 5. Implement surface + max speed capping speed adjustments
+# 1. Check the limits. (fallback would be Enri maps). day_1 = 1803 requests(1%). day_2 = 642 requests. day_3 = 788 requests
+# 5. Implement surface + max speed capping speed adjustments.
 # 6. Add the graph with activity data below the map once converted.
 # 7. Make sure the app works also for phones.
 # 8. Add cycling sport type. It will require separate speed computing logic and all.
 
 
 # take a look at the PyCharm MCP for Claude
+# (Get-ChildItem -Recurse -File | Get-Content | Measure-Object).Count
+
+# the stop window is too tall if start and end time are to be entered.
+# make sure the stops are included in anchor prediction times.
+# if photo upload fails display the message but have a timeout on it.
+# make sure the JS files are as simple as possible and that the code is good quality.
+# we want as much logic in python as possible
+# create a conftest.py file for shared fixtures and functions.
+# finally properly understand the resolve anchor bounds.

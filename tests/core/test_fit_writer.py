@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from fit_tool.fit_file import FitFile
+from fit_tool.profile.messages.file_id_message import FileIdMessage
 from fit_tool.profile.messages.lap_message import LapMessage
 from fit_tool.profile.messages.record_message import RecordMessage
 from fit_tool.profile.profile_type import Sport
@@ -75,7 +76,7 @@ class TestWriteFitValidation:
 
 
 class TestWriteFitOutput:
-    def _build_track(self, sport: SportType | None) -> Track:
+    def _build_track(self, sport: SportType | None, device: str | None = None) -> Track:
         return Track(
             points=[
                 _point(45.0, 7.0, 100.0, 0.0, datetime(2024, 1, 1, 8, 0, 0)),
@@ -83,6 +84,7 @@ class TestWriteFitOutput:
                 _point(45.002, 7.0, 120.0, 250.0, datetime(2024, 1, 1, 8, 1, 0)),
             ],
             sport=sport,
+            device=device,
         )
 
     def test_produces_nonempty_bytes(self):
@@ -135,6 +137,16 @@ class TestWriteFitOutput:
         decoded = FitFile.from_bytes(write_fit(self._build_track(None)))
         lap = next(r.message for r in decoded.records if isinstance(r.message, LapMessage))
         assert lap.sport == Sport.RUNNING.value
+
+    def test_device_name_is_set_as_product_name(self):
+        decoded = FitFile.from_bytes(write_fit(self._build_track(SportType.RUNNING, device="My Watch")))
+        file_id = next(r.message for r in decoded.records if isinstance(r.message, FileIdMessage))
+        assert file_id.product_name == "My Watch"
+
+    def test_no_device_name_omits_product_name(self):
+        decoded = FitFile.from_bytes(write_fit(self._build_track(SportType.RUNNING)))
+        file_id = next(r.message for r in decoded.records if isinstance(r.message, FileIdMessage))
+        assert not file_id.product_name
 
     def test_lap_summary_matches_track_totals(self):
         track = self._build_track(SportType.RUNNING)
