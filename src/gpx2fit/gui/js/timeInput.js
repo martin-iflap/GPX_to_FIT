@@ -6,7 +6,24 @@
 // mode pair, selected via `variant`.
 
 import { formatClock, formatDateTime, formatDuration } from './format.js';
-import { createDateTimeField, createTimeField } from './dateTimeField.js';
+import { createDateTimeField, createDaySelector, createTimeField } from './dateTimeField.js';
+
+/**
+ * How many distinct calendar days `referenceStart` through
+ * `referenceStart + totalDurationSeconds` spans, e.g. a start at 22:00 plus
+ * a 4-hour duration spans 2 calendar days despite being under 24h. Returns
+ * 1 (i.e. "single-day, no day selector needed") if the duration is unknown.
+ */
+function computeDayCount(referenceStart, totalDurationSeconds) {
+  if (!Number.isFinite(totalDurationSeconds) || totalDurationSeconds <= 0) {
+    return 1;
+  }
+  const end = new Date(referenceStart.getTime() + totalDurationSeconds * 1000);
+  const startMidnight = new Date(referenceStart.getFullYear(), referenceStart.getMonth(), referenceStart.getDate());
+  const endMidnight = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+  const dayDiff = Math.round((endMidnight.getTime() - startMidnight.getTime()) / 86_400_000);
+  return dayDiff + 1;
+}
 
 /**
  * Builds the segmented Duration/Absolute toggle described above and mounts
@@ -22,6 +39,13 @@ import { createDateTimeField, createTimeField } from './dateTimeField.js';
  * @param {() => Date|null} opts.getReferenceTime - the moment durations are
  *   measured from (the route's start time); re-read on every resolve, so the
  *   toggle stays correct if the reference changes after mount
+ * @param {() => number|null} [opts.getTotalDurationSeconds] - the whole
+ *   activity's total duration, used only by the 'durationOrTimeOfDay'
+ *   variant's "Time of day" mode to decide whether the activity spans more
+ *   than one calendar day. When it does, a thin day selector appears above
+ *   the time-of-day field (defaulting to day 1) so the same clock time can
+ *   be disambiguated between days; single-day activities are unaffected
+ *   (the selector never renders). Omitted entirely for the other variants.
  * @param {(result: {isValid: boolean, mode?: string, resolvedDate?: Date, durationSeconds?: number}) => void} opts.onChange -
  *   called with the freshly-resolved value whenever the user edits a field,
  *   switches mode, or the caller calls `refresh()`
@@ -32,6 +56,11 @@ import { createDateTimeField, createTimeField } from './dateTimeField.js';
  * @param {number} [opts.initialDurationSeconds] - pre-fills the Duration
  *   fields (hours/minutes) regardless of which mode ends up active, so
  *   switching tabs later still shows a sensible value instead of 0h 00m
+ * @param {'duration'|'timeOfDay'|'end'} [opts.initialMode] - which tab opens
+ *   initially when there's no `initialTimeOfDay` to imply it (e.g. a stop's
+ *   departure toggle, which has no reasonable time to pre-fill but should
+ *   still open on the same tab as its arrival toggle); ignored if
+ *   `initialTimeOfDay` is set, since that already forces the other-key tab
  * @returns {{ refresh: () => void, getResult: () => object }} `refresh()`
  *   re-resolves and re-renders the preview against the current reference
  *   time (call this if `getReferenceTime()`'s value changes elsewhere);
@@ -41,12 +70,14 @@ export function createTimeToggle({
   container,
   variant,
   getReferenceTime,
+  getTotalDurationSeconds,
   onChange,
   initialTimeOfDay,
   initialDurationSeconds,
+  initialMode,
 }) {
   const isDurationOnly = variant === 'durationOnly';
-  const state = { mode: 'duration' };
+  const state = { mode: 'duration', dayOffset: 0 };
   const otherKey = variant === 'durationOrEnd' ? 'end' : 'timeOfDay';
 
   const modesEl = document.createElement('div');
@@ -111,6 +142,7 @@ export function createTimeToggle({
   let otherValue = null;
   let timeOfDayField = null; // only set for the 'timeOfDay' branch, so initialTimeOfDay can prefill it
   let endDateTimeField = null; // only set for the 'end' branch, so its date can default to the start's
+  let daySelector = null; // only set for the 'timeOfDay' branch; stays hidden on single-day activities
 
   if (!isDurationOnly) {
     if (otherKey === 'end') {
@@ -124,10 +156,25 @@ export function createTimeToggle({
         },
       });
     } else {
+      // Stacked vertically (day selector above the clock boxes) rather than
+      // inline with them, so it reads as "which day, then which time"
+      // instead of competing for the same row.
+      const timeOfDayStack = document.createElement('div');
+      timeOfDayStack.className = 'time-of-day-stack';
+      otherFields.append(timeOfDayStack);
+
+      daySelector = createDaySelector({
+        container: timeOfDayStack,
+        onChange: (dayIndex) => {
+          state.dayOffset = dayIndex;
+          updatePreview();
+        },
+      });
+
       // No quick-picks here: an anchor's arrival time is meant to be precise
       // (that's the whole point of adding it), not rounded to a half-hour.
       timeOfDayField = createTimeField({
-        container: otherFields,
+        container: timeOfDayStack,
         ariaLabel: 'Time of day',
         quickPicks: false,
         onChange: (value) => {
@@ -141,7 +188,24 @@ export function createTimeToggle({
   const previewEl = document.createElement('p');
   previewEl.className = 'time-toggle-preview';
 
-  container.append(modesEl, fieldsEl, previewEl);
+  // Only the static #startTimeToggle in index.html carries this class in
+  // markup; every toggle built at runtime (anchor/stop popovers) needs it
+  // applied here so it gets the same gap above its fields instead of
+  // sitting flush against the mode buttons.
+  container.classList.add('time-toggle');
+  // isDurationOnly never populates modesEl with buttons (see above) — skip
+  // mounting it too, otherwise its empty `.segmented` background/padding
+  // still renders as a blank grey box with nothing inside it. Add the
+  // equivalent spacing back as plain padding (see .time-toggle--duration-only
+  // in styles.css) so the fields don't end up sitting flush against whatever
+  // is above this toggle in the caller's own layout (e.g. the stop
+  // popover's outer Duration-only/Start & end time buttons).
+  if (!isDurationOnly) {
+    container.append(modesEl);
+  } else {
+    container.classList.add('time-toggle--duration-only');
+  }
+  container.append(fieldsEl, previewEl);
 
   function currentReference() {
     const ref = getReferenceTime();
@@ -183,13 +247,25 @@ export function createTimeToggle({
       return { isValid: false };
     }
     const resolvedDate = new Date(reference);
+    resolvedDate.setDate(resolvedDate.getDate() + state.dayOffset);
     resolvedDate.setHours(otherValue.hours, otherValue.minutes, 0, 0);
     const durationSeconds = (resolvedDate.getTime() - reference.getTime()) / 1000;
     return { isValid: durationSeconds >= 0, mode: 'timeOfDay', resolvedDate, durationSeconds };
   }
 
+  function refreshDaySelector(reference) {
+    if (!daySelector) {
+      return;
+    }
+    const totalDurationSeconds = typeof getTotalDurationSeconds === 'function' ? getTotalDurationSeconds() : null;
+    const dayCount = reference ? computeDayCount(reference, totalDurationSeconds) : 1;
+    daySelector.setDayCount(dayCount, reference);
+    state.dayOffset = daySelector.getDayIndex();
+  }
+
   function updatePreview() {
     const reference = currentReference();
+    refreshDaySelector(reference);
     if (!reference) {
       previewEl.textContent =
         variant === 'durationOrEnd'
@@ -254,6 +330,8 @@ export function createTimeToggle({
 
   if (!isDurationOnly && initialTimeOfDay && timeOfDayField) {
     timeOfDayField.setValue(initialTimeOfDay.hours, initialTimeOfDay.minutes);
+    setMode(otherKey);
+  } else if (!isDurationOnly && initialMode === otherKey) {
     setMode(otherKey);
   } else {
     setMode('duration');

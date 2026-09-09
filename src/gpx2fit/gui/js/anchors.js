@@ -123,6 +123,13 @@ export function removeAnchor(id) {
   render();
 }
 
+/** Removes every anchor and its map pin (e.g. before loading a new route) and re-renders the list. */
+export function resetAnchors() {
+  anchors.forEach((a) => mapModule.removeMarker(a.id));
+  anchors = [];
+  render();
+}
+
 /** @returns {Anchor[]} a defensive copy of the current anchors, in insertion order. */
 export function getAnchors() {
   return anchors.map((a) => ({ ...a }));

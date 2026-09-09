@@ -364,6 +364,15 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   gap: var(--space-2);
 }
 
+/* Duration-only toggles (e.g. a stop's "Duration only" mode) have no mode
+   buttons of their own, so there's nothing above their fields to create a
+   gap via .time-toggle's flex gap — this restores that spacing as real
+   padding instead, so they don't sit flush against whatever the caller put
+   above them. */
+.time-toggle--duration-only {
+  padding-top: var(--space-3);
+}
+
 .duration-fields,
 .other-fields {
   display: flex;
@@ -411,9 +420,20 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   flex: 1;
 }
 
-.time-field-input {
-  width: 100%;
+.time-field-boxes {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+}
+
+.time-field-box {
+  width: 3.30rem;
   text-align: center;
+}
+
+.time-field-colon {
+  color: var(--text-tertiary);
 }
 
 .time-field-dropdown {
@@ -450,6 +470,83 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 }
 
 .time-field-option:hover {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+/* Stacks the (optional, multi-day-only) day selector above the time-of-day
+   clock boxes inside a 'durationOrTimeOfDay' toggle's "Time of day" mode. */
+.time-of-day-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-2);
+  width: 100%;
+}
+
+/* ---------- day selector ---------- */
+/* Thin "Day N · <date>" button + dropdown, shown only above a time-of-day
+   field when the activity spans more than one calendar day — see
+   createDaySelector in dateTimeField.js. */
+
+.day-selector {
+  position: relative;
+}
+
+.day-selector-button {
+  width: 100%;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated-2);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 500;
+  padding: 0.35rem 0.6rem;
+  cursor: pointer;
+  text-align: center;
+  transition: background var(--transition), color var(--transition);
+}
+
+.day-selector-button:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.day-selector-dropdown {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  left: 0;
+  right: 0;
+  z-index: 20;
+  max-height: 10rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  box-shadow: 0 20px 60px var(--shadow-color);
+}
+
+.day-selector-option {
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.4rem 0.6rem;
+  cursor: pointer;
+  text-align: center;
+  transition: background var(--transition), color var(--transition);
+}
+
+.day-selector-option:hover {
   background: var(--accent);
   color: var(--accent-contrast);
 }
@@ -702,6 +799,22 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   width: 240px !important;
   display: flex;
   flex-direction: column;
+  gap: var(--space-3);
+  transition: width 220ms ease;
+}
+
+/* Only the stop popover's "Start & end time" mode switches to this —
+   everything else (the anchor popover, and the stop popover's "Duration
+   only" mode) stays at the width above. Wide enough that each of the two
+   columns gets the same ~240px an arrival/departure toggle already needs
+   when stacked full-width, so nothing inside them wraps. */
+.anchor-popover .leaflet-popup-content.is-wide {
+  width: 492px !important;
+}
+
+.stop-time-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: var(--space-3);
 }
 

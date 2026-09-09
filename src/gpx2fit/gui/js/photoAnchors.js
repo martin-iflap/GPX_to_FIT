@@ -22,8 +22,28 @@ function setEmptyState() {
   }
 }
 
-/** Adds a status row for a dropped file and returns a setter to update its status text/class as processing progresses. */
-function addRow(fileName) {
+/**
+ * Clears every dropped-file row (e.g. before loading a new route) — the
+ * anchors those rows created are removed separately, by anchors.js's own
+ * reset, since this module never tracks anchor ids beyond a single row's
+ * delete button.
+ */
+export function resetPhotoDrop() {
+  if (listEl) {
+    listEl.innerHTML = '';
+  }
+  fileCount = 0;
+  setEmptyState();
+}
+
+/**
+ * Adds a status row for a dropped file. Returns `{ setStatus, setAnchorId }`:
+ * `setStatus` updates the row's status text/class as processing progresses,
+ * `setAnchorId` records the id of the anchor this row's photo resolved to
+ * (once known) so the row's delete button can remove that anchor too, not
+ * just its own row.
+ */
+function addRow(fileName, removeAnchor) {
   fileCount += 1;
   setEmptyState();
 
@@ -46,12 +66,33 @@ function addRow(fileName) {
 
   textEl.append(nameEl, statusEl);
   info.append(textEl);
-  row.append(info);
+
+  let anchorId = null;
+  const deleteBtn = document.createElement('button');
+  deleteBtn.type = 'button';
+  deleteBtn.className = 'anchor-row-delete';
+  deleteBtn.setAttribute('aria-label', 'Remove');
+  deleteBtn.textContent = '×';
+  deleteBtn.addEventListener('click', () => {
+    if (anchorId !== null) {
+      removeAnchor(anchorId);
+    }
+    row.remove();
+    fileCount -= 1;
+    setEmptyState();
+  });
+
+  row.append(info, deleteBtn);
   listEl.append(row);
 
-  return (text, isProblem = false) => {
-    statusEl.textContent = text;
-    row.classList.toggle('is-problem', isProblem);
+  return {
+    setStatus: (text, isProblem = false) => {
+      statusEl.textContent = text;
+      row.classList.toggle('is-problem', isProblem);
+    },
+    setAnchorId: (id) => {
+      anchorId = id;
+    },
   };
 }
 
@@ -89,13 +130,13 @@ async function readPhotoMetadata(file) {
 
 /**
  * Reads EXIF metadata for one dropped file and reports the outcome on its
- * own status row. Returns the extracted `{ lat, lon, timestamp, setRowStatus }`
+ * own status row. Returns the extracted `{ lat, lon, timestamp, setRowStatus, setAnchorId }`
  * for files with usable metadata, or `null` for anything that can't be
  * batched into a route-resolution call (never throws — failures are
  * reported on the row and swallowed here).
  */
-async function readFile(file) {
-  const setRowStatus = addRow(file.name);
+async function readFile(file, removeAnchor) {
+  const { setStatus: setRowStatus, setAnchorId } = addRow(file.name, removeAnchor);
 
   if (!file.type.startsWith('image/')) {
     setRowStatus('Not a photo', true);
@@ -116,7 +157,7 @@ async function readFile(file) {
     return null;
   }
 
-  return { ...metadata, setRowStatus };
+  return { ...metadata, setRowStatus, setAnchorId };
 }
 
 /**
@@ -136,9 +177,12 @@ async function readFile(file) {
  *   pyodideBridge.resolvePhotoAnchors, reused as-is
  * @param {(anchor: {lat: number, lon: number, distanceFromStart: number, timestamp: Date, source: string}) => number} opts.addAnchor -
  *   anchors.js's addAnchor, reused as-is
+ * @param {(id: number) => void} opts.removeAnchor - anchors.js's removeAnchor, reused as-is;
+ *   called when a successfully-resolved photo's row is dismissed, so removing the row also
+ *   removes the anchor it created
  * @param {(message: string, isError?: boolean) => void} opts.setStatus
  */
-export function initPhotoDrop({ dropzoneEl, inputEl, listEl: list, emptyStateEl: emptyState, isTrackReady, resolvePhotoAnchors, addAnchor, setStatus }) {
+export function initPhotoDrop({ dropzoneEl, inputEl, listEl: list, emptyStateEl: emptyState, isTrackReady, resolvePhotoAnchors, addAnchor, removeAnchor, setStatus }) {
   listEl = list;
   emptyStateEl = emptyState;
   setEmptyState();
@@ -152,7 +196,7 @@ export function initPhotoDrop({ dropzoneEl, inputEl, listEl: list, emptyStateEl:
       return;
     }
 
-    const readings = (await Promise.all([...files].map(readFile))).filter(Boolean);
+    const readings = (await Promise.all([...files].map((file) => readFile(file, removeAnchor)))).filter(Boolean);
     if (readings.length === 0) {
       return;
     }
@@ -174,13 +218,14 @@ export function initPhotoDrop({ dropzoneEl, inputEl, listEl: list, emptyStateEl:
         reading.setRowStatus(`Too far from route (${formatGapMeters(result.gapM)} away)`, true);
         return;
       }
-      addAnchor({
+      const anchorId = addAnchor({
         lat: result.lat,
         lon: result.lon,
         distanceFromStart: result.distanceFromStart,
         timestamp: reading.timestamp,
         source: 'photo',
       });
+      reading.setAnchorId(anchorId);
       reading.setRowStatus('Anchor added');
     });
   }

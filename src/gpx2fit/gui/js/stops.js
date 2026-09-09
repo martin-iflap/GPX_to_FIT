@@ -137,6 +137,13 @@ export function removeStop(id) {
   render();
 }
 
+/** Removes every stop and its map pin (e.g. before loading a new route) and re-renders the list. */
+export function resetStops() {
+  stops.forEach((s) => mapModule.removeMarker(s.id));
+  stops = [];
+  render();
+}
+
 /** @returns {Stop[]} a defensive copy of the current stops, in insertion order. */
 export function getStops() {
   return stops.map((s) => ({ ...s }));

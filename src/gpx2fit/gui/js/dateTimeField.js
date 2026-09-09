@@ -28,23 +28,17 @@ function nearestSlotIndex(now) {
   return Math.round(totalMinutes / SLOT_STEP_MINUTES) % SLOTS_PER_DAY;
 }
 
-/** @returns {{hours: number, minutes: number}|null} parsed "H:MM"/"HH:MM", or null if `text` isn't one. */
-function parseTimeText(text) {
-  const match = /^(\d{1,2}):(\d{2})$/.exec(text.trim());
-  if (!match) {
-    return null;
-  }
-  const hours = Number(match[1]);
-  const minutes = Number(match[2]);
-  if (hours > 23 || minutes > 59) {
-    return null;
-  }
-  return { hours, minutes };
-}
-
 /**
- * A typeable "HH:MM" field, optionally with a scrollable dropdown of every
- * half-hour of the day as a click-to-fill shortcut.
+ * A typeable "HH" / "MM" pair of boxes, optionally with a scrollable
+ * dropdown of every half-hour of the day as a click-to-fill shortcut.
+ *
+ * Each box only ever holds a value valid for its own range (0-23 / 0-59):
+ * a digit that can't start a valid two-digit value in that range (3-9 for
+ * hours, 6-9 for minutes) is treated as already complete rather than making
+ * the user type a second digit, and a completed hour auto-advances focus to
+ * the minutes box. This is what lets entry work without a literal ":"
+ * keystroke, without the ambiguity a single free-typed "HH:MM" field would
+ * have to guess around.
  *
  * @param {object} opts
  * @param {HTMLElement} opts.container
@@ -53,30 +47,101 @@ function parseTimeText(text) {
  *   (default true). Turn this off where the user is expected to enter a
  *   precise time rather than pick a round one (e.g. anchor arrival times).
  * @param {(value: {hours: number, minutes: number}|null) => void} opts.onChange -
- *   called with the parsed value, or null while the text field holds
- *   something unparseable (including empty)
+ *   called with the value once both boxes hold one, or null while either
+ *   box is incomplete (including empty)
  * @returns {{ setValue: (hours: number, minutes: number) => void }}
  */
 export function createTimeField({ container, ariaLabel = 'Time', quickPicks = true, onChange }) {
   const wrapper = document.createElement('div');
   wrapper.className = 'time-field';
 
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.inputMode = 'numeric';
-  input.placeholder = 'HH:MM';
-  input.className = 'text-input time-field-input';
-  input.setAttribute('aria-label', ariaLabel);
+  const boxes = document.createElement('div');
+  boxes.className = 'time-field-boxes';
 
-  wrapper.append(input);
+  const hoursInput = document.createElement('input');
+  hoursInput.type = 'text';
+  hoursInput.inputMode = 'numeric';
+  hoursInput.maxLength = 2;
+  hoursInput.placeholder = 'HH';
+  hoursInput.className = 'text-input time-field-box';
+  hoursInput.setAttribute('aria-label', `${ariaLabel} hours`);
+
+  const colon = document.createElement('span');
+  colon.className = 'time-field-colon';
+  colon.textContent = ':';
+  colon.setAttribute('aria-hidden', 'true');
+
+  const minutesInput = document.createElement('input');
+  minutesInput.type = 'text';
+  minutesInput.inputMode = 'numeric';
+  minutesInput.maxLength = 2;
+  minutesInput.placeholder = 'MM';
+  minutesInput.className = 'text-input time-field-box';
+  minutesInput.setAttribute('aria-label', `${ariaLabel} minutes`);
+
+  boxes.append(hoursInput, colon, minutesInput);
+  wrapper.append(boxes);
   container.append(wrapper);
 
-  input.addEventListener('input', () => onChange(parseTimeText(input.value)));
+  function pairValue() {
+    if (!/^\d{2}$/.test(hoursInput.value) || !/^\d{2}$/.test(minutesInput.value)) {
+      return null;
+    }
+    return { hours: Number(hoursInput.value), minutes: Number(minutesInput.value) };
+  }
+
+  function notifyChange() {
+    onChange(pairValue());
+  }
+
+  hoursInput.addEventListener('input', () => {
+    const digits = hoursInput.value.replace(/\D/g, '').slice(0, 2);
+    if (digits.length === 2) {
+      hoursInput.value = pad(Math.min(Number(digits), 23));
+      minutesInput.focus();
+      minutesInput.select();
+    } else if (digits.length === 1 && Number(digits) >= 3) {
+      // No valid two-digit hour starts with 3-9 (30-99 is out of range), so
+      // a single such digit is already an unambiguous, complete hour.
+      hoursInput.value = pad(Number(digits));
+      minutesInput.focus();
+      minutesInput.select();
+    } else {
+      hoursInput.value = digits;
+    }
+    notifyChange();
+  });
+
+  minutesInput.addEventListener('input', () => {
+    const digits = minutesInput.value.replace(/\D/g, '').slice(0, 2);
+    if (digits.length === 2) {
+      minutesInput.value = pad(Math.min(Number(digits), 59));
+    } else if (digits.length === 1 && Number(digits) >= 6) {
+      // No valid two-digit minute starts with 6-9 (60-99 is out of range).
+      minutesInput.value = pad(Number(digits));
+    } else {
+      minutesInput.value = digits;
+    }
+    notifyChange();
+  });
+
+  minutesInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Backspace' && minutesInput.value === '') {
+      hoursInput.focus();
+      hoursInput.select();
+    }
+  });
 
   if (quickPicks) {
     const dropdown = document.createElement('div');
     dropdown.className = 'time-field-dropdown hidden';
     wrapper.append(dropdown);
+
+    // Tracks whichever box last received focus, so a quick-pick click can
+    // restore focus to it without moving focus to the *other* box — moving
+    // focus would fire that box's own 'focus' listener and reopen the
+    // dropdown right after this closes it.
+    let lastFocused = hoursInput;
 
     function closeDropdown() {
       dropdown.classList.add('hidden');
@@ -91,14 +156,15 @@ export function createTimeField({ container, ariaLabel = 'Time', quickPicks = tr
         option.className = 'time-field-option';
         option.textContent = label;
         // Selection fires on 'click', but focus-stealing is blocked on
-        // 'mousedown' — otherwise the input would blur (closing this
+        // 'mousedown' — otherwise the boxes would blur (closing this
         // dropdown) before the click ever registers.
         option.addEventListener('mousedown', (event) => event.preventDefault());
         option.addEventListener('click', () => {
-          input.value = label;
-          onChange(parseTimeText(label));
+          hoursInput.value = pad(hours);
+          minutesInput.value = pad(minutes);
+          notifyChange();
           closeDropdown();
-          input.focus();
+          lastFocused.focus();
         });
         dropdown.append(option);
       });
@@ -110,20 +176,151 @@ export function createTimeField({ container, ariaLabel = 'Time', quickPicks = tr
       }
     }
 
-    input.addEventListener('focus', openDropdown);
-    input.addEventListener('blur', closeDropdown);
-    input.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') {
-        input.blur();
-      }
+    [hoursInput, minutesInput].forEach((input) => {
+      input.addEventListener('focus', () => {
+        lastFocused = input;
+        openDropdown();
+      });
+      // Focus moves between the two boxes as part of normal typing (e.g.
+      // auto-advance after the hour completes) — only actually close once
+      // focus has left the field entirely, not on every inter-box hop.
+      input.addEventListener('blur', () => {
+        window.setTimeout(() => {
+          if (!wrapper.contains(document.activeElement)) {
+            closeDropdown();
+          }
+        }, 0);
+      });
+      input.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+          input.blur();
+        }
+      });
     });
   }
 
   return {
     setValue(hours, minutes) {
-      input.value = `${pad(hours)}:${pad(minutes)}`;
+      hoursInput.value = pad(hours);
+      minutesInput.value = pad(minutes);
       onChange({ hours, minutes });
     },
+  };
+}
+
+/**
+ * A thin single-button day selector: shows "Day N · <date>" for the
+ * currently selected day and opens a dropdown of every day the activity
+ * spans on click — no typing, no calendar widget, just the valid choices.
+ * Used only above a 'timeOfDay' field on multi-day activities (see
+ * timeInput.js); the caller hides it entirely via `setDayCount(1, ...)`
+ * when the activity fits in a single day, so single-day activities see no
+ * change at all.
+ *
+ * @param {object} opts
+ * @param {HTMLElement} opts.container
+ * @param {(dayIndex: number) => void} opts.onChange - fired only when the
+ *   user actively picks a different day from the dropdown (0-based offset
+ *   from the activity's first day)
+ * @returns {{ setDayCount: (count: number, referenceDate: Date|null) => void, getDayIndex: () => number }}
+ */
+export function createDaySelector({ container, onChange }) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'day-selector hidden';
+
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'day-selector-button';
+  wrapper.append(button);
+
+  const dropdown = document.createElement('div');
+  dropdown.className = 'day-selector-dropdown hidden';
+  wrapper.append(dropdown);
+
+  container.append(wrapper);
+
+  let dayIndex = 0;
+  let dayCount = 1;
+  let reference = null;
+
+  function dayDate(offset) {
+    const date = new Date(reference);
+    date.setDate(date.getDate() + offset);
+    return date;
+  }
+
+  function dayLabel(offset) {
+    const dateStr = dayDate(offset).toLocaleDateString(undefined, {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+    });
+    return `Day ${offset + 1} · ${dateStr}`;
+  }
+
+  function renderButton() {
+    button.textContent = reference ? dayLabel(dayIndex) : 'Day 1';
+  }
+
+  function closeDropdown() {
+    dropdown.classList.add('hidden');
+  }
+
+  function openDropdown() {
+    dropdown.innerHTML = '';
+    for (let i = 0; i < dayCount; i++) {
+      const option = document.createElement('button');
+      option.type = 'button';
+      option.className = 'day-selector-option';
+      option.textContent = dayLabel(i);
+      // Same reasoning as time-field-option: block focus-stealing on
+      // mousedown so the button's own blur handler doesn't close this
+      // dropdown before the click ever registers.
+      option.addEventListener('mousedown', (event) => event.preventDefault());
+      option.addEventListener('click', () => {
+        dayIndex = i;
+        renderButton();
+        closeDropdown();
+        onChange(dayIndex);
+      });
+      dropdown.append(option);
+    }
+    dropdown.classList.remove('hidden');
+  }
+
+  button.addEventListener('click', () => {
+    if (dropdown.classList.contains('hidden')) {
+      openDropdown();
+    } else {
+      closeDropdown();
+    }
+  });
+  button.addEventListener('blur', () => {
+    window.setTimeout(() => {
+      if (!wrapper.contains(document.activeElement)) {
+        closeDropdown();
+      }
+    }, 0);
+  });
+
+  return {
+    // Re-derives which days are selectable. Clamps silently (no onChange
+    // call) if the previously-selected day no longer exists — this only
+    // happens if the reference/duration changes while the popover is open,
+    // which the caller re-derives on every keystroke anyway.
+    setDayCount(count, referenceDate) {
+      dayCount = Math.max(1, count);
+      reference = referenceDate;
+      if (dayIndex >= dayCount) {
+        dayIndex = 0;
+      }
+      wrapper.classList.toggle('hidden', dayCount <= 1);
+      if (dayCount <= 1) {
+        closeDropdown();
+      }
+      renderButton();
+    },
+    getDayIndex: () => dayIndex,
   };
 }
 

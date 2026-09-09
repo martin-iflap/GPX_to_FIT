@@ -26,6 +26,14 @@ import { formatClock, formatDistanceKm } from './format.js';
  * @returns {{ handleRouteClick: (lat: number, lon: number) => Promise<void> }}
  */
 export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalDistance, setStatus }) {
+  // The whole activity's total duration, so a time-of-day toggle can tell
+  // whether it needs a day selector — not the estimate helpers below, which
+  // are about a single anchor's ballpark position, not the route's overall span.
+  function getTotalDurationSeconds() {
+    const result = getStartTimeResult();
+    return result.isValid ? result.durationSeconds : null;
+  }
+
   // Rough, uniform-pace ballpark only — good enough to help the user tell
   // two candidate points apart in the disambiguation picker, and to seed
   // the time-of-day field below with a starting point they can correct.
@@ -47,12 +55,30 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
     return estimated ? `~${formatClock(estimated)} (uniform-pace estimate)` : '';
   }
 
+  // Prefilled times are a straight-line average-pace guess, not a fact —
+  // this makes that visible wherever a popover prefills from one, so it
+  // doesn't get mistaken for a precise computed arrival time.
+  function appendEstimateHint(container, estimate) {
+    if (!estimate) {
+      return;
+    }
+    const hint = document.createElement('p');
+    hint.className = 'popover-hint';
+    hint.textContent = 'Pre-filled time is an estimate — check and adjust.';
+    container.append(hint);
+  }
+
   function openAnchorTimePopover(candidate) {
     mapModule.openAnchorPopup(candidate.lat, candidate.lon, (container, close) => {
+      const estimate = estimateArrivalDate(candidate.distance_from_start);
+      const start = getStartTime();
+
       const heading = document.createElement('p');
       heading.className = 'popover-heading';
       heading.textContent = formatDistanceKm(candidate.distance_from_start);
       container.append(heading);
+
+      appendEstimateHint(container, estimate);
 
       const toggleContainer = document.createElement('div');
       container.append(toggleContainer);
@@ -64,14 +90,12 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
       confirmBtn.disabled = true;
       container.append(confirmBtn);
 
-      const estimate = estimateArrivalDate(candidate.distance_from_start);
-      const start = getStartTime();
-
       let lastResult = { isValid: false };
       createTimeToggle({
         container: toggleContainer,
         variant: 'durationOrTimeOfDay',
         getReferenceTime: getStartTime,
+        getTotalDurationSeconds,
         initialTimeOfDay: estimate ? { hours: estimate.getHours(), minutes: estimate.getMinutes() } : undefined,
         initialDurationSeconds: estimate && start ? (estimate.getTime() - start.getTime()) / 1000 : undefined,
         onChange: (result) => {
@@ -170,7 +194,10 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
   }
 
   function openStopPopover(candidate) {
-    mapModule.openAnchorPopup(candidate.lat, candidate.lon, (container, close) => {
+    mapModule.openAnchorPopup(candidate.lat, candidate.lon, (container, close, updateLayout) => {
+      const estimate = estimateArrivalDate(candidate.distance_from_start);
+      const start = getStartTime();
+
       const heading = document.createElement('p');
       heading.className = 'popover-heading';
       heading.textContent = `Stop at ${formatDistanceKm(candidate.distance_from_start)}`;
@@ -194,15 +221,35 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
       const startEndContainer = document.createElement('div');
       startEndContainer.className = 'hidden';
 
+      // Arrival and departure sit in side-by-side columns rather than
+      // stacked — stacking made this popover taller than the map pane.
+      // The estimate hint applies to both columns (arrival is prefilled from
+      // it; departure's default duration is measured from it), so it sits
+      // above them, spanning the full popover width, rather than inside
+      // either column.
+      appendEstimateHint(startEndContainer, estimate);
+
+      const columnsEl = document.createElement('div');
+      columnsEl.className = 'stop-time-columns';
+
+      const arrivalColumn = document.createElement('div');
       const arrivalLabel = document.createElement('p');
       arrivalLabel.className = 'popover-hint';
       arrivalLabel.textContent = 'Arrival';
+      arrivalColumn.append(arrivalLabel);
       const arrivalContainer = document.createElement('div');
+      arrivalColumn.append(arrivalContainer);
+
+      const departureColumn = document.createElement('div');
       const departureLabel = document.createElement('p');
       departureLabel.className = 'popover-hint';
       departureLabel.textContent = 'Departure';
+      departureColumn.append(departureLabel);
       const departureContainer = document.createElement('div');
-      startEndContainer.append(arrivalLabel, arrivalContainer, departureLabel, departureContainer);
+      departureColumn.append(departureContainer);
+
+      columnsEl.append(arrivalColumn, departureColumn);
+      startEndContainer.append(columnsEl);
 
       container.append(durationContainer, startEndContainer);
 
@@ -241,6 +288,9 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
         container: arrivalContainer,
         variant: 'durationOrTimeOfDay',
         getReferenceTime: getStartTime,
+        getTotalDurationSeconds,
+        initialTimeOfDay: estimate ? { hours: estimate.getHours(), minutes: estimate.getMinutes() } : undefined,
+        initialDurationSeconds: estimate && start ? (estimate.getTime() - start.getTime()) / 1000 : undefined,
         onChange: (result) => {
           arrivalResult = result;
           updateConfirmAvailability();
@@ -251,6 +301,11 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
         container: departureContainer,
         variant: 'durationOrTimeOfDay',
         getReferenceTime: getStartTime,
+        getTotalDurationSeconds,
+        // No reasonable dwell time to prefill, but it should still open on
+        // the same tab as arrival rather than defaulting to "Duration since
+        // start".
+        initialMode: 'timeOfDay',
         onChange: (result) => {
           departureResult = result;
           updateConfirmAvailability();
@@ -263,6 +318,40 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
         startEndModeBtn.classList.toggle('is-active', mode !== 'duration');
         durationContainer.classList.toggle('hidden', mode !== 'duration');
         startEndContainer.classList.toggle('hidden', mode === 'duration');
+
+        // Only this popover, and only this mode, gets to be wider — the
+        // width change is CSS-animated (see .is-wide in styles.css), while
+        // the height change (revealing the arrival/departure columns) lands
+        // instantly. Leaflet doesn't know the content resized until told, so
+        // rather than correcting once immediately and once at transitionend
+        // (which reads as two separate map jumps), re-check every frame for
+        // the width animation's duration — this pans the map in one
+        // continuous motion that tracks the popup as it grows. transitionend
+        // ends the loop as soon as the animation actually settles; the
+        // deadline below is just a safety net in case it never fires (e.g.
+        // a reduced-motion override skipping the transition).
+        const popupContent = container.closest('.leaflet-popup-content');
+        let settled = !popupContent;
+        if (popupContent) {
+          popupContent.classList.toggle('is-wide', mode === 'startEnd');
+          popupContent.addEventListener(
+            'transitionend',
+            (event) => {
+              if (event.propertyName === 'width') {
+                settled = true;
+              }
+            },
+            { once: true },
+          );
+        }
+        const deadline = performance.now() + 400;
+        (function trackResize(now) {
+          updateLayout();
+          if (!settled && now < deadline) {
+            requestAnimationFrame(trackResize);
+          }
+        })(performance.now());
+
         updateConfirmAvailability();
       }
       durationModeBtn.addEventListener('click', () => setMode('duration'));

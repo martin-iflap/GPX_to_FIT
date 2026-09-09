@@ -14,6 +14,21 @@
 let pyodidePromise = null;
 let pyodide = null;
 
+// Every exported call below sets shared globals on the one Pyodide runtime
+// and then runs Python that reads them (and several read/write the shared
+// `_track` global too). Two calls overlapping — e.g. clicking the route
+// while `convert()` is still in flight — could interleave their
+// globals.set()/runPythonAsync() calls and corrupt each other's inputs, so
+// every call is funneled through this one-at-a-time queue instead. A call
+// that throws still lets later ones run — only its own caller sees the error.
+let queueTail = Promise.resolve();
+
+function enqueue(task) {
+  const runPromise = queueTail.then(task);
+  queueTail = runPromise.then(() => undefined, () => undefined);
+  return runPromise;
+}
+
 async function ensurePyodide() {
   if (pyodide) {
     return pyodide;
@@ -91,10 +106,11 @@ for rel_path, content in json.loads(backend_files_json):
  * }>}
  */
 export async function parseGpx(bytes) {
-  const runtime = await ensurePyodide();
-  runtime.globals.set('gpx_bytes', bytes);
+  return enqueue(async () => {
+    const runtime = await ensurePyodide();
+    runtime.globals.set('gpx_bytes', bytes);
 
-  await runtime.runPythonAsync(`
+    await runtime.runPythonAsync(`
 from gpx2fit.core.gpx_reader import parse_gpx_bytes
 
 _track = parse_gpx_bytes(bytes(gpx_bytes.to_py()))
@@ -111,10 +127,11 @@ route_summary = {
 }
 `);
 
-  const toJsOpts = { create_proxies: false, dict_converter: Object.fromEntries };
-  const points = runtime.globals.get('route_points').toJs(toJsOpts);
-  const summary = runtime.globals.get('route_summary').toJs(toJsOpts);
-  return { points, summary };
+    const toJsOpts = { create_proxies: false, dict_converter: Object.fromEntries };
+    const points = runtime.globals.get('route_points').toJs(toJsOpts);
+    const summary = runtime.globals.get('route_summary').toJs(toJsOpts);
+    return { points, summary };
+  });
 }
 
 /**
@@ -127,18 +144,20 @@ route_summary = {
  * @returns {Promise<{lat: number, lon: number, distance_from_start: number}[]>}
  */
 export async function resolveAnchorCandidates(lat, lon) {
-  const runtime = await ensurePyodide();
-  runtime.globals.set('click_lat', lat);
-  runtime.globals.set('click_lon', lon);
+  return enqueue(async () => {
+    const runtime = await ensurePyodide();
+    runtime.globals.set('click_lat', lat);
+    runtime.globals.set('click_lon', lon);
 
-  await runtime.runPythonAsync(`
+    await runtime.runPythonAsync(`
 from gpx2fit.core.pacing.anchors import nearest_point_candidates
 
 _anchor_candidates = nearest_point_candidates(_track, float(click_lat), float(click_lon))
 `);
 
-  const toJsOpts = { create_proxies: false, dict_converter: Object.fromEntries };
-  return runtime.globals.get('_anchor_candidates').toJs(toJsOpts);
+    const toJsOpts = { create_proxies: false, dict_converter: Object.fromEntries };
+    return runtime.globals.get('_anchor_candidates').toJs(toJsOpts);
+  });
 }
 
 /**
@@ -154,10 +173,11 @@ _anchor_candidates = nearest_point_candidates(_track, float(click_lat), float(cl
  * @returns {Promise<{status: 'ok'|'too_far', lat: number, lon: number, distanceFromStart: number, timestamp: string, gapM: number}[]>}
  */
 export async function resolvePhotoAnchors(photoReadings) {
-  const runtime = await ensurePyodide();
-  runtime.globals.set('photo_readings_json', JSON.stringify(photoReadings));
+  return enqueue(async () => {
+    const runtime = await ensurePyodide();
+    runtime.globals.set('photo_readings_json', JSON.stringify(photoReadings));
 
-  await runtime.runPythonAsync(`
+    await runtime.runPythonAsync(`
 import datetime as dt
 import json
 
@@ -180,8 +200,9 @@ _resolved_photo_anchors = [
 ]
 `);
 
-  const toJsOpts = { create_proxies: false, dict_converter: Object.fromEntries };
-  return runtime.globals.get('_resolved_photo_anchors').toJs(toJsOpts);
+    const toJsOpts = { create_proxies: false, dict_converter: Object.fromEntries };
+    return runtime.globals.get('_resolved_photo_anchors').toJs(toJsOpts);
+  });
 }
 
 /**
@@ -205,15 +226,16 @@ _resolved_photo_anchors = [
  * @returns {Promise<Uint8Array>} the encoded FIT file
  */
 export async function convert({ startIso, durationSeconds, sportEnumName, anchors, stops, device }) {
-  const runtime = await ensurePyodide();
-  runtime.globals.set('start_iso', startIso);
-  runtime.globals.set('duration_seconds', durationSeconds);
-  runtime.globals.set('sport_enum_name', sportEnumName);
-  runtime.globals.set('raw_anchors_json', JSON.stringify(anchors));
-  runtime.globals.set('raw_stops_json', JSON.stringify(stops ?? []));
-  runtime.globals.set('device_name', device ?? null);
+  return enqueue(async () => {
+    const runtime = await ensurePyodide();
+    runtime.globals.set('start_iso', startIso);
+    runtime.globals.set('duration_seconds', durationSeconds);
+    runtime.globals.set('sport_enum_name', sportEnumName);
+    runtime.globals.set('raw_anchors_json', JSON.stringify(anchors));
+    runtime.globals.set('raw_stops_json', JSON.stringify(stops ?? []));
+    runtime.globals.set('device_name', device ?? null);
 
-  await runtime.runPythonAsync(`
+    await runtime.runPythonAsync(`
 import datetime as dt
 import json
 
@@ -274,5 +296,6 @@ combine(track=working_track, anchors=all_anchors, sport=sport, mode_a_stops=mode
 fit_bytes = write_fit(working_track)
 `);
 
-  return runtime.globals.get('fit_bytes').toJs({ create_proxies: false });
+    return runtime.globals.get('fit_bytes').toJs({ create_proxies: false });
+  });
 }

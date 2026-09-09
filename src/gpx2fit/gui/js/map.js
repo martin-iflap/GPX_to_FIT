@@ -224,20 +224,26 @@ export function highlightMarker(id, isActive) {
 
 /**
  * Opens a Leaflet popup at the given location and lets the caller fill it
- * with arbitrary DOM content (used for the anchor-time and
+ * with arbitrary DOM content (used for the anchor-time, stop, and
  * candidate-picker popovers).
  *
  * @param {number} lat
  * @param {number} lon
- * @param {(container: HTMLElement, close: () => void) => void} buildContent -
- *   receives an empty container to append content to, and a `close()`
- *   callback the content can invoke (e.g. from a confirm button) to dismiss the popup
+ * @param {(container: HTMLElement, close: () => void, updateLayout: () => void) => void} buildContent -
+ *   receives an empty container to append content to, a `close()` callback
+ *   the content can invoke (e.g. from a confirm button) to dismiss the
+ *   popup, and an `updateLayout()` callback that re-centers/repositions the
+ *   popup against the map — call it after changing the content's size (e.g.
+ *   the stop popover's width transition) so Leaflet doesn't leave it
+ *   mis-anchored relative to its tip
  */
 export function openAnchorPopup(lat, lon, buildContent) {
   const container = document.createElement('div');
-  buildContent(container, () => map.closePopup());
-  L.popup({ closeButton: true, className: 'anchor-popover' })
-    .setLatLng([lat, lon])
-    .setContent(container)
-    .openOn(map);
+  // maxWidth just caps auto-sizing; the actual widths are forced via CSS
+  // `!important` (240px normally, 492px for the stop popover's widened
+  // "Start & end time" mode), so raising this doesn't change how any other
+  // popover renders — it only stops Leaflet clamping the widened one back down.
+  const popup = L.popup({ closeButton: true, className: 'anchor-popover', maxWidth: 500 }).setLatLng([lat, lon]);
+  buildContent(container, () => map.closePopup(), () => popup.update());
+  popup.setContent(container).openOn(map);
 }

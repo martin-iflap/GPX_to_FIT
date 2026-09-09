@@ -12,7 +12,7 @@ import * as anchorsModule from './anchors.js';
 import * as stopsModule from './stops.js';
 import { initTheme } from './theme.js';
 import { createAnchorPlacer } from './anchorPopovers.js';
-import { initPhotoDrop } from './photoAnchors.js';
+import { initPhotoDrop, resetPhotoDrop } from './photoAnchors.js';
 import { formatDistanceKm, formatFileSize } from './format.js';
 
 const dropzone = document.getElementById('dropzone');
@@ -138,6 +138,7 @@ initPhotoDrop({
   isTrackReady: () => routePoints !== null,
   resolvePhotoAnchors,
   addAnchor: anchorsModule.addAnchor,
+  removeAnchor: anchorsModule.removeAnchor,
   setStatus,
 });
 
@@ -154,6 +155,14 @@ async function handleFile(file) {
 
     const bytes = new Uint8Array(await file.arrayBuffer());
     const { points, summary } = await parseGpx(bytes);
+
+    // Anchors/stops/photo rows reference distances along the *previous*
+    // route — a new upload invalidates all of them, so drop them before
+    // wiring up the new one rather than letting them silently carry over.
+    anchorsModule.resetAnchors();
+    stopsModule.resetStops();
+    resetPhotoDrop();
+
     routePoints = points;
     totalDistance = summary.total_distance;
 
