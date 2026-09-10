@@ -12,6 +12,9 @@ dependencies = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/gpx2fit"]
 
+[tool.pyrefly]
+search-path = ["src", "."]
+
 [tool.uv]
 package = true
 

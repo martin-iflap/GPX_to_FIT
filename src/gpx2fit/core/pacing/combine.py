@@ -21,8 +21,8 @@ def _pace_segment(
 ) -> None:
     """Assign timestamps to one anchor-to-anchor segment's points, in place.
 
-    Picks a per-leg relative speed model (Minetti or Tobler),
-    then scales the modeled per-leg times so the segment's total *active*
+    Picks a per-leg relative speed model (Minetti or Tobler).
+    Then scales the modeled per-leg times so the segment's total *active*
     time (anchor-to-anchor duration minus any Mode A stop durations in this
     segment) matches exactly, and stamps each point's timestamp accordingly.
     Each Mode A stop's duration is then added, at its own point, to every
@@ -95,7 +95,7 @@ def _pace_segment(
     stop_index = 0
     for index, modeled_leg_time in enumerate(modeled_leg_times, start=1):
         elapsed += modeled_leg_time * scale
-        segment_points[index].timestamp = start_anchor.timestamp + timedelta(seconds=elapsed + extra)
+        point_timestamp = start_anchor.timestamp + timedelta(seconds=elapsed + extra)
 
         if (
             stop_index < len(segment_mode_a_stops)
@@ -103,54 +103,66 @@ def _pace_segment(
             and segment_points[index - 1].distance_from_start == segment_mode_a_stops[stop_index].distance_from_start
         ):
             duration_seconds = segment_mode_a_stops[stop_index].duration.total_seconds()
-            segment_points[index].timestamp += timedelta(seconds=duration_seconds)
+            point_timestamp += timedelta(seconds=duration_seconds)
             extra += duration_seconds
             stop_index += 1
 
+        segment_points[index].timestamp = point_timestamp
 
-def _resolve_anchor_bounds(track_points: list[TrackPoint], anchors: list[Anchor]) -> tuple[list[int], list[int]]:
-    """Resolve each anchor to a (lo, hi) point-index range in track_points.
 
-    For an anchor whose distance_from_start is unique among `anchors`, lo and
-    hi are computed independently via bisect and are equivalent to the index
-    range matching `lo_distance <= p.distance_from_start <= hi_distance` —
-    this reproduces combine()'s original distance-value filtering exactly,
-    so ordinary (non-stop) anchor arrangements are unaffected.
+def _resolve_anchor_bounds(track_points: list[TrackPoint], anchors: list[Anchor]) -> list[int]:
+    """Resolve each anchor to an index of the first track point that matches its distance.
 
-    For a run of two or more anchors sharing the exact same distance
-    (deliberately created for a stop's arrival/departure pair — see
-    pacing/stops.py), each anchor in the run is assigned a distinct point
-    index in order, provided enough points share that distance to give each
-    anchor its own; otherwise every anchor in the run falls back to sharing
-    one (lo, hi) range, matching combine()'s pre-existing (harmless,
-    unsupported) behavior for a degenerate distance coincidence.
+    Each anchor is matched against ``track_points`` using its
+    ``distance_from_start`` value. For an anchor with a unique distance
+    among the anchors, the index of the first track point with that distance is returned.
+
+    Multiple consecutive anchors may intentionally share the same
+    ``distance_from_start`` (for example, an arrival and departure anchor
+    for a stop). When this happens, and there are enough track points at
+    that distance to give each anchor its own point, the anchors are
+    assigned distinct track-point indices in order.
+
+    If there are not enough matching track points for a group of anchors
+    sharing a distance the function raises a ValueError.
+
+    Args:
+        track_points: Track points to match against. The points must be
+            sorted by ``distance_from_start`` because binary search is
+            used to locate matching points.
+        anchors: Anchors to resolve. Anchors sharing the same
+            ``distance_from_start`` must be consecutive if they are
+            intended to form a single duplicate-distance group.
+
+    Returns:
+        A list of track-point indices of the first track point
+        that matches each anchor's distance, one for each anchor.
+    Raises:
+        ValueError: If there are not enough track points to assign each anchor a distinct index.
     """
     distances = [p.distance_from_start for p in track_points]
-    lo = [0] * len(anchors)
-    hi = [0] * len(anchors)
+    anchor_indexes = [0] * len(anchors)
 
     i = 0
     while i < len(anchors):
         j = i
         while j + 1 < len(anchors) and anchors[j + 1].distance_from_start == anchors[i].distance_from_start:
             j += 1
-        run_size = j - i + 1
+        run_size = j - i + 1 # number of anchors sharing this distance
 
-        run_lo = bisect_left(distances, anchors[i].distance_from_start)
-        run_hi = bisect_right(distances, anchors[i].distance_from_start) - 1
-        run_len = run_hi - run_lo + 1
+        run_lo = bisect_left(distances, anchors[i].distance_from_start) # index of first point with this distance
+        run_hi = bisect_right(distances, anchors[i].distance_from_start) - 1 # index of last point with this distance
+        run_len = run_hi - run_lo + 1 # number of points sharing this distance
 
-        if 1 < run_size <= run_len:
-            for offset in range(run_size):
-                lo[i + offset] = hi[i + offset] = run_lo + offset
+        if run_len >= run_size:
+            for k in range(run_size):
+                anchor_indexes[i + k] = run_lo + k
         else:
-            for offset in range(run_size):
-                lo[i + offset] = run_lo
-                hi[i + offset] = run_hi
+            raise ValueError("Number of points sharing a distance is less than the number of anchors sharing that distance.")
 
         i = j + 1
 
-    return lo, hi
+    return anchor_indexes
 
 
 def _bucket_mode_a_stops(anchors: list[Anchor], mode_a_stops: list[ModeAStop]) -> list[list[ModeAStop]]:
@@ -219,27 +231,20 @@ def combine(
     Raises:
         IndexError: If anchors is empty.
         ValueError: If a segment's Mode A stop durations alone consume its
-            entire anchor-to-anchor time budget.
-
-    Note:
-        A segment can end up with fewer than 2 points if two anchors are
-        placed closer together than the track's point spacing (e.g. a
-        mid-route anchor a few meters from the start). Such segments are
-        skipped, and any point caught only in that gap keeps whatever
-        timestamp it already had (usually None). This is intentionally left
-        as-is rather than special-cased: it's rare in practice (anchors are
-        normally far apart relative to GPS point spacing), and a point left
-        without a timestamp will cause fit_writer.write_fit() to raise
-        rather than silently emit a wrong one.
+            entire anchor-to-anchor time budget, or if _resolve_anchor_bounds
+            can't map every anchor to its own track point (see its
+            docstring) — this should never happen for anchors built via
+            pacing.anchors.build_user_anchors, which already rejects two
+            anchors resolving to the same distance.
     """
     workout_total_time = (anchors[-1].timestamp - anchors[0].timestamp).total_seconds()
     workout_avg_speed_mps = track.total_distance / workout_total_time if workout_total_time > 0 else 0.0
 
     mode_a_stops = mode_a_stops or []
-    lo, hi = _resolve_anchor_bounds(track.points, anchors)
+    anchor_indexes = _resolve_anchor_bounds(track.points, anchors)
     buckets = _bucket_mode_a_stops(anchors, mode_a_stops)
     for i in range(len(anchors) - 1):
-        segment_points = track.points[lo[i]: hi[i + 1] + 1]
+        segment_points = track.points[anchor_indexes[i]: anchor_indexes[i + 1] + 1]
         _pace_segment(segment_points, anchors[i], anchors[i + 1], sport, workout_avg_speed_mps, buckets[i])
 
     return track

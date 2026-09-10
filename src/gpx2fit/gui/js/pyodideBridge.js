@@ -264,7 +264,7 @@ raw_anchors = [
     )
     for a in raw_anchor_dicts
 ]
-mid_route = build_user_anchors(_track, raw_anchors)
+mid_route = build_user_anchors(_track, raw_anchors, existing_anchors=boundary)
 hard_anchors = sorted(boundary + mid_route, key=lambda a: (a.distance_from_start, a.timestamp))
 sport = SportType[sport_enum_name]
 

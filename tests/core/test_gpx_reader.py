@@ -1,8 +1,7 @@
-import math
-
 import pytest
 
 from gpx2fit.core.gpx_reader import parse_gpx_bytes
+from tests.conftest import haversine_m
 
 
 def _gpx(trkpts: str, creator: str | None = "Test Creator") -> bytes:
@@ -20,15 +19,6 @@ def _trkpt(lat: float, lon: float, ele: float | None = None) -> str:
     if ele is None:
         return f'<trkpt lat="{lat}" lon="{lon}"></trkpt>'
     return f'<trkpt lat="{lat}" lon="{lon}"><ele>{ele}</ele></trkpt>'
-
-
-def _haversine_m(lat_a: float, lon_a: float, lat_b: float, lon_b: float) -> float:
-    r = 6371000.0
-    phi1, phi2 = math.radians(lat_a), math.radians(lat_b)
-    d_phi = math.radians(lat_b - lat_a)
-    d_lambda = math.radians(lon_b - lon_a)
-    a = math.sin(d_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
-    return 2 * r * math.asin(math.sqrt(a))
 
 
 class TestBasicParsing:
@@ -53,8 +43,8 @@ class TestBasicParsing:
         gpx_bytes = _gpx("".join(_trkpt(lat, 7.0, 0.0) for lat in lats))
         track = parse_gpx_bytes(gpx_bytes)
 
-        expected_leg_1 = _haversine_m(lats[0], 7.0, lats[1], 7.0)
-        expected_leg_2 = _haversine_m(lats[1], 7.0, lats[2], 7.0)
+        expected_leg_1 = haversine_m(lats[0], 7.0, lats[1], 7.0)
+        expected_leg_2 = haversine_m(lats[1], 7.0, lats[2], 7.0)
 
         assert track.points[1].distance_from_start == pytest.approx(expected_leg_1, rel=0.01)
         assert track.points[2].distance_from_start == pytest.approx(expected_leg_1 + expected_leg_2, rel=0.01)

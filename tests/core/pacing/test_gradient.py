@@ -1,13 +1,13 @@
 import math
 import pytest
-from gpx2fit.core.models import Track, TrackPoint
+from gpx2fit.core.models import Track
 from gpx2fit.core.pacing.gradient import calculate_gradient, calculate_minetti_speeds, calculate_tobler_speeds
+from tests.conftest import point
 
 
 def _track(legs: list[tuple[float, float]]) -> Track:
     """Build a Track from (elevation, distance_from_start) pairs, one per point."""
-    points = [TrackPoint(lat=0.0, lon=0.0, elevation=ele, distance_from_start=dist) for ele, dist in legs]
-    return Track(points=points)
+    return Track(points=[point(elevation=ele, distance_from_start=dist) for ele, dist in legs])
 
 
 def _minetti_cost(gradient: float) -> float:

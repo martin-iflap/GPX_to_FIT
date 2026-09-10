@@ -205,20 +205,16 @@ class ResolvedPhotoAnchor:
 
 
 # TODO:
-# 1. Check the limits. (fallback would be Enri maps). day_1 = 1803 requests(1%). day_2 = 642 requests. day_3 = 788 requests
+# 1. Check the limits. (fallback would be Enri maps). day_1 = 1803. day_2 = 642. day_3 = 788. day_4 = 1417. day_5 = 1354. total=6004.
 # 5. Implement surface + max speed capping speed adjustments.
-# 6. Add the graph with activity data below the map once converted.
+# 5,5. Add Pydantic models for shared data structures between python and JS?
+# 6. Add the graph with activity data below the map once converted and add reconvert button.
 # 7. Make sure the app works also for phones.
 # 8. Add cycling sport type. It will require separate speed computing logic and all.
+# 9. Make the default map display pre-gpx-loaded an image to save requests (or just try to save the map somehow).
+# 10. It would be absolutely crazy if the users could drag and adjust speed in the graph and it would recalculate based on their changes.
 
 
 # take a look at the PyCharm MCP for Claude
 # (Get-ChildItem -Recurse -File | Get-Content | Measure-Object).Count
-
-# the stop window is too tall if start and end time are to be entered.
-# make sure the stops are included in anchor prediction times.
-# if photo upload fails display the message but have a timeout on it.
-# make sure the JS files are as simple as possible and that the code is good quality.
-# we want as much logic in python as possible
-# create a conftest.py file for shared fixtures and functions.
-# finally properly understand the resolve anchor bounds.
+# rm ~/.claude/projects/YOUR_PROJECT_FOLDER/SESSION_ID.jsonl - delete session history if not needed anymore

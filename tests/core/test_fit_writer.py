@@ -8,11 +8,8 @@ from fit_tool.profile.messages.record_message import RecordMessage
 from fit_tool.profile.profile_type import Sport
 
 from gpx2fit.core.fit_writer import _fit_timestamp, write_fit
-from gpx2fit.core.models import SportType, Track, TrackPoint
-
-
-def _point(lat: float, lon: float, elevation: float, distance: float, timestamp: datetime | None) -> TrackPoint:
-    return TrackPoint(lat=lat, lon=lon, elevation=elevation, distance_from_start=distance, timestamp=timestamp)
+from gpx2fit.core.models import SportType, Track
+from tests.conftest import point, timestamp_of
 
 
 class TestFitTimestamp:
@@ -42,16 +39,16 @@ class TestWriteFitValidation:
 
     def test_missing_start_timestamp_raises(self):
         track = Track(points=[
-            _point(0.0, 0.0, 0.0, 0.0, timestamp=None),
-            _point(0.0, 0.0, 0.0, 10.0, timestamp=datetime(2024, 1, 1, 8, 1, 0)),
+            point(distance_from_start=0.0, timestamp=None),
+            point(distance_from_start=10.0, timestamp=datetime(2024, 1, 1, 8, 1, 0)),
         ])
         with pytest.raises(RuntimeError):
             write_fit(track)
 
     def test_missing_final_timestamp_raises(self):
         track = Track(points=[
-            _point(0.0, 0.0, 0.0, 0.0, timestamp=datetime(2024, 1, 1, 8, 0, 0)),
-            _point(0.0, 0.0, 0.0, 10.0, timestamp=None),
+            point(distance_from_start=0.0, timestamp=datetime(2024, 1, 1, 8, 0, 0)),
+            point(distance_from_start=10.0, timestamp=None),
         ])
         with pytest.raises(RuntimeError):
             write_fit(track)
@@ -59,17 +56,17 @@ class TestWriteFitValidation:
     def test_final_timestamp_not_after_start_raises(self):
         same_time = datetime(2024, 1, 1, 8, 0, 0)
         track = Track(points=[
-            _point(0.0, 0.0, 0.0, 0.0, timestamp=same_time),
-            _point(0.0, 0.0, 0.0, 10.0, timestamp=same_time),
+            point(distance_from_start=0.0, timestamp=same_time),
+            point(distance_from_start=10.0, timestamp=same_time),
         ])
         with pytest.raises(RuntimeError):
             write_fit(track)
 
     def test_missing_timestamp_on_an_interior_point_raises(self):
         track = Track(points=[
-            _point(0.0, 0.0, 0.0, 0.0, timestamp=datetime(2024, 1, 1, 8, 0, 0)),
-            _point(0.0, 0.0, 0.0, 5.0, timestamp=None),
-            _point(0.0, 0.0, 0.0, 10.0, timestamp=datetime(2024, 1, 1, 8, 1, 0)),
+            point(distance_from_start=0.0, timestamp=datetime(2024, 1, 1, 8, 0, 0)),
+            point(distance_from_start=5.0, timestamp=None),
+            point(distance_from_start=10.0, timestamp=datetime(2024, 1, 1, 8, 1, 0)),
         ])
         with pytest.raises(RuntimeError):
             write_fit(track)
@@ -79,9 +76,9 @@ class TestWriteFitOutput:
     def _build_track(self, sport: SportType | None, device: str | None = None) -> Track:
         return Track(
             points=[
-                _point(45.0, 7.0, 100.0, 0.0, datetime(2024, 1, 1, 8, 0, 0)),
-                _point(45.001, 7.0, 0.0, 100.0, datetime(2024, 1, 1, 8, 0, 30)),
-                _point(45.002, 7.0, 120.0, 250.0, datetime(2024, 1, 1, 8, 1, 0)),
+                point(lat=45.0, lon=7.0, elevation=100.0, distance_from_start=0.0, timestamp=datetime(2024, 1, 1, 8, 0, 0)),
+                point(lat=45.001, lon=7.0, elevation=0.0, distance_from_start=100.0, timestamp=datetime(2024, 1, 1, 8, 0, 30)),
+                point(lat=45.002, lon=7.0, elevation=120.0, distance_from_start=250.0, timestamp=datetime(2024, 1, 1, 8, 1, 0)),
             ],
             sport=sport,
             device=device,
@@ -101,18 +98,18 @@ class TestWriteFitOutput:
         decoded = FitFile.from_bytes(write_fit(track))
         records = [r.message for r in decoded.records if isinstance(r.message, RecordMessage)]
 
-        for point, record in zip(track.points, records):
-            assert record.position_lat == pytest.approx(point.lat, abs=1e-4)
-            assert record.position_long == pytest.approx(point.lon, abs=1e-4)
-            assert record.distance == pytest.approx(point.distance_from_start)
+        for pt, record in zip(track.points, records):
+            assert record.position_lat == pytest.approx(pt.lat, abs=1e-4)
+            assert record.position_long == pytest.approx(pt.lon, abs=1e-4)
+            assert record.distance == pytest.approx(pt.distance_from_start)
 
     def test_decoded_timestamps_match_fit_timestamp_conversion(self):
         track = self._build_track(SportType.RUNNING)
         decoded = FitFile.from_bytes(write_fit(track))
         records = [r.message for r in decoded.records if isinstance(r.message, RecordMessage)]
 
-        for point, record in zip(track.points, records):
-            assert record.timestamp == _fit_timestamp(point.timestamp)
+        for pt, record in zip(track.points, records):
+            assert record.timestamp == _fit_timestamp(timestamp_of(pt))
 
     def test_zero_elevation_is_omitted_but_nonzero_elevation_is_kept(self):
         track = self._build_track(SportType.RUNNING)
@@ -156,5 +153,5 @@ class TestWriteFitOutput:
         assert lap.total_distance == pytest.approx(track.total_distance)
         assert lap.total_ascent == round(track.total_elevation_gain)
         assert lap.total_elapsed_time == pytest.approx(
-            (track.points[-1].timestamp - track.points[0].timestamp).total_seconds()
+            (timestamp_of(track.points[-1]) - timestamp_of(track.points[0])).total_seconds()
         )

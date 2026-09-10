@@ -1,35 +1,25 @@
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import pytest
 
-from gpx2fit.core.models import Anchor, ModeAStop, SportType, Track, TrackPoint
+from gpx2fit.core.models import ModeAStop, SportType, Track
 from gpx2fit.core.pacing.combine import HIKING_TOBLER_THRESHOLD_MPS, combine
-
-
-def _point(elevation: float, distance_from_start: float) -> TrackPoint:
-    return TrackPoint(lat=0.0, lon=0.0, elevation=elevation, distance_from_start=distance_from_start)
-
-
-def _anchor(distance_from_start: float, timestamp: datetime) -> Anchor:
-    return Anchor(distance_from_start=distance_from_start, timestamp=timestamp, source="user")
-
-
-START = datetime(2024, 1, 1, 8, 0, 0)
+from tests.conftest import START, anchor, point, timestamp_of
 
 
 class TestCombineBasicPacing:
     def test_all_points_end_up_timestamped(self):
-        track = Track(points=[_point(0.0, d) for d in (0.0, 100.0, 200.0, 300.0)])
-        anchors = [_anchor(0.0, START), _anchor(300.0, START + timedelta(minutes=1))]
+        track = Track(points=[point(elevation=0.0, distance_from_start=d) for d in (0.0, 100.0, 200.0, 300.0)])
+        anchors = [anchor(0.0, START), anchor(300.0, START + timedelta(minutes=1))]
 
         result = combine(track, anchors, SportType.RUNNING)
 
         assert all(p.timestamp is not None for p in result.points)
 
     def test_first_and_last_point_match_anchor_timestamps_exactly(self):
-        track = Track(points=[_point(0.0, d) for d in (0.0, 100.0, 200.0, 300.0)])
+        track = Track(points=[point(elevation=0.0, distance_from_start=d) for d in (0.0, 100.0, 200.0, 300.0)])
         end_time = START + timedelta(minutes=2)
-        anchors = [_anchor(0.0, START), _anchor(300.0, end_time)]
+        anchors = [anchor(0.0, START), anchor(300.0, end_time)]
 
         result = combine(track, anchors, SportType.RUNNING)
 
@@ -37,12 +27,12 @@ class TestCombineBasicPacing:
         assert result.points[-1].timestamp == end_time
 
     def test_timestamps_are_strictly_increasing_on_a_flat_track(self):
-        track = Track(points=[_point(0.0, d) for d in (0.0, 100.0, 200.0, 300.0, 400.0)])
-        anchors = [_anchor(0.0, START), _anchor(400.0, START + timedelta(minutes=3))]
+        track = Track(points=[point(elevation=0.0, distance_from_start=d) for d in (0.0, 100.0, 200.0, 300.0, 400.0)])
+        anchors = [anchor(0.0, START), anchor(400.0, START + timedelta(minutes=3))]
 
         result = combine(track, anchors, SportType.RUNNING)
 
-        timestamps = [p.timestamp for p in result.points]
+        timestamps = [timestamp_of(p) for p in result.points]
         assert timestamps == sorted(timestamps)
         assert len(set(timestamps)) == len(timestamps)
 
@@ -50,10 +40,13 @@ class TestCombineBasicPacing:
         # Uphill then downhill, so per-leg modeled speeds differ, but the
         # total elapsed time must still land exactly on the anchor duration.
         track = Track(points=[
-            _point(0.0, 0.0), _point(20.0, 100.0), _point(40.0, 200.0), _point(10.0, 300.0),
+            point(elevation=0.0, distance_from_start=0.0),
+            point(elevation=20.0, distance_from_start=100.0),
+            point(elevation=40.0, distance_from_start=200.0),
+            point(elevation=10.0, distance_from_start=300.0),
         ])
         end_time = START + timedelta(minutes=5)
-        anchors = [_anchor(0.0, START), _anchor(300.0, end_time)]
+        anchors = [anchor(0.0, START), anchor(300.0, end_time)]
 
         result = combine(track, anchors, SportType.RUNNING)
 
@@ -62,14 +55,14 @@ class TestCombineBasicPacing:
 
 class TestCombineMultiSegment:
     def test_each_segment_time_matches_its_own_anchor_pair_independently(self):
-        track = Track(points=[_point(0.0, d) for d in (0.0, 100.0, 200.0, 300.0, 400.0)])
+        track = Track(points=[point(elevation=0.0, distance_from_start=d) for d in (0.0, 100.0, 200.0, 300.0, 400.0)])
         mid_time = START + timedelta(minutes=1)
         end_time = START + timedelta(minutes=10)  # much slower second half
-        anchors = [_anchor(0.0, START), _anchor(200.0, mid_time), _anchor(400.0, end_time)]
+        anchors = [anchor(0.0, START), anchor(200.0, mid_time), anchor(400.0, end_time)]
 
         result = combine(track, anchors, SportType.RUNNING)
 
-        by_distance = {p.distance_from_start: p.timestamp for p in result.points}
+        by_distance = {p.distance_from_start: timestamp_of(p) for p in result.points}
         assert by_distance[0.0] == START
         assert by_distance[200.0] == mid_time
         assert by_distance[400.0] == end_time
@@ -84,9 +77,13 @@ class TestCombineModelSelection:
         distance = 1000.0
         duration = timedelta(seconds=distance / avg_speed_mps)
         track = Track(points=[
-            _point(0.0, 0.0), _point(30.0, 250.0), _point(60.0, 500.0), _point(20.0, 750.0), _point(0.0, 1000.0),
+            point(elevation=0.0, distance_from_start=0.0),
+            point(elevation=30.0, distance_from_start=250.0),
+            point(elevation=60.0, distance_from_start=500.0),
+            point(elevation=20.0, distance_from_start=750.0),
+            point(elevation=0.0, distance_from_start=1000.0),
         ])
-        anchors = [_anchor(0.0, START), _anchor(1000.0, START + duration)]
+        anchors = [anchor(0.0, START), anchor(1000.0, START + duration)]
         return combine(track, anchors, sport)
 
     def test_hiking_below_threshold_still_produces_valid_pacing(self):
@@ -114,63 +111,36 @@ class TestCombineModelSelection:
         assert running_times == hiking_times
 
 
-class TestCombineWorkoutAvgSpeedOverride:
-    def _points(self) -> list[TrackPoint]:
-        return [
-            _point(0.0, 0.0), _point(30.0, 250.0), _point(60.0, 500.0), _point(20.0, 750.0), _point(0.0, 1000.0),
-        ]
+class TestCombineInvalidAnchorMappingGuard:
+    # pacing.anchors.build_user_anchors now rejects two anchors resolving to
+    # the same distance before combine() ever sees them, and every anchor's
+    # distance is guaranteed (by construction) to match an existing track
+    # point exactly. So an anchor with no matching point, or more anchors
+    # than points sharing a distance, means that invariant was violated
+    # somewhere upstream — combine() should fail loudly rather than silently
+    # mis-pace or drop points.
 
-    def test_override_replaces_the_auto_computed_average_for_model_selection(self):
-        # These anchors imply a slow, sub-threshold local average speed,
-        # which would auto-select Tobler for HIKING. An explicit override
-        # above the threshold should force Minetti instead, regardless of
-        # this call's own local pace — this is what lets pacing/stops.py's
-        # segment-local dry-run re-fits still pick the same curve a
-        # full-route pass would.
-        assert HIKING_TOBLER_THRESHOLD_MPS > 1.0
-        slow_duration = timedelta(seconds=1000.0 / 1.0)
-        anchors = [_anchor(0.0, START), _anchor(1000.0, START + slow_duration)]
-
-        auto = combine(Track(points=self._points()), anchors, SportType.HIKING)
-        overridden = combine(Track(points=self._points()), anchors, SportType.HIKING, workout_avg_speed_mps=3.0)
-        running_reference = combine(Track(points=self._points()), anchors, SportType.RUNNING)
-
-        auto_times = [p.timestamp for p in auto.points]
-        overridden_times = [p.timestamp for p in overridden.points]
-        running_times = [p.timestamp for p in running_reference.points]
-
-        assert overridden_times != auto_times
-        assert overridden_times == running_times
-
-
-class TestCombineSparseSegmentGuard:
-    def test_segment_with_fewer_than_two_points_leaves_its_lone_point_unstamped(self):
-        # Two anchors (100 and 110) placed closer together than the point
-        # spacing: the segments on either side of 110 each contain only one
-        # point, so both are skipped per combine()'s documented behavior —
-        # the point at distance 200 is never the endpoint of a processed
-        # segment, so it's left stranded with no timestamp.
-        track = Track(points=[_point(0.0, 0.0), _point(0.0, 100.0), _point(0.0, 200.0)])
+    def test_anchor_with_no_matching_track_point_raises(self):
+        track = Track(points=[
+            point(elevation=0.0, distance_from_start=0.0),
+            point(elevation=0.0, distance_from_start=100.0),
+            point(elevation=0.0, distance_from_start=200.0),
+        ])
         anchors = [
-            _anchor(0.0, START),
-            _anchor(100.0, START + timedelta(minutes=1)),
-            _anchor(110.0, START + timedelta(minutes=1, seconds=5)),
-            _anchor(200.0, START + timedelta(minutes=2)),
+            anchor(0.0, START),
+            anchor(110.0, START + timedelta(minutes=1)),
+            anchor(200.0, START + timedelta(minutes=2)),
         ]
 
-        result = combine(track, anchors, SportType.RUNNING)
+        with pytest.raises(ValueError):
+            combine(track, anchors, SportType.RUNNING)
 
-        assert result.points[0].timestamp == START
-        assert result.points[1].timestamp == START + timedelta(minutes=1)
-        assert result.points[-1].timestamp is None
+    def test_two_anchors_sharing_the_only_point_at_a_distance_raises(self):
+        track = Track(points=[point(elevation=0.0, distance_from_start=0.0)])
+        anchors = [anchor(0.0, START), anchor(0.0, START + timedelta(minutes=1))]
 
-    def test_single_point_track_is_a_no_op(self):
-        track = Track(points=[_point(0.0, 0.0)])
-        anchors = [_anchor(0.0, START), _anchor(0.0, START + timedelta(minutes=1))]
-
-        result = combine(track, anchors, SportType.RUNNING)
-
-        assert result.points[0].timestamp is None
+        with pytest.raises(ValueError):
+            combine(track, anchors, SportType.RUNNING)
 
 
 class TestCombineDuplicateDistancePoints:
@@ -182,13 +152,16 @@ class TestCombineDuplicateDistancePoints:
         departure = arrival + timedelta(minutes=15)
         end_time = departure + timedelta(minutes=1)
         track = Track(points=[
-            _point(0.0, 0.0), _point(0.0, 100.0), _point(0.0, 100.0), _point(0.0, 200.0),
+            point(elevation=0.0, distance_from_start=0.0),
+            point(elevation=0.0, distance_from_start=100.0),
+            point(elevation=0.0, distance_from_start=100.0),
+            point(elevation=0.0, distance_from_start=200.0),
         ])
         anchors = [
-            _anchor(0.0, START),
-            _anchor(100.0, arrival),
-            _anchor(100.0, departure),
-            _anchor(200.0, end_time),
+            anchor(0.0, START),
+            anchor(100.0, arrival),
+            anchor(100.0, departure),
+            anchor(200.0, end_time),
         ]
 
         result = combine(track, anchors, SportType.RUNNING)
@@ -198,22 +171,26 @@ class TestCombineDuplicateDistancePoints:
         assert result.points[0].timestamp == START
         assert result.points[-1].timestamp == end_time
 
-    def test_three_anchors_sharing_a_distance_does_not_crash(self):
+    def test_three_anchors_sharing_a_distance_with_only_one_matching_point_raises(self):
         # Degenerate, unsupported coincidence (more anchors than duplicate
-        # points at that distance) — must not raise, exact stamping isn't
-        # guaranteed here.
-        track = Track(points=[_point(0.0, 0.0), _point(0.0, 100.0), _point(0.0, 200.0)])
+        # points at that distance) — build_user_anchors now rejects this
+        # before combine() sees it; combine() itself must still fail loudly
+        # rather than guess which anchor's timestamp the lone point gets.
+        track = Track(points=[
+            point(elevation=0.0, distance_from_start=0.0),
+            point(elevation=0.0, distance_from_start=100.0),
+            point(elevation=0.0, distance_from_start=200.0),
+        ])
         anchors = [
-            _anchor(0.0, START),
-            _anchor(100.0, START + timedelta(minutes=1)),
-            _anchor(100.0, START + timedelta(minutes=2)),
-            _anchor(100.0, START + timedelta(minutes=3)),
-            _anchor(200.0, START + timedelta(minutes=4)),
+            anchor(0.0, START),
+            anchor(100.0, START + timedelta(minutes=1)),
+            anchor(100.0, START + timedelta(minutes=2)),
+            anchor(100.0, START + timedelta(minutes=3)),
+            anchor(200.0, START + timedelta(minutes=4)),
         ]
 
-        result = combine(track, anchors, SportType.RUNNING)
-
-        assert result.points[0].timestamp == START
+        with pytest.raises(ValueError):
+            combine(track, anchors, SportType.RUNNING)
 
 
 class TestCombineModeAStops:
@@ -221,8 +198,13 @@ class TestCombineModeAStops:
         # Flat, evenly-spaced track: 0 -> 100 (arrival) -> 100 (departure dup) -> 200.
         duration = timedelta(minutes=6)
         end_time = START + timedelta(minutes=20)
-        track = Track(points=[_point(0.0, 0.0), _point(0.0, 100.0), _point(0.0, 100.0), _point(0.0, 200.0)])
-        anchors = [_anchor(0.0, START), _anchor(200.0, end_time)]
+        track = Track(points=[
+            point(elevation=0.0, distance_from_start=0.0),
+            point(elevation=0.0, distance_from_start=100.0),
+            point(elevation=0.0, distance_from_start=100.0),
+            point(elevation=0.0, distance_from_start=200.0),
+        ])
+        anchors = [anchor(0.0, START), anchor(200.0, end_time)]
 
         result = combine(track, anchors, SportType.RUNNING, mode_a_stops=[ModeAStop(100.0, duration)])
 
@@ -238,10 +220,14 @@ class TestCombineModeAStops:
         second_duration = timedelta(minutes=5)
         end_time = START + timedelta(minutes=40)
         track = Track(points=[
-            _point(0.0, 0.0), _point(0.0, 300.0), _point(0.0, 300.0),
-            _point(0.0, 600.0), _point(0.0, 600.0), _point(0.0, 1000.0),
+            point(elevation=0.0, distance_from_start=0.0),
+            point(elevation=0.0, distance_from_start=300.0),
+            point(elevation=0.0, distance_from_start=300.0),
+            point(elevation=0.0, distance_from_start=600.0),
+            point(elevation=0.0, distance_from_start=600.0),
+            point(elevation=0.0, distance_from_start=1000.0),
         ])
-        anchors = [_anchor(0.0, START), _anchor(1000.0, end_time)]
+        anchors = [anchor(0.0, START), anchor(1000.0, end_time)]
         mode_a_stops = [ModeAStop(300.0, first_duration), ModeAStop(600.0, second_duration)]
 
         result = combine(track, anchors, SportType.RUNNING, mode_a_stops=mode_a_stops)
@@ -263,10 +249,14 @@ class TestCombineModeAStops:
         mid_time = START + timedelta(minutes=20)
         end_time = mid_time + timedelta(minutes=10)
         track = Track(points=[
-            _point(0.0, 0.0), _point(0.0, 100.0), _point(0.0, 100.0), _point(0.0, 200.0),
-            _point(0.0, 300.0), _point(0.0, 400.0),
+            point(elevation=0.0, distance_from_start=0.0),
+            point(elevation=0.0, distance_from_start=100.0),
+            point(elevation=0.0, distance_from_start=100.0),
+            point(elevation=0.0, distance_from_start=200.0),
+            point(elevation=0.0, distance_from_start=300.0),
+            point(elevation=0.0, distance_from_start=400.0),
         ])
-        anchors = [_anchor(0.0, START), _anchor(200.0, mid_time), _anchor(400.0, end_time)]
+        anchors = [anchor(0.0, START), anchor(200.0, mid_time), anchor(400.0, end_time)]
         mode_a_stops = [ModeAStop(100.0, timedelta(minutes=5))]
 
         result = combine(track, anchors, SportType.RUNNING, mode_a_stops=mode_a_stops)
@@ -283,14 +273,18 @@ class TestCombineModeAStops:
         end_time = departure + timedelta(minutes=30)
         mode_a_duration = timedelta(minutes=4)
         track = Track(points=[
-            _point(0.0, 0.0), _point(0.0, 100.0), _point(0.0, 100.0),
-            _point(0.0, 250.0), _point(0.0, 250.0), _point(0.0, 400.0),
+            point(elevation=0.0, distance_from_start=0.0),
+            point(elevation=0.0, distance_from_start=100.0),
+            point(elevation=0.0, distance_from_start=100.0),
+            point(elevation=0.0, distance_from_start=250.0),
+            point(elevation=0.0, distance_from_start=250.0),
+            point(elevation=0.0, distance_from_start=400.0),
         ])
         anchors = [
-            _anchor(0.0, START),
-            _anchor(100.0, arrival),
-            _anchor(100.0, departure),
-            _anchor(400.0, end_time),
+            anchor(0.0, START),
+            anchor(100.0, arrival),
+            anchor(100.0, departure),
+            anchor(400.0, end_time),
         ]
 
         result = combine(track, anchors, SportType.RUNNING, mode_a_stops=[ModeAStop(250.0, mode_a_duration)])
@@ -304,17 +298,22 @@ class TestCombineModeAStops:
         assert result.points[-1].timestamp == end_time
 
     def test_stop_duration_exceeding_segment_time_budget_raises(self):
-        track = Track(points=[_point(0.0, 0.0), _point(0.0, 100.0), _point(0.0, 100.0), _point(0.0, 200.0)])
-        anchors = [_anchor(0.0, START), _anchor(200.0, START + timedelta(minutes=5))]
+        track = Track(points=[
+            point(elevation=0.0, distance_from_start=0.0),
+            point(elevation=0.0, distance_from_start=100.0),
+            point(elevation=0.0, distance_from_start=100.0),
+            point(elevation=0.0, distance_from_start=200.0),
+        ])
+        anchors = [anchor(0.0, START), anchor(200.0, START + timedelta(minutes=5))]
 
         with pytest.raises(ValueError):
             combine(track, anchors, SportType.RUNNING, mode_a_stops=[ModeAStop(100.0, timedelta(minutes=10))])
 
     def test_mode_a_stops_omitted_or_none_behaves_like_today(self):
         def _track() -> Track:
-            return Track(points=[_point(0.0, d) for d in (0.0, 100.0, 200.0, 300.0)])
+            return Track(points=[point(elevation=0.0, distance_from_start=d) for d in (0.0, 100.0, 200.0, 300.0)])
 
-        anchors = [_anchor(0.0, START), _anchor(300.0, START + timedelta(minutes=2))]
+        anchors = [anchor(0.0, START), anchor(300.0, START + timedelta(minutes=2))]
 
         omitted = combine(_track(), anchors, SportType.RUNNING)
         explicit_none = combine(_track(), anchors, SportType.RUNNING, mode_a_stops=None)
@@ -326,8 +325,8 @@ class TestCombineModeAStops:
 
 class TestCombineReturnsSameTrack:
     def test_returns_the_same_track_object(self):
-        track = Track(points=[_point(0.0, 0.0), _point(0.0, 100.0)])
-        anchors = [_anchor(0.0, START), _anchor(100.0, START + timedelta(minutes=1))]
+        track = Track(points=[point(elevation=0.0, distance_from_start=0.0), point(elevation=0.0, distance_from_start=100.0)])
+        anchors = [anchor(0.0, START), anchor(100.0, START + timedelta(minutes=1))]
 
         result = combine(track, anchors, SportType.RUNNING)
 

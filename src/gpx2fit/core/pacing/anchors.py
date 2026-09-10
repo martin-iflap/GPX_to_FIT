@@ -164,26 +164,40 @@ def add_start_end_anchors(
     ]
 
 
-def build_user_anchors(track: Track, raw_anchors: list[RawAnchor]) -> list[Anchor]:
+def build_user_anchors(
+    track: Track,
+    raw_anchors: list[RawAnchor],
+    existing_anchors: list[Anchor] | None = None,
+) -> list[Anchor]:
     """Resolve frontend-provided anchor candidates to concrete Anchor objects.
 
     For each RawAnchor: distance_from_start is used directly if given,
     otherwise it's resolved from lat/lon via a nearest-point lookup
-    (see `nearest_point_distance_from_start`).
+    (see `nearest_point_distance_from_start`). Two anchors resolving to the
+    same distance would later make pacing.combine's anchor-to-point mapping
+    ambiguous (which anchor's timestamp belongs to which point?), so that
+    coincidence is rejected here instead — mirroring how
+    pacing.stops.resolve_stops guards stop distances against `hard_anchors`.
 
     Args:
         track: Track the anchors belong to, used for lat/lon resolution and
             bounds validation.
         raw_anchors: Frontend-provided anchor candidates.
+        existing_anchors: Anchors already fixed for this conversion (for
+            example the boundary anchors from add_start_end_anchors),
+            checked only to reject a raw anchor whose resolved distance
+            coincides with one of them.
 
     Returns:
         One Anchor per raw anchor, sorted by (distance_from_start, timestamp).
     Raises:
         ValueError: If a raw anchor provides neither distance_from_start nor
-            lat/lon, or if a resolved distance falls outside
-            [0, track.total_distance].
+            lat/lon, if a resolved distance falls outside
+            [0, track.total_distance], or if it coincides with another raw
+            anchor's or an existing anchor's distance.
     """
     anchors: list[Anchor] = []
+    seen_distances = {a.distance_from_start for a in (existing_anchors or [])}
     for raw in raw_anchors:
         if raw.distance_from_start is not None:
             distance = raw.distance_from_start
@@ -194,6 +208,9 @@ def build_user_anchors(track: Track, raw_anchors: list[RawAnchor]) -> list[Ancho
 
         if distance < 0 or distance > track.total_distance:
             raise ValueError("Anchor distance_from_start is outside track bounds.")
+        if distance in seen_distances:
+            raise ValueError(f"Anchor distance {distance}m coincides with another anchor.")
+        seen_distances.add(distance)
 
         anchors.append(Anchor(distance_from_start=distance, timestamp=raw.timestamp, source=raw.source))
 
