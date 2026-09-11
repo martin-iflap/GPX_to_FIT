@@ -209,6 +209,7 @@ class ResolvedPhotoAnchor:
 # 5. Implement surface + max speed capping speed adjustments.
 # 5,5. Add Pydantic models for shared data structures between python and JS?
 # 6. Add the graph with activity data below the map once converted and add reconvert button.
+# 6,5. Add possibility to hide the side and bottom panels to see the map better.
 # 7. Make sure the app works also for phones.
 # 8. Add cycling sport type. It will require separate speed computing logic and all.
 # 9. Make the default map display pre-gpx-loaded an image to save requests (or just try to save the map somehow).
@@ -218,3 +219,10 @@ class ResolvedPhotoAnchor:
 # take a look at the PyCharm MCP for Claude
 # (Get-ChildItem -Recurse -File | Get-Content | Measure-Object).Count
 # rm ~/.claude/projects/YOUR_PROJECT_FOLDER/SESSION_ID.jsonl - delete session history if not needed anymore
+
+
+# 1.
+# verify the new code is good, gotta be perfect.
+# wire valhalla to the app, I would like to make the request from backend, but I will have to take a look at it.
+# 2.
+# perhaps utilize the valhalla elapsed time and cost somehow.
