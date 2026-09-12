@@ -4,7 +4,13 @@ import pytest
 
 from gpx2fit.core.models import RawStop, SportType, Track
 from gpx2fit.core.pacing.combine import combine
-from gpx2fit.core.pacing.stops import ModeAStop, ResolvedStop, expand_track_with_stops, resolve_stops
+from gpx2fit.core.pacing.stops import (
+    ModeAStop,
+    ResolvedStop,
+    expand_multipliers_with_stops,
+    expand_track_with_stops,
+    resolve_stops,
+)
 from tests.conftest import START, anchor, point
 
 
@@ -182,6 +188,55 @@ class TestExpandTrackWithStops:
         result = expand_track_with_stops(points, stops)
 
         assert [p.distance_from_start for p in result] == [0.0, 300.0, 300.0, 600.0, 600.0, 1000.0]
+
+
+class TestExpandMultipliersWithStops:
+    def test_length_increases_by_one_per_stop_matching_expand_track_with_stops(self):
+        points = [point(distance_from_start=0.0), point(distance_from_start=500.0), point(distance_from_start=1000.0)]
+        multipliers = [1.0, 0.8]
+        stops: list[ResolvedStop | ModeAStop] = [ResolvedStop(500.0, START, START + timedelta(minutes=5))]
+
+        result = expand_multipliers_with_stops(points, multipliers, stops)
+
+        assert len(result) == len(multipliers) + 1
+        assert len(result) == len(expand_track_with_stops(points, stops)) - 1
+
+        # Leg 0->1 (multiplier 1.0) is untouched; leg 1->2 (multiplier 0.8,
+        # the one leaving the stopped-at point) is duplicated: once for the
+        # new zero-distance arrival->departure leg, once for the real leg.
+        assert result == [1.0, 0.8, 0.8]
+
+    def test_multiple_stops_each_duplicate_their_own_leaving_leg(self):
+        points = [
+            point(distance_from_start=0.0), point(distance_from_start=300.0),
+            point(distance_from_start=600.0), point(distance_from_start=1000.0),
+        ]
+        multipliers = [1.0, 0.9, 0.5]
+        stops: list[ResolvedStop | ModeAStop] = [
+            ResolvedStop(600.0, START, START + timedelta(minutes=5)),
+            ResolvedStop(300.0, START, START + timedelta(minutes=5)),
+        ]
+
+        result = expand_multipliers_with_stops(points, multipliers, stops)
+
+        assert result == [1.0, 0.9, 0.9, 0.5, 0.5]
+
+    def test_no_stops_returns_multipliers_unchanged(self):
+        points = [point(distance_from_start=0.0), point(distance_from_start=500.0), point(distance_from_start=1000.0)]
+        multipliers = [1.0, 0.8]
+
+        result = expand_multipliers_with_stops(points, multipliers, [])
+
+        assert result == multipliers
+
+    def test_mode_a_stop_duplicates_its_leaving_leg_too(self):
+        points = [point(distance_from_start=0.0), point(distance_from_start=500.0), point(distance_from_start=1000.0)]
+        multipliers = [1.0, 0.8]
+        stops: list[ResolvedStop | ModeAStop] = [ModeAStop(500.0, timedelta(minutes=5))]
+
+        result = expand_multipliers_with_stops(points, multipliers, stops)
+
+        assert result == [1.0, 0.8, 0.8]
 
 
 class TestStopsEndToEnd:

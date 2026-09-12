@@ -4,30 +4,47 @@ trace_attributes map-match response.
 This module never performs the HTTP call itself. It only
 (1) shapes the request payload as plain JSON-serializable data, and
 (2) turns an already-fetched Valhalla response dict into per-leg
-multipliers, using a caller-supplied surface -> multiplier weight table.
+multipliers, using sport-specific weight tables loaded from
+surface_weights.json.
 combine.py is expected to multiply these into the per-leg speeds returned
 by gradient.py's calculate_minetti_speeds/calculate_tobler_speeds.
+
+Combining signals: `surface`, `road_class`, and `use` are correlated tags
+that often restate the same underlying fact about an edge (e.g. a minor
+unpaved trail is typically `surface=gravel` *and* `use=path` *and*
+`road_class=unclassified`), so they are averaged together (weighted by
+_FAMILY_WEIGHTS) into one "physical surface" factor rather than multiplied,
+which would compound the same fact multiple times. `sac_scale` is a
+separate, independent difficulty signal that's frequently absent (only
+tagged on OSM ways that carry it); when present it's blended in at a high
+weight, and when it indicates serious difficulty and roughly agrees with
+the physical-surface factor, it's trusted outright.
 """
 
-from gpx2fit.core.models import Track
+import json
+import pathlib
+from collections.abc import Callable
+from typing import Any
+
+from gpx2fit.core.models import SportType, Track
 
 _DEFAULT_COSTING = "pedestrian"
-_SHAPE_MATCH = "map_snap"
+_SHAPE_MATCH = "walk_or_snap" # tries to 'edge_walk', falls back to 'map_snap'
 
-# Valhalla's edge "surface" field is one of exactly these eight values,
-# smoothest to roughest. Multipliers are a first-pass placeholder (1.0 =
-# no effect on the gradient-modeled speed) meant to be tuned once this is
-# actually wired into combine.py and tried against real routes/data.
-DEFAULT_SURFACE_WEIGHTS: dict[str, float] = {
-    "paved_smooth": 1.0,
-    "paved": 1.0,
-    "paved_rough": 0.95,
-    "compacted": 0.9,
-    "dirt": 0.85,
-    "gravel": 0.8,
-    "path": 0.75,
-    "impassable": 0.5,
-}
+_WEIGHTS_PATH = pathlib.Path(__file__).parent / "surface_weights.json"
+with open(_WEIGHTS_PATH, encoding="utf-8") as _f:
+    _WEIGHTS_BY_SPORT: dict[str, dict[str, dict[str, float]]] = json.load(_f)
+
+# Weights for combining the surface/road_class/use family into one
+# "physical surface" multiplier. road_class is weighted lowest: it's the
+# noisiest of the three and frequently "unclassified" on exactly the minor
+# trails this matters most for.
+_FAMILY_WEIGHTS = {"surface": 0.5, "use": 0.3, "road_class": 0.2}
+
+# sac_scale combination constants.
+_SAC_BLEND_WEIGHT = 0.7 # sac_scale's share when blended with the physical-surface factor
+_SAC_DOMINANCE_THRESHOLD = 0.85 # sac multiplier at/below this = meaningful difficulty, take it seriously
+_SAC_CONFLICT_DELTA = 0.25 # |sac_m - physical| beyond this = don't fully trust sac_scale alone
 
 
 def build_trace_attributes_payload(track: Track, costing: str = _DEFAULT_COSTING) -> dict:
@@ -40,8 +57,9 @@ def build_trace_attributes_payload(track: Track, costing: str = _DEFAULT_COSTING
 
     Returns:
         A plain, JSON-serializable dict: {"shape": [...], "costing": ...,
-        "shape_match": "map_snap"}. The caller is responsible for actually
+        "shape_match": "walk_or_snap"}. The caller is responsible for actually
         sending this (e.g. via pyfetch).
+
     Raises:
         ValueError: If track.points is empty.
     """
@@ -127,10 +145,102 @@ def resolve_point_edge_indexes(response: dict, num_points: int) -> list[int | No
     return resolved
 
 
+def _length_weighted_average(
+    edges: list[dict[str, Any]],
+    value_of: Callable[[dict[str, Any]], float],
+) -> float:
+    """Average `value_of(edge)` over `edges`, weighted by each edge's length.
+
+    Falls back to an unweighted average if every edge spans zero length
+    (`edge["length"]` missing or 0), so a leg made entirely of zero-length
+    edges still yields a meaningful result instead of a division by zero.
+
+    Args:
+        edges: Edges to average over. Must be non-empty.
+        value_of: Function returning the value to average for one edge.
+
+    Returns:
+        The length-weighted (or, as a fallback, unweighted) average of
+        `value_of` over `edges`.
+    """
+    lengths = [e.get("length", 0.0) for e in edges]
+    total_length = sum(lengths)
+    if total_length > 0:
+        return sum(value_of(e) * l for e, l in zip(edges, lengths)) / total_length
+    return sum(value_of(e) for e in edges) / len(edges)
+
+
+def _leg_category_multiplier(
+    edges: list[dict[str, Any]],
+    tag: str,
+    weights: dict[str, float],
+    default_multiplier: float,
+) -> float:
+    """Compute the length-weighted average multiplier for one edge tag.
+
+    An edge missing `tag`, or whose value isn't in `weights`, contributes
+    `default_multiplier` — appropriate for `surface`/`road_class`/`use`,
+    where an untagged edge usually just means an ordinary road.
+
+    Args:
+        edges: Edges spanned by one leg, in order.
+        tag: Edge field to look up (e.g. "surface").
+        weights: Tag value -> multiplier table for this category/sport.
+        default_multiplier: Used for an edge whose `tag` is missing or
+            whose value isn't in `weights`.
+
+    Returns:
+        The length-weighted average multiplier over `edges` for `tag`.
+    """
+
+    def edge_multiplier(edge: dict[str, Any]) -> float:
+        value = edge.get(tag)
+        if value is None:
+            return default_multiplier
+        return weights.get(value, default_multiplier)
+
+    return _length_weighted_average(edges, edge_multiplier)
+
+
+def _leg_sac_scale_multiplier(
+    edges: list[dict[str, Any]],
+    weights: dict[str, float],
+    default_multiplier: float,
+) -> float | None:
+    """Compute the length-weighted average sac_scale multiplier for a leg.
+
+    Valhalla encodes `sac_scale` as an integer 0-6: 0 means the edge carries
+    no sac_scale tag at all , and 1-6 map to OSM's `hiking`
+    through `difficult_alpine_hiking` tiers in increasing difficulty.
+    `weights` is keyed by that integer's string form (e.g. "1", "6")
+    to match how it round-trips through surface_weights.json.
+
+    Unlike `_leg_category_multiplier`, an edge with no sac_scale data (0 or
+    missing) is excluded from the average entirely rather than defaulted.
+    The tag is only present on a minority of OSM ways, so "no data" must
+    not be treated as "known-easy terrain".
+
+    Args:
+        edges: Edges spanned by one leg, in order.
+        weights: sac_scale value (as a string, e.g. "3") -> multiplier
+            table for this sport.
+        default_multiplier: Used for a tagged edge whose sac_scale value
+            isn't in `weights`.
+
+    Returns:
+        The length-weighted average multiplier over edges that carry
+        sac_scale data, or None if no edge in `edges` carries any.
+    """
+    tagged_edges = [e for e in edges if e.get("sac_scale")]
+    if not tagged_edges:
+        return None
+    return _length_weighted_average(tagged_edges, lambda e: weights.get(str(e["sac_scale"]), default_multiplier))
+
+
 def calculate_surface_multipliers(
     track: Track,
     response: dict,
-    weights: dict[str, float],
+    sport: SportType,
     default_multiplier: float = 1.0,
 ) -> list[float]:
     """Calculate per-leg speed multipliers from a Valhalla trace_attributes response.
@@ -139,15 +249,22 @@ def calculate_surface_multipliers(
         track: Track whose points were sent as the Valhalla request shape,
             in the same order.
         response: Parsed trace_attributes JSON response for that request.
-        weights: Surface name (e.g. "paved_smooth") -> speed multiplier.
-        default_multiplier: Used whenever a leg's surface can't be resolved
-            (no matched edge) or its surface name isn't in `weights`.
+        sport: Sport whose weight tables (surface, road_class, use,
+            sac_scale) should be used.
+        default_multiplier: Used whenever a leg's surface/road_class/use
+            can't be resolved (no matched edge) or a resolved value isn't in
+            the relevant weight table.
 
     Returns:
-        One relative speed multiplier per leg (N-1 values for N points). A
-        leg whose two endpoints fall on different edges is a length-weighted
-        average of every edge spanned between them; a leg with an
-        unresolved endpoint gets `default_multiplier`.
+        One relative speed multiplier per leg (N-1 values for N points).
+        `surface`, `road_class`, and `use` are combined into one
+        weighted-average "physical surface" factor (see _FAMILY_WEIGHTS).
+        `sac_scale`, when present on at least one spanned edge, is blended
+        in at a high weight (_SAC_BLEND_WEIGHT); if it also indicates
+        serious difficulty (at/below _SAC_DOMINANCE_THRESHOLD) and roughly
+        agrees with the physical-surface factor (within
+        _SAC_CONFLICT_DELTA), it's used outright instead. A leg with an
+        unresolved endpoint gets `default_multiplier` directly.
 
     Raises:
         ValueError: If a leg's end-point edge index is smaller than its
@@ -161,14 +278,9 @@ def calculate_surface_multipliers(
     if len(track.points) < 2:
         return []
 
+    tables = _WEIGHTS_BY_SPORT[sport.value]
     edges = response.get("edges") or []
     point_edge_indexes = resolve_point_edge_indexes(response, len(track.points))
-
-    def edge_multiplier(edge: dict) -> float:
-        surface = edge.get("surface")
-        if surface is None:
-            return default_multiplier
-        return weights.get(surface, default_multiplier)
 
     multipliers = []
     for leg_index, (start_edge, end_edge) in enumerate(zip(point_edge_indexes, point_edge_indexes[1:])):
@@ -184,14 +296,28 @@ def calculate_surface_multipliers(
             )
 
         edge_slice = edges[start_edge:end_edge + 1]
-        lengths = [e.get("length", 0.0) for e in edge_slice]
-        total_length = sum(lengths)
 
-        if total_length > 0:
-            multiplier = sum(edge_multiplier(e) * l for e, l in zip(edge_slice, lengths)) / total_length
+        surface_m = _leg_category_multiplier(edge_slice, "surface", tables["surface"], default_multiplier)
+        road_class_m = _leg_category_multiplier(edge_slice, "road_class", tables["road_class"], default_multiplier)
+        use_m = _leg_category_multiplier(edge_slice, "use", tables["use"], default_multiplier)
+        physical = (
+            _FAMILY_WEIGHTS["surface"] * surface_m
+            + _FAMILY_WEIGHTS["road_class"] * road_class_m
+            + _FAMILY_WEIGHTS["use"] * use_m
+        )
+
+        sac_m = _leg_sac_scale_multiplier(edge_slice, tables["sac_scale"], default_multiplier)
+
+        if sac_m is None:
+            final = physical
+        elif sac_m <= _SAC_DOMINANCE_THRESHOLD and abs(sac_m - physical) <= _SAC_CONFLICT_DELTA:
+            final = sac_m
         else:
-            multiplier = sum(edge_multiplier(e) for e in edge_slice) / len(edge_slice)
+            final = _SAC_BLEND_WEIGHT * sac_m + (1 - _SAC_BLEND_WEIGHT) * physical
 
-        multipliers.append(multiplier)
+        multipliers.append(final)
 
     return multipliers
+
+
+# todo: all the weights need to be tuned (also the surface_weights.json file), this is just a first draft.

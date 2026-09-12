@@ -12,6 +12,8 @@
 // same pattern as Leaflet/Pyodide — this directive tells the IDE/linter it's
 // an intentional external global, not a typo.
 
+import { formatDateTime } from './format.js';
+
 let listEl = null;
 let emptyStateEl = null;
 let fileCount = 0;
@@ -173,7 +175,14 @@ async function readFile(file, removeAnchor) {
  * @param {HTMLElement} opts.listEl - `<ul>` to render per-file status rows into
  * @param {HTMLElement} opts.emptyStateEl - shown while no files have been dropped
  * @param {() => boolean} opts.isTrackReady - must return true (a GPX is parsed) before drops are accepted
- * @param {(photoReadings: {lat: number, lon: number, timestamp: string}[]) => Promise<{status: 'ok'|'too_far', lat: number, lon: number, distanceFromStart: number, timestamp: string, gapM: number}[]>} opts.resolvePhotoAnchors -
+ * @param {() => Date|null} opts.getStartTime - current route start time, or null if unset/invalid
+ * @param {() => {isValid: boolean, resolvedDate?: Date}} opts.getStartTimeResult -
+ *   current value of the main start-time toggle; `resolvedDate` is the
+ *   activity's end time regardless of whether it was entered directly or as
+ *   a duration. A valid result is required before photos are resolved, so
+ *   every photo can be checked against the actual activity time window
+ *   (see resolvePhotoAnchors below) instead of just its GPS.
+ * @param {(photoReadings: {lat: number, lon: number, timestamp: string}[], activityWindow?: {startIso: string, endIso: string}) => Promise<{status: 'ok'|'too_far'|'outside_activity_time', lat: number, lon: number, distanceFromStart: number, timestamp: string, gapM: number}[]>} opts.resolvePhotoAnchors -
  *   pyodideBridge.resolvePhotoAnchors, reused as-is
  * @param {(anchor: {lat: number, lon: number, distanceFromStart: number, timestamp: Date, source: string}) => number} opts.addAnchor -
  *   anchors.js's addAnchor, reused as-is
@@ -182,7 +191,19 @@ async function readFile(file, removeAnchor) {
  *   removes the anchor it created
  * @param {(message: string, isError?: boolean) => void} opts.setStatus
  */
-export function initPhotoDrop({ dropzoneEl, inputEl, listEl: list, emptyStateEl: emptyState, isTrackReady, resolvePhotoAnchors, addAnchor, removeAnchor, setStatus }) {
+export function initPhotoDrop({
+  dropzoneEl,
+  inputEl,
+  listEl: list,
+  emptyStateEl: emptyState,
+  isTrackReady,
+  getStartTime,
+  getStartTimeResult,
+  resolvePhotoAnchors,
+  addAnchor,
+  removeAnchor,
+  setStatus,
+}) {
   listEl = list;
   emptyStateEl = emptyState;
   setEmptyState();
@@ -195,6 +216,13 @@ export function initPhotoDrop({ dropzoneEl, inputEl, listEl: list, emptyStateEl:
       setStatus('Upload a GPX route before adding photos.', true);
       return;
     }
+    const startTimeResult = getStartTimeResult();
+    const start = getStartTime();
+    if (!startTimeResult.isValid || !start) {
+      setStatus('Set a start time and duration before adding photos.', true);
+      return;
+    }
+    const activityWindow = { startIso: start.toISOString(), endIso: startTimeResult.resolvedDate.toISOString() };
 
     const readings = (await Promise.all([...files].map((file) => readFile(file, removeAnchor)))).filter(Boolean);
     if (readings.length === 0) {
@@ -205,6 +233,7 @@ export function initPhotoDrop({ dropzoneEl, inputEl, listEl: list, emptyStateEl:
     try {
       results = await resolvePhotoAnchors(
         readings.map((r) => ({ lat: r.lat, lon: r.lon, timestamp: r.timestamp.toISOString() })),
+        activityWindow,
       );
     } catch (error) {
       console.error(error);
@@ -214,6 +243,10 @@ export function initPhotoDrop({ dropzoneEl, inputEl, listEl: list, emptyStateEl:
 
     readings.forEach((reading, index) => {
       const result = results[index];
+      if (result.status === 'outside_activity_time') {
+        reading.setRowStatus(`Taken ${formatDateTime(reading.timestamp)}, outside the activity's time — ignored`, true);
+        return;
+      }
       if (result.status !== 'ok') {
         reading.setRowStatus(`Too far from route (${formatGapMeters(result.gapM)} away)`, true);
         return;

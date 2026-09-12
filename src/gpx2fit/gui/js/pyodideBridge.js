@@ -13,6 +13,9 @@
 
 // Public Valhalla demo server — no API key needed.
 const VALHALLA_TRACE_ATTRIBUTES_URL = 'https://valhalla1.openstreetmap.de/trace_attributes';
+// The demo server has no SLA, and convert() treats a failed/slow fetch here
+// as "no surface data" rather than blocking the whole conversion on it.
+const VALHALLA_FETCH_TIMEOUT_MS = 30_000;
 
 let pyodidePromise = null;
 let pyodide = null;
@@ -69,6 +72,7 @@ async function ensurePyodide() {
       ['src/gpx2fit/core/pacing/photo_anchors.py', await fetchText('/src/gpx2fit/core/pacing/photo_anchors.py')],
       ['src/gpx2fit/core/pacing/gradient.py', await fetchText('/src/gpx2fit/core/pacing/gradient.py')],
       ['src/gpx2fit/core/pacing/surface.py', await fetchText('/src/gpx2fit/core/pacing/surface.py')],
+      ['src/gpx2fit/core/pacing/surface_weights.json', await fetchText('/src/gpx2fit/core/pacing/surface_weights.json')],
       ['src/gpx2fit/core/pacing/combine.py', await fetchText('/src/gpx2fit/core/pacing/combine.py')],
       ['src/gpx2fit/core/pacing/stops.py', await fetchText('/src/gpx2fit/core/pacing/stops.py')],
     ];
@@ -174,23 +178,35 @@ export async function resolveAnchorCandidates(lat, lon) {
  *
  * @param {{lat: number, lon: number, timestamp: string}[]} photoReadings -
  *   EXIF-derived GPS+timestamp per photo, timestamp as ISO 8601
- * @returns {Promise<{status: 'ok'|'too_far', lat: number, lon: number, distanceFromStart: number, timestamp: string, gapM: number}[]>}
+ * @param {{startIso: string, endIso: string}} [activityWindow] - the
+ *   activity's planned start/end time (ISO 8601). A photo captured outside
+ *   this window (padded by a small clock-drift tolerance, see
+ *   photo_anchors.ACTIVITY_TIME_TOLERANCE) resolves with status
+ *   "outside_activity_time" regardless of how well its GPS matches the
+ *   route — catches e.g. the start-time field being left on its "now"
+ *   default while the dropped photos are from a past activity. Omit to skip
+ *   this check (e.g. before the frontend has a valid start time).
+ * @returns {Promise<{status: 'ok'|'too_far'|'outside_activity_time', lat: number, lon: number, distanceFromStart: number, timestamp: string, gapM: number}[]>}
  */
-export async function resolvePhotoAnchors(photoReadings) {
+export async function resolvePhotoAnchors(photoReadings, activityWindow) {
   return enqueue(async () => {
     const runtime = await ensurePyodide();
     runtime.globals.set('photo_readings_json', JSON.stringify(photoReadings));
+    runtime.globals.set('activity_start_iso', activityWindow?.startIso ?? null);
+    runtime.globals.set('activity_end_iso', activityWindow?.endIso ?? null);
 
     await runtime.runPythonAsync(`
     import datetime as dt
     import json
-    
+
     from gpx2fit.core.pacing.photo_anchors import RawPhotoAnchor, resolve_photo_anchors
-    
+
     _raw_photo_anchors = [
         RawPhotoAnchor(lat=r["lat"], lon=r["lon"], timestamp=dt.datetime.fromisoformat(r["timestamp"]))
         for r in json.loads(photo_readings_json)
     ]
+    _activity_start = dt.datetime.fromisoformat(activity_start_iso) if activity_start_iso else None
+    _activity_end = dt.datetime.fromisoformat(activity_end_iso) if activity_end_iso else None
     _resolved_photo_anchors = [
         {
             "status": r.status,
@@ -200,7 +216,7 @@ export async function resolvePhotoAnchors(photoReadings) {
             "timestamp": r.timestamp.isoformat(),
             "gapM": r.gap_m,
         }
-        for r in resolve_photo_anchors(_track, _raw_photo_anchors)
+        for r in resolve_photo_anchors(_track, _raw_photo_anchors, activity_start=_activity_start, activity_end=_activity_end)
     ]
     `);
 
@@ -214,48 +230,66 @@ export async function resolvePhotoAnchors(photoReadings) {
  * `_track` from Valhalla's trace_attributes endpoint. The payload is built
  * and the response parsed entirely in Python (`core/pacing/surface.py`) —
  * this function's only job is the actual network round trip, since `core/`
- * itself must stay I/O-free to keep running outside Pyodide too.
+ * itself must stay I/O-free to keep running outside Pyodide too. The fetch
+ * is aborted after `VALHALLA_FETCH_TIMEOUT_MS` so a hung public demo server
+ * can't stall `convert()` indefinitely.
  *
- * Not yet wired into `convert()` — combine.py doesn't consume these
- * multipliers yet.
+ * Multipliers are aligned to `_track.points` as parsed (i.e. *not* yet
+ * expanded for any mid-route stops) — `convert()` expands them to match
+ * its stop-expanded working track before handing them to `combine()`.
  *
+ * Not exported: `convert()` is currently its only caller, and it's already
+ * running inside an `enqueue()`-wrapped task by the time it calls this, so
+ * this takes the already-initialized `runtime` directly rather than
+ * awaiting `ensurePyodide()` (and can't itself be wrapped in `enqueue()`
+ * without deadlocking on the queue it would already be part of).
+ *
+ * @param {'RUNNING'|'HIKING'} sportEnumName - name of a `SportType` member,
+ *   used to pick the surface weight table. Passed explicitly rather than
+ *   read off `_track.sport`, which is never set on the parsed track.
+ * @param {object} runtime - an already-initialized Pyodide runtime.
  * @returns {Promise<number[]>} one multiplier per leg (length `_track.points.length - 1`)
  */
-export async function fetchSurfaceMultipliers() {
-  return enqueue(async () => {
-    const runtime = await ensurePyodide();
+async function fetchSurfaceMultipliers(sportEnumName, runtime) {
+  runtime.globals.set('surface_sport_enum_name', sportEnumName);
+  await runtime.runPythonAsync(`
+  from gpx2fit.core.models import SportType
+  from gpx2fit.core.pacing.surface import build_trace_attributes_payload
 
-    await runtime.runPythonAsync(`
-    from gpx2fit.core.pacing.surface import build_trace_attributes_payload
-    
-    _trace_payload = build_trace_attributes_payload(_track)
-    `);
-    const toJsOpts = {create_proxies: false, dict_converter: Object.fromEntries };
-    const payload = runtime.globals.get('_trace_payload').toJs(toJsOpts);
+  _trace_payload = build_trace_attributes_payload(_track)
+  _surface_sport = SportType[surface_sport_enum_name]
+  `);
+  const toJsOpts = { create_proxies: false, dict_converter: Object.fromEntries };
+  const payload = runtime.globals.get('_trace_payload').toJs(toJsOpts);
 
-    const response = await fetch(VALHALLA_TRACE_ATTRIBUTES_URL, {
+  const abortController = new AbortController();
+  const timeoutId = setTimeout(() => abortController.abort(), VALHALLA_FETCH_TIMEOUT_MS);
+  let response;
+  try {
+    response = await fetch(VALHALLA_TRACE_ATTRIBUTES_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
+      signal: abortController.signal,
     });
-    if (!response.ok) {
-      throw new Error(`Valhalla trace_attributes request failed: ${response.status} ${response.statusText}`);
-    }
-    const valhallaResponse = await response.json();
+  } finally {
+    clearTimeout(timeoutId);
+  }
+  if (!response.ok) {
+    throw new Error(`Valhalla trace_attributes request failed: ${response.status} ${response.statusText}`);
+  }
+  const valhallaResponse = await response.json();
 
-    runtime.globals.set('valhalla_response_json', JSON.stringify(valhallaResponse));
-    await runtime.runPythonAsync(`
-    import json
-    
-    from gpx2fit.core.pacing.surface import DEFAULT_SURFACE_WEIGHTS, calculate_surface_multipliers
-    
-    _surface_multipliers = calculate_surface_multipliers(
-        _track, json.loads(valhalla_response_json), DEFAULT_SURFACE_WEIGHTS
-    )
-    `);
+  runtime.globals.set('valhalla_response_json', JSON.stringify(valhallaResponse));
+  await runtime.runPythonAsync(`
+  import json
 
-    return runtime.globals.get('_surface_multipliers').toJs({ create_proxies: false });
-  });
+  from gpx2fit.core.pacing.surface import calculate_surface_multipliers
+
+  _surface_multipliers = calculate_surface_multipliers(_track, json.loads(valhalla_response_json), _surface_sport)
+  `);
+
+  return runtime.globals.get('_surface_multipliers').toJs({ create_proxies: false });
 }
 
 /**
@@ -281,12 +315,24 @@ export async function fetchSurfaceMultipliers() {
 export async function convert({ startIso, durationSeconds, sportEnumName, anchors, stops, device }) {
   return enqueue(async () => {
     const runtime = await ensurePyodide();
+
+    // Surface multipliers are best-effort: a Valhalla outage or network
+    // hiccup must not block the whole conversion, so any failure here just
+    // means the FIT file comes out without surface-based pacing.
+    let surfaceMultipliers = null;
+    try {
+      surfaceMultipliers = await fetchSurfaceMultipliers(sportEnumName, runtime);
+    } catch (err) {
+      console.warn('Surface multiplier fetch failed; continuing without surface-based pacing.', err);
+    }
+
     runtime.globals.set('start_iso', startIso);
     runtime.globals.set('duration_seconds', durationSeconds);
     runtime.globals.set('sport_enum_name', sportEnumName);
     runtime.globals.set('raw_anchors_json', JSON.stringify(anchors));
     runtime.globals.set('raw_stops_json', JSON.stringify(stops ?? []));
     runtime.globals.set('device_name', device ?? null);
+    runtime.globals.set('surface_multipliers_json', surfaceMultipliers ? JSON.stringify(surfaceMultipliers) : null);
 
     await runtime.runPythonAsync(`
     import datetime as dt
@@ -295,7 +341,7 @@ export async function convert({ startIso, durationSeconds, sportEnumName, anchor
     from gpx2fit.core.models import Anchor, RawAnchor, RawStop, SportType, Track
     from gpx2fit.core.pacing.anchors import add_start_end_anchors, build_user_anchors
     from gpx2fit.core.pacing.combine import combine
-    from gpx2fit.core.pacing.stops import expand_track_with_stops, resolve_stops
+    from gpx2fit.core.pacing.stops import expand_multipliers_with_stops, expand_track_with_stops, resolve_stops
     from gpx2fit.core.fit_writer import write_fit
     
     if device_name:
@@ -342,10 +388,19 @@ export async function convert({ startIso, durationSeconds, sportEnumName, anchor
         )
     ]
     all_anchors = sorted(hard_anchors + stop_anchors, key=lambda a: (a.distance_from_start, a.timestamp))
-    
-    working_points = expand_track_with_stops(_track.points, [*resolved_mode_b, *mode_a_stops])
-    working_track = Track(points=working_points, sport=_track.sport, device=_track.device, activity_name=_track.activity_name)
-    combine(track=working_track, anchors=all_anchors, sport=sport, mode_a_stops=mode_a_stops)
+
+    all_stops = [*resolved_mode_b, *mode_a_stops]
+    working_points = expand_track_with_stops(_track.points, all_stops)
+    working_track = Track(points=working_points, sport=sport, device=_track.device, activity_name=_track.activity_name)
+
+    surface_multipliers = json.loads(surface_multipliers_json) if surface_multipliers_json else None
+    working_multipliers = (
+        expand_multipliers_with_stops(_track.points, surface_multipliers, all_stops)
+        if surface_multipliers is not None
+        else None
+    )
+
+    combine(track=working_track, anchors=all_anchors, sport=sport, multipliers=working_multipliers, mode_a_stops=mode_a_stops)
     fit_bytes = write_fit(working_track)
     `);
 

@@ -136,6 +136,8 @@ initPhotoDrop({
   listEl: photoListEl,
   emptyStateEl: photoEmptyStateEl,
   isTrackReady: () => routePoints !== null,
+  getStartTime,
+  getStartTimeResult: () => startTimeResult,
   resolvePhotoAnchors,
   addAnchor: anchorsModule.addAnchor,
   removeAnchor: anchorsModule.removeAnchor,

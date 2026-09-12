@@ -125,3 +125,41 @@ def expand_track_with_stops(points: list[TrackPoint], stops: list[ResolvedStop |
     if pending:
         raise ValueError(f"No track point found at stop distance {next(iter(pending))}m.")
     return result
+
+
+def expand_multipliers_with_stops(
+    points: list[TrackPoint],
+    multipliers: list[float],
+    stops: list[ResolvedStop | ModeAStop],
+) -> list[float]:
+    """Duplicate one multiplier entry per stop, mirroring expand_track_with_stops.
+
+    expand_track_with_stops splits the leg leaving a stop's point in two: a
+    new zero-distance leg (arrival -> departure), followed by the original
+    leg now starting one point later. This duplicates that leg's multiplier
+    for both, keeping the result aligned 1:1 with
+    expand_track_with_stops(points, stops)'s legs — the zero-distance leg's
+    copy is never actually used (its modeled time is zero regardless of
+    speed, see gradient.py's zero-distance guard), and the real leg keeps
+    the original surface multiplier.
+
+    Args:
+        points: The same (unexpanded) track points `multipliers` was
+            computed against — one more point than `multipliers` has
+            entries.
+        multipliers: Per-leg multipliers, aligned to `points`.
+        stops: Resolved and/or pending stops, in any order. A stop's
+            distance is guaranteed (by resolve_stops, which rejects a stop
+            coinciding with an anchor) to never fall on `points[0]` or
+            `points[-1]`, so every stop always duplicates a real entry of
+            `multipliers`.
+    Returns:
+        A new multipliers list, one longer per stop.
+    """
+    pending = {s.distance_from_start for s in stops}
+    result: list[float] = []
+    for i, m in enumerate(multipliers):
+        result.append(m)
+        if points[i].distance_from_start in pending:
+            result.append(m)
+    return result

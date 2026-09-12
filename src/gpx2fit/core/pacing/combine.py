@@ -17,6 +17,7 @@ def _pace_segment(
     end_anchor: Anchor,
     sport: SportType,
     workout_avg_speed_mps: float,
+    segment_multipliers: list[float] | None = None,
     segment_mode_a_stops: list[ModeAStop] | None = None,
 ) -> None:
     """Assign timestamps to one anchor-to-anchor segment's points, in place.
@@ -39,23 +40,56 @@ def _pace_segment(
         sport: Sport type, used to pick the speed model.
         workout_avg_speed_mps: Average speed over the whole workout (not just
             this segment) — used only to decide between Minetti and Tobler for HIKING.
+        segment_multipliers: Optional per-leg speed multipliers, one for each leg
+            (N-1 values for N points). If provided, the per-leg speeds are multiplied
+            by the corresponding multiplier before scaling to match the segment's
+            anchor-to-anchor duration (now the multipliers are surface based).
         segment_mode_a_stops: This segment's Mode A stops, sorted ascending
             by distance_from_start.
 
     Note:
-        Does nothing if the segment has fewer than 2 points, if the chosen
-        model yields no speeds, or if either the modeled or anchor-to-anchor
-        time is zero/negative — in every such case the segment's points are
-        left with whatever timestamp they already had (typically None). See
-        combine()'s docstring for when this can happen and why it's safe.
+        Beyond the two boundary points (always stamped from the anchors
+        themselves), does nothing to the segment's interior if the segment
+        has fewer than 2 points, if the chosen model yields no speeds, or if
+        the modeled time comes out zero/negative (e.g. a gradient extreme
+        enough to fall outside gradient.py's calibrated domain, driving
+        every leg's modeled speed to 0) — in that case the interior points
+        are left with whatever timestamp they already had (typically None).
+        See combine()'s docstring for when this can happen and why it's safe.
 
     Raises:
-        ValueError: If this segment's Mode A stop durations alone consume
+        ValueError: If end_anchor's timestamp isn't strictly later than
+            start_anchor's — anchors are sorted by ascending distance before
+            reaching here, so this means two anchors' timestamps contradict
+            their distance order (e.g. a photo anchor built from a capture
+            time that doesn't actually fall within the activity). Also
+            raised if this segment's Mode A stop durations alone consume
             the entire anchor-to-anchor time budget.
     """
     segment_mode_a_stops = segment_mode_a_stops or []
     if len(segment_points) < 2:
         return
+
+    # Stamped unconditionally, before any of the degenerate-model checks
+    # below can bail out early: for the track's very first segment,
+    # segment_points[0] is the track's global first point, and for its very
+    # last segment, segment_points[-1] is the track's global last point —
+    # neither has a neighboring segment to fall back on to pick up a
+    # timestamp later (every other shared boundary point does, since
+    # consecutive segments overlap by one point). Without this, a degenerate
+    # segment (e.g. a bad elevation reading driving every leg's modeled
+    # speed to 0) would leave fit_writer unable to find a start/end time at
+    # all, rather than merely losing pacing detail for that one segment.
+    segment_points[0].timestamp = start_anchor.timestamp
+    segment_points[-1].timestamp = end_anchor.timestamp
+
+    anchor_total_time = (end_anchor.timestamp - start_anchor.timestamp).total_seconds()
+    if anchor_total_time <= 0:
+        raise ValueError(
+            f"Anchor at {end_anchor.distance_from_start}m ({end_anchor.timestamp}) is not "
+            f"later than the anchor at {start_anchor.distance_from_start}m ({start_anchor.timestamp}); "
+            "anchors must have strictly increasing timestamps as distance increases."
+        )
 
     segment_track = Track(points=segment_points)
     if sport == SportType.RUNNING:
@@ -67,6 +101,13 @@ def _pace_segment(
     if not speeds:
         return
 
+    if segment_multipliers is not None:
+        if len(segment_multipliers) != len(speeds):
+            raise ValueError(
+                f"Length of segment_multipliers ({len(segment_multipliers)}) does not match number of legs ({len(speeds)})."
+            )
+        speeds = [speed * multiplier for speed, multiplier in zip(speeds, segment_multipliers)]
+
     leg_distances = [
         curr.distance_from_start - prev.distance_from_start
         for prev, curr in zip(segment_points, segment_points[1:])
@@ -76,8 +117,7 @@ def _pace_segment(
         for distance, speed in zip(leg_distances, speeds)
     ]
     modeled_total_time = sum(modeled_leg_times)
-    anchor_total_time = (end_anchor.timestamp - start_anchor.timestamp).total_seconds()
-    if modeled_total_time <= 0 or anchor_total_time <= 0:
+    if modeled_total_time <= 0:
         return
 
     total_stop_seconds = sum(s.duration.total_seconds() for s in segment_mode_a_stops)
@@ -89,7 +129,6 @@ def _pace_segment(
 
     scale = active_time / modeled_total_time
 
-    segment_points[0].timestamp = start_anchor.timestamp
     elapsed = 0.0
     extra = 0.0
     stop_index = 0
@@ -190,6 +229,7 @@ def combine(
     track: Track,
     anchors: list[Anchor],
     sport: SportType,
+    multipliers: list[float] | None = None,
     mode_a_stops: list[ModeAStop] | None = None,
 ) -> Track:
     """Stamp every track point with a timestamp, paced to match the given anchors.
@@ -222,6 +262,15 @@ def combine(
         anchors: Two or more Anchors, sorted by ascending distance_from_start,
             spanning the track from its first point to its last.
         sport: Sport type used to select the speed model.
+        multipliers: Optional per-leg speed multipliers, aligned to `track`
+            as passed here (N-1 values for `track`'s N points) — if `track`
+            has already been expanded with stop points (see
+            pacing.stops.expand_track_with_stops), the multipliers must be
+            expanded the same way first (pacing.stops.expand_multipliers_with_stops)
+            before being passed in. Calculated by pacing.surface module from
+            a Valhalla trace_attributes response. If provided, the per-leg
+            speeds are multiplied by the corresponding multiplier before
+            scaling to match the segment's anchor-to-anchor duration.
         mode_a_stops: Mode A stops (distance + duration only, arrival not
             yet known), sorted ascending by distance_from_start.
 
@@ -230,10 +279,14 @@ def combine(
         now timestamped.
     Raises:
         IndexError: If anchors is empty.
-        ValueError: If a segment's Mode A stop durations alone consume its
-            entire anchor-to-anchor time budget, or if _resolve_anchor_bounds
-            can't map every anchor to its own track point (see its
-            docstring) — this should never happen for anchors built via
+        ValueError: If any two consecutive anchors don't have strictly
+            increasing timestamps (a sign that an anchor's timestamp doesn't
+            actually belong on this track — e.g. a photo anchor built from a
+            capture time outside the activity, see pacing.photo_anchors),
+            if a segment's Mode A stop durations alone consume its entire
+            anchor-to-anchor time budget, or if _resolve_anchor_bounds can't
+            map every anchor to its own track point (see its docstring) —
+            this should never happen for anchors built via
             pacing.anchors.build_user_anchors, which already rejects two
             anchors resolving to the same distance.
     """
@@ -245,7 +298,8 @@ def combine(
     buckets = _bucket_mode_a_stops(anchors, mode_a_stops)
     for i in range(len(anchors) - 1):
         segment_points = track.points[anchor_indexes[i]: anchor_indexes[i + 1] + 1]
-        _pace_segment(segment_points, anchors[i], anchors[i + 1], sport, workout_avg_speed_mps, buckets[i])
+        segment_multipliers = multipliers[anchor_indexes[i]: anchor_indexes[i + 1]] if multipliers is not None else None
+        _pace_segment(segment_points, anchors[i], anchors[i + 1], sport, workout_avg_speed_mps, segment_multipliers, buckets[i])
 
     return track
 

@@ -1,10 +1,10 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
 from gpx2fit.core.models import RawPhotoAnchor, Track
 from gpx2fit.core.pacing.anchors import distance_meters
-from gpx2fit.core.pacing.photo_anchors import MAX_MATCH_DISTANCE_M, resolve_photo_anchors
+from gpx2fit.core.pacing.photo_anchors import ACTIVITY_TIME_TOLERANCE, MAX_MATCH_DISTANCE_M, resolve_photo_anchors
 from tests.conftest import point
 
 
@@ -132,3 +132,83 @@ class TestResolvePhotoAnchors:
     def test_empty_raw_anchor_list_returns_empty_list(self):
         track = Track(points=[point(lat=45.0, lon=7.0, distance_from_start=0.0)])
         assert resolve_photo_anchors(track, []) == []
+
+
+class TestResolvePhotoAnchorsActivityTimeWindow:
+    def test_time_check_is_skipped_when_activity_window_not_given(self):
+        # Default behavior (no activity_start/activity_end) is unchanged:
+        # a photo from a wildly different date still resolves purely on GPS.
+        track = Track(points=[point(lat=45.0, lon=7.0, distance_from_start=0.0)])
+        raw = [RawPhotoAnchor(lat=45.0, lon=7.0, timestamp=datetime(1999, 1, 1))]
+
+        resolved = resolve_photo_anchors(track, raw)
+
+        assert resolved[0].status == "ok"
+
+    def test_status_ok_when_timestamp_within_activity_window(self):
+        track = Track(points=[point(lat=45.0, lon=7.0, distance_from_start=0.0)])
+        start = datetime(2024, 6, 1, 8, 0, 0)
+        end = datetime(2024, 6, 1, 10, 0, 0)
+        raw = [RawPhotoAnchor(lat=45.0, lon=7.0, timestamp=datetime(2024, 6, 1, 9, 0, 0))]
+
+        resolved = resolve_photo_anchors(track, raw, activity_start=start, activity_end=end)
+
+        assert resolved[0].status == "ok"
+
+    def test_status_outside_activity_time_when_timestamp_is_before_activity_start(self):
+        # This is exactly what a stale "today" start-time field produces:
+        # real photos from a past hike, dated long before the chosen start.
+        track = Track(points=[point(lat=45.0, lon=7.0, distance_from_start=0.0)])
+        start = datetime(2024, 6, 1, 8, 0, 0)
+        end = datetime(2024, 6, 1, 10, 0, 0)
+        raw = [RawPhotoAnchor(lat=45.0, lon=7.0, timestamp=datetime(2024, 1, 1, 9, 0, 0))]
+
+        resolved = resolve_photo_anchors(track, raw, activity_start=start, activity_end=end)
+
+        assert resolved[0].status == "outside_activity_time"
+
+    def test_status_outside_activity_time_when_timestamp_is_after_activity_end(self):
+        track = Track(points=[point(lat=45.0, lon=7.0, distance_from_start=0.0)])
+        start = datetime(2024, 6, 1, 8, 0, 0)
+        end = datetime(2024, 6, 1, 10, 0, 0)
+        raw = [RawPhotoAnchor(lat=45.0, lon=7.0, timestamp=datetime(2024, 6, 2, 9, 0, 0))]
+
+        resolved = resolve_photo_anchors(track, raw, activity_start=start, activity_end=end)
+
+        assert resolved[0].status == "outside_activity_time"
+
+    def test_outside_activity_time_takes_priority_over_a_good_geo_match(self):
+        # A wrong date makes even an exact GPS match meaningless — this
+        # matters because a coincidentally-close GPS match on a wrongly
+        # dated photo is exactly the scenario that slipped through before.
+        track = Track(points=[point(lat=45.0, lon=7.0, distance_from_start=0.0)])
+        start = datetime(2024, 6, 1, 8, 0, 0)
+        end = datetime(2024, 6, 1, 10, 0, 0)
+        raw = [RawPhotoAnchor(lat=45.0, lon=7.0, timestamp=datetime(2024, 1, 1, 9, 0, 0))]
+
+        resolved = resolve_photo_anchors(track, raw, activity_start=start, activity_end=end)
+
+        assert resolved[0].gap_m == pytest.approx(0.0)
+        assert resolved[0].status == "outside_activity_time"
+
+    def test_tolerance_absorbs_small_clock_drift_just_past_the_boundary(self):
+        track = Track(points=[point(lat=45.0, lon=7.0, distance_from_start=0.0)])
+        start = datetime(2024, 6, 1, 8, 0, 0)
+        end = datetime(2024, 6, 1, 10, 0, 0)
+        just_before_start = start - ACTIVITY_TIME_TOLERANCE + timedelta(seconds=1)
+        raw = [RawPhotoAnchor(lat=45.0, lon=7.0, timestamp=just_before_start)]
+
+        resolved = resolve_photo_anchors(track, raw, activity_start=start, activity_end=end)
+
+        assert resolved[0].status == "ok"
+
+    def test_timestamp_beyond_tolerance_is_still_rejected(self):
+        track = Track(points=[point(lat=45.0, lon=7.0, distance_from_start=0.0)])
+        start = datetime(2024, 6, 1, 8, 0, 0)
+        end = datetime(2024, 6, 1, 10, 0, 0)
+        just_too_early = start - ACTIVITY_TIME_TOLERANCE - timedelta(seconds=1)
+        raw = [RawPhotoAnchor(lat=45.0, lon=7.0, timestamp=just_too_early)]
+
+        resolved = resolve_photo_anchors(track, raw, activity_start=start, activity_end=end)
+
+        assert resolved[0].status == "outside_activity_time"

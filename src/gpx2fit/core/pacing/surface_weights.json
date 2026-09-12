@@ -1,0 +1,80 @@
+{
+  "hiking": {
+    "surface": {
+      "paved_smooth": 1.0,
+      "paved": 1.0,
+      "paved_rough": 0.95,
+      "compacted": 0.9,
+      "dirt": 0.9,
+      "gravel": 0.8,
+      "path": 0.75,
+      "impassable": 0.5
+    },
+    "road_class": {
+      "motorway": 1.0,
+      "trunk": 1.0,
+      "primary": 1.0,
+      "secondary": 1.0,
+      "tertiary": 1.0,
+      "unclassified": 0.95,
+      "residential": 1.0,
+      "service_other": 0.95
+    },
+    "use": {
+      "road": 1.0,
+      "living_street": 1.0,
+      "pedestrian": 1.0,
+      "footway": 0.95,
+      "track": 0.85,
+      "path": 0.85,
+      "steps": 0.4
+    },
+    "sac_scale": {
+      "1": 1.0,
+      "2": 0.9,
+      "3": 0.75,
+      "4": 0.6,
+      "5": 0.45,
+      "6": 0.3
+    }
+  },
+  "running": {
+    "surface": {
+      "paved_smooth": 1.0,
+      "paved": 1.0,
+      "paved_rough": 0.92,
+      "compacted": 0.88,
+      "dirt": 0.85,
+      "gravel": 0.75,
+      "path": 0.7,
+      "impassable": 0.4
+    },
+    "road_class": {
+      "motorway": 1.0,
+      "trunk": 1.0,
+      "primary": 1.0,
+      "secondary": 1.0,
+      "tertiary": 1.0,
+      "unclassified": 0.93,
+      "residential": 1.0,
+      "service_other": 0.93
+    },
+    "use": {
+      "road": 1.0,
+      "living_street": 1.0,
+      "pedestrian": 1.0,
+      "footway": 0.93,
+      "track": 0.8,
+      "path": 0.8,
+      "steps": 0.3
+    },
+    "sac_scale": {
+      "1": 0.95,
+      "2": 0.8,
+      "3": 0.6,
+      "4": 0.4,
+      "5": 0.25,
+      "6": 0.15
+    }
+  }
+}
