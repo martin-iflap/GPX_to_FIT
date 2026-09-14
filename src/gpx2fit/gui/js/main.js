@@ -13,7 +13,7 @@ import * as stopsModule from './stops.js';
 import { initTheme } from './theme.js';
 import { createAnchorPlacer } from './anchorPopovers.js';
 import { initPhotoDrop, resetPhotoDrop } from './photoAnchors.js';
-import { formatDistanceKm, formatFileSize } from './format.js';
+import { describeError, formatDistanceKm, formatFileSize } from './format.js';
 
 const dropzone = document.getElementById('dropzone');
 const gpxFileInput = document.getElementById('gpxFileInput');
@@ -57,21 +57,33 @@ initTheme(themeToggle);
 const STATUS_ERROR_TIMEOUT_MS = 5000;
 let statusTimeoutId = null;
 
-// Errors are transient nudges ("set a start time first"), not permanent
-// state, so they clear themselves after a few seconds instead of sitting
-// there until the next unrelated status update happens to overwrite them.
-function setStatus(message, isError = false) {
+/**
+ * Updates the status line.
+ *
+ * @param {string} message
+ * @param {'error'|'input'|false} [kind] - `'error'` for an unexpected/
+ *   internal failure (styled red — see describeError in format.js), `'input'`
+ *   for a problem traceable to something the user entered or hasn't set up
+ *   yet (styled amber, so it visibly reads as "fix this" rather than "this
+ *   app is broken"), or omitted/false for a normal, non-error status.
+ *
+ * Errors are transient nudges, not permanent state, so they clear themselves
+ * after a few seconds instead of sitting there until the next unrelated
+ * status update happens to overwrite them.
+ */
+function setStatus(message, kind = false) {
   statusEl.textContent = message;
-  statusEl.classList.toggle('status-error', isError);
+  statusEl.classList.toggle('status-error', kind === 'error');
+  statusEl.classList.toggle('status-input', kind === 'input');
 
   if (statusTimeoutId) {
     clearTimeout(statusTimeoutId);
     statusTimeoutId = null;
   }
-  if (isError) {
+  if (kind) {
     statusTimeoutId = setTimeout(() => {
       statusEl.textContent = 'Ready.';
-      statusEl.classList.remove('status-error');
+      statusEl.classList.remove('status-error', 'status-input');
       statusTimeoutId = null;
     }, STATUS_ERROR_TIMEOUT_MS);
   }
@@ -177,7 +189,8 @@ async function handleFile(file) {
     setStatus('Route loaded. Set a start time and duration, or click the route to add anchors.');
   } catch (error) {
     console.error(error);
-    setStatus(`Error: ${error instanceof Error ? error.message : String(error)}`, true);
+    const { message, kind } = describeError(error);
+    setStatus(message, kind);
   }
   updateConvertAvailability();
 }
@@ -256,7 +269,8 @@ runButton.addEventListener('click', async () => {
     downloadLink.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } catch (error) {
     console.error(error);
-    setStatus(`Error: ${error instanceof Error ? error.message : String(error)}`, true);
+    const { message, kind } = describeError(error);
+    setStatus(message, kind);
   } finally {
     runButton.classList.remove('is-loading');
     runButton.textContent = originalLabel;

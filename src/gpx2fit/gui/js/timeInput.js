@@ -53,6 +53,14 @@ function computeDayCount(referenceStart, totalDurationSeconds) {
  *   'durationOrTimeOfDay' variant only: pre-fills the "Time of day" field and
  *   opens on that tab instead of "Duration since start" (used to seed an
  *   anchor popover with its estimated arrival time)
+ * @param {number} [opts.initialDayOffset] - for the 'durationOrTimeOfDay'
+ *   variant only, paired with `initialTimeOfDay`: which day (0-based offset
+ *   from the activity's first day) that estimated time actually falls on,
+ *   so a multi-day activity's day selector opens pre-set to the right day
+ *   instead of always defaulting to day 1 — which otherwise routinely
+ *   prefills a time that's invalid to confirm (earlier than an anchor
+ *   already placed on a later day). Applied once, the first time the day
+ *   selector's day count is computed; ignored without `initialTimeOfDay`.
  * @param {number} [opts.initialDurationSeconds] - pre-fills the Duration
  *   fields (hours/minutes) regardless of which mode ends up active, so
  *   switching tabs later still shows a sensible value instead of 0h 00m
@@ -73,12 +81,18 @@ export function createTimeToggle({
   getTotalDurationSeconds,
   onChange,
   initialTimeOfDay,
+  initialDayOffset,
   initialDurationSeconds,
   initialMode,
 }) {
   const isDurationOnly = variant === 'durationOnly';
   const state = { mode: 'duration', dayOffset: 0 };
   const otherKey = variant === 'durationOrEnd' ? 'end' : 'timeOfDay';
+  // Consumed once, the first time refreshDaySelector runs (see below) —
+  // after that the day selector's own click handler is the only thing that
+  // should move it, so a later, unrelated refresh doesn't keep snapping the
+  // day back to this initial value.
+  let pendingInitialDayOffset = typeof initialDayOffset === 'number' ? initialDayOffset : null;
 
   const modesEl = document.createElement('div');
   modesEl.className = 'time-toggle-modes segmented';
@@ -259,7 +273,8 @@ export function createTimeToggle({
     }
     const totalDurationSeconds = typeof getTotalDurationSeconds === 'function' ? getTotalDurationSeconds() : null;
     const dayCount = reference ? computeDayCount(reference, totalDurationSeconds) : 1;
-    daySelector.setDayCount(dayCount, reference);
+    daySelector.setDayCount(dayCount, reference, pendingInitialDayOffset ?? undefined);
+    pendingInitialDayOffset = null;
     state.dayOffset = daySelector.getDayIndex();
   }
 

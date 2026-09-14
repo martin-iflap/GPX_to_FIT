@@ -57,6 +57,25 @@ export function formatDistanceKm(meters) {
   return `${(meters / 1000).toFixed(2)} km`;
 }
 
+/**
+ * Turns a caught error into a `{ message, kind }` pair for `setStatus`.
+ * `kind: 'input'` (from `pyodideBridge.js`'s `classifyPyError` tagging an
+ * error `isInputError`) means the problem traces back to something the user
+ * entered — its message is already written for an end user, so it's shown
+ * as-is rather than as a generic failure. Everything else is `kind: 'error'`:
+ * an unexpected/internal failure, kept as the raw `Error: <message>` (a full
+ * Python traceback, for a PythonError) since that detail is what makes it
+ * debuggable.
+ * @param {unknown} error
+ * @returns {{ message: string, kind: 'input'|'error' }}
+ */
+export function describeError(error) {
+  if (error && error.isInputError) {
+    return { message: error.message, kind: 'input' };
+  }
+  return { message: `Error: ${error instanceof Error ? error.message : String(error)}`, kind: 'error' };
+}
+
 const FILE_SIZE_UNITS = ['bytes', 'KB', 'MB', 'GB'];
 
 /**

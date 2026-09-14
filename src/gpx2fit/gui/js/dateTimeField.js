@@ -222,7 +222,7 @@ export function createTimeField({ container, ariaLabel = 'Time', quickPicks = tr
  * @param {(dayIndex: number) => void} opts.onChange - fired only when the
  *   user actively picks a different day from the dropdown (0-based offset
  *   from the activity's first day)
- * @returns {{ setDayCount: (count: number, referenceDate: Date|null) => void, getDayIndex: () => number }}
+ * @returns {{ setDayCount: (count: number, referenceDate: Date|null, desiredIndex?: number) => void, getDayIndex: () => number }}
  */
 export function createDaySelector({ container, onChange }) {
   const wrapper = document.createElement('div');
@@ -308,10 +308,17 @@ export function createDaySelector({ container, onChange }) {
     // call) if the previously-selected day no longer exists — this only
     // happens if the reference/duration changes while the popover is open,
     // which the caller re-derives on every keystroke anyway.
-    setDayCount(count, referenceDate) {
+    //
+    // `desiredIndex`, when given, forces the selection to that day (clamped
+    // into range) instead of preserving whatever was selected before — used
+    // once, by createTimeToggle, to open a popover on the day an estimated
+    // time actually falls on rather than always day 1.
+    setDayCount(count, referenceDate, desiredIndex) {
       dayCount = Math.max(1, count);
       reference = referenceDate;
-      if (dayIndex >= dayCount) {
+      if (typeof desiredIndex === 'number') {
+        dayIndex = Math.min(Math.max(desiredIndex, 0), dayCount - 1);
+      } else if (dayIndex >= dayCount) {
         dayIndex = 0;
       }
       wrapper.classList.toggle('hidden', dayCount <= 1);

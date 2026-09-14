@@ -12,7 +12,7 @@
 // same pattern as Leaflet/Pyodide — this directive tells the IDE/linter it's
 // an intentional external global, not a typo.
 
-import { formatDateTime } from './format.js';
+import { describeError, formatDateTime } from './format.js';
 
 let listEl = null;
 let emptyStateEl = null;
@@ -189,7 +189,7 @@ async function readFile(file, removeAnchor) {
  * @param {(id: number) => void} opts.removeAnchor - anchors.js's removeAnchor, reused as-is;
  *   called when a successfully-resolved photo's row is dismissed, so removing the row also
  *   removes the anchor it created
- * @param {(message: string, isError?: boolean) => void} opts.setStatus
+ * @param {(message: string, kind?: 'error'|'input') => void} opts.setStatus
  */
 export function initPhotoDrop({
   dropzoneEl,
@@ -213,13 +213,13 @@ export function initPhotoDrop({
       return;
     }
     if (!isTrackReady()) {
-      setStatus('Upload a GPX route before adding photos.', true);
+      setStatus('Upload a GPX route before adding photos.', 'input');
       return;
     }
     const startTimeResult = getStartTimeResult();
     const start = getStartTime();
     if (!startTimeResult.isValid || !start) {
-      setStatus('Set a start time and duration before adding photos.', true);
+      setStatus('Set a start time and duration before adding photos.', 'input');
       return;
     }
     const activityWindow = { startIso: start.toISOString(), endIso: startTimeResult.resolvedDate.toISOString() };
@@ -237,7 +237,13 @@ export function initPhotoDrop({
       );
     } catch (error) {
       console.error(error);
-      readings.forEach((r) => r.setRowStatus('Could not match to route', true));
+      // This row is too narrow for a full internal error (traceback and
+      // all) — only swap in the real message when it's an InputError, whose
+      // text is already short and written for the user; anything else keeps
+      // the generic label, with the detail left to the console for debugging.
+      const described = describeError(error);
+      const rowMessage = described.kind === 'input' ? described.message : 'Could not match to route';
+      readings.forEach((r) => r.setRowStatus(rowMessage, true));
       return;
     }
 

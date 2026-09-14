@@ -2,7 +2,7 @@ from datetime import timedelta
 
 import pytest
 
-from gpx2fit.core.models import ModeAStop, SportType, Track
+from gpx2fit.core.models import InputError, ModeAStop, SportType, Track
 from gpx2fit.core.pacing.combine import HIKING_TOBLER_THRESHOLD_MPS, combine
 from tests.conftest import START, anchor, point, timestamp_of
 
@@ -87,7 +87,9 @@ class TestCombineDegenerateSegment:
         ])
         anchors = [anchor(0.0, START), anchor(100.0, START - timedelta(minutes=1))]
 
-        with pytest.raises(ValueError):
+        # InputError, specifically: this is a user-fixable data problem (bad
+        # anchor/stop times), not a bug
+        with pytest.raises(InputError):
             combine(track, anchors, SportType.RUNNING)
 
     def test_anchor_with_identical_timestamp_to_previous_anchor_raises(self):
@@ -97,7 +99,7 @@ class TestCombineDegenerateSegment:
         ])
         anchors = [anchor(0.0, START), anchor(100.0, START)]
 
-        with pytest.raises(ValueError):
+        with pytest.raises(InputError):
             combine(track, anchors, SportType.RUNNING)
 
     def test_degenerate_first_segment_does_not_break_a_later_well_behaved_segment(self):
@@ -374,7 +376,7 @@ class TestCombineModeAStops:
         ])
         anchors = [anchor(0.0, START), anchor(200.0, START + timedelta(minutes=5))]
 
-        with pytest.raises(ValueError):
+        with pytest.raises(InputError):
             combine(track, anchors, SportType.RUNNING, mode_a_stops=[ModeAStop(100.0, timedelta(minutes=10))])
 
     def test_mode_a_stops_omitted_or_none_behaves_like_today(self):

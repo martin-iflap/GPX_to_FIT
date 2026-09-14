@@ -29,8 +29,35 @@ let pyodide = null;
 // that throws still lets later ones run — only its own caller sees the error.
 let queueTail = Promise.resolve();
 
+// Pyodide surfaces every Python exception as a `PythonError` whose `message`
+// is a full formatted traceback — useful for debugging a real bug, but
+// unreadable noise for a problem actually caused by something the user
+// entered (e.g. two anchors with contradictory times). `core.models.InputError`
+// exists precisely to be told apart from that: since Python's traceback
+// formatter always ends on a "<ExceptionClassName>: <message>" line, catching
+// that one class by name here (rather than needing every call site below to
+// catch and re-signal it individually) is enough to recover the clean
+// message and flag it for the UI. Every other exception (including plain
+// ValueErrors raised for internal contract violations) passes through
+// unchanged, traceback and all.
+function classifyPyError(error) {
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  const lines = rawMessage.split('\n').map((line) => line.trim()).filter(Boolean);
+  const lastLine = lines[lines.length - 1] || '';
+  const match = /^InputError:\s*(.*)$/.exec(lastLine);
+  if (!match) {
+    return error;
+  }
+  const inputError = new Error(match[1]);
+  inputError.name = 'InputError';
+  inputError.isInputError = true;
+  return inputError;
+}
+
 function enqueue(task) {
-  const runPromise = queueTail.then(task);
+  const runPromise = queueTail.then(task).catch((error) => {
+    throw classifyPyError(error);
+  });
   queueTail = runPromise.then(() => undefined, () => undefined);
   return runPromise;
 }
@@ -107,6 +134,10 @@ async function ensurePyodide() {
  * upload — `resolveAnchorCandidates` and `convert` both reuse `_track`
  * rather than reparsing.
  *
+ * Rejects with an `Error` whose `isInputError` is `true` (see
+ * `classifyPyError`) if the file isn't valid GPX or has no track points —
+ * callers should show that message to the user as-is.
+ *
  * @param {Uint8Array} bytes - raw contents of the uploaded .gpx file
  * @returns {Promise<{
  *   points: {lat: number, lon: number, elevation: number, distance: number}[],
@@ -120,11 +151,9 @@ export async function parseGpx(bytes) {
 
     await runtime.runPythonAsync(`
     from gpx2fit.core.gpx_reader import parse_gpx_bytes
-    
+
     _track = parse_gpx_bytes(bytes(gpx_bytes.to_py()))
-    if not _track.points:
-        raise ValueError('No points were found in the GPX file.')
-    
+
     route_points = [
         {"lat": p.lat, "lon": p.lon, "elevation": p.elevation, "distance": p.distance_from_start}
         for p in _track.points
@@ -299,6 +328,12 @@ async function fetchSurfaceMultipliers(sportEnumName, runtime) {
  * Pacing runs against a fresh working copy of `_track`'s points (expanded
  * with a duplicate point per stop) — `_track` itself is never structurally
  * mutated, since it's a persistent global reused across repeated calls.
+ *
+ * Rejects with an `Error` whose `isInputError` is `true` (see
+ * `classifyPyError`) if the given anchors/stops contradict each other (e.g.
+ * two anchors resolving to the same point, or timestamps that don't
+ * increase in the same order as distance along the route) — callers should
+ * show that message to the user as-is, not as a generic failure.
  *
  * @param {object} args
  * @param {string} args.startIso - route start time, ISO 8601

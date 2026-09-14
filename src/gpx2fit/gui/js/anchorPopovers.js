@@ -1,17 +1,26 @@
-// The map-click -> anchor-creation flow: resolve which track point(s) the
-// user meant, disambiguate if the route passes near that spot more than
-// once (out-and-back routes), let the user pick a time for the anchor
-// (duration-since-start or time-of-day), and hand the finished anchor off
-// to anchors.js. Split out of main.js because this is the part of the app
-// most likely to grow next — see CLAUDE.md's note on out-and-back
-// disambiguation being a known, deliberately deferred gap.
 
 import { resolveAnchorCandidates } from './pyodideBridge.js';
 import * as mapModule from './map.js';
 import * as anchorsModule from './anchors.js';
 import * as stopsModule from './stops.js';
 import { createTimeToggle } from './timeInput.js';
-import { formatClock, formatDistanceKm } from './format.js';
+import { describeError, formatClock, formatDistanceKm } from './format.js';
+
+/**
+ * How many calendar days after `reference`'s day `target`'s day falls on
+ * (0 if same day, negative if earlier) — used to pre-select the right day in
+ * an anchor/stop popover's day selector for a multi-day activity, instead of
+ * always defaulting to day 1 regardless of where the estimated time actually
+ * falls.
+ * @param {Date} reference
+ * @param {Date} target
+ * @returns {number}
+ */
+function dayOffsetBetween(reference, target) {
+  const referenceMidnight = new Date(reference.getFullYear(), reference.getMonth(), reference.getDate());
+  const targetMidnight = new Date(target.getFullYear(), target.getMonth(), target.getDate());
+  return Math.round((targetMidnight.getTime() - referenceMidnight.getTime()) / 86_400_000);
+}
 
 /**
  * Builds the route-click handler that drives anchor placement.
@@ -22,7 +31,7 @@ import { formatClock, formatDistanceKm } from './format.js';
  *   current value of the main start-time toggle
  * @param {() => number|null} deps.getTotalDistance - total route distance in
  *   meters, or null before a route is loaded
- * @param {(message: string, isError?: boolean) => void} deps.setStatus
+ * @param {(message: string, kind?: 'error'|'input') => void} deps.setStatus
  * @returns {{ handleRouteClick: (lat: number, lon: number) => Promise<void> }}
  */
 export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalDistance, setStatus }) {
@@ -98,6 +107,7 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
         getTotalDurationSeconds,
         initialTimeOfDay: estimate ? { hours: estimate.getHours(), minutes: estimate.getMinutes() } : undefined,
         initialDurationSeconds: estimate && start ? (estimate.getTime() - start.getTime()) / 1000 : undefined,
+        initialDayOffset: estimate && start ? dayOffsetBetween(start, estimate) : undefined,
         onChange: (result) => {
           lastResult = result;
           confirmBtn.disabled = !result.isValid;
@@ -291,6 +301,7 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
         getTotalDurationSeconds,
         initialTimeOfDay: estimate ? { hours: estimate.getHours(), minutes: estimate.getMinutes() } : undefined,
         initialDurationSeconds: estimate && start ? (estimate.getTime() - start.getTime()) / 1000 : undefined,
+        initialDayOffset: estimate && start ? dayOffsetBetween(start, estimate) : undefined,
         onChange: (result) => {
           arrivalResult = result;
           updateConfirmAvailability();
@@ -395,7 +406,7 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
    */
   async function handleRouteClick(lat, lon) {
     if (!getStartTimeResult().isValid) {
-      setStatus('Set a valid duration or end time before adding anchors.', true);
+      setStatus('Set a valid duration or end time before adding anchors.', 'input');
       return;
     }
 
@@ -408,7 +419,8 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
       }
     } catch (error) {
       console.error(error);
-      setStatus(`Error: ${error instanceof Error ? error.message : String(error)}`, true);
+      const { message, kind } = describeError(error);
+      setStatus(message, kind);
     }
   }
 

@@ -3,7 +3,7 @@
 import math
 from datetime import datetime, timedelta
 
-from gpx2fit.core.models import Anchor, RawAnchor, Track, TrackPoint
+from gpx2fit.core.models import Anchor, InputError, RawAnchor, Track, TrackPoint
 
 _EARTH_RADIUS_M = 6371000.0
 
@@ -192,9 +192,12 @@ def build_user_anchors(
         One Anchor per raw anchor, sorted by (distance_from_start, timestamp).
     Raises:
         ValueError: If a raw anchor provides neither distance_from_start nor
-            lat/lon, if a resolved distance falls outside
-            [0, track.total_distance], or if it coincides with another raw
-            anchor's or an existing anchor's distance.
+            lat/lon, or if a resolved distance falls outside
+            [0, track.total_distance].
+        InputError: If a raw anchor's resolved distance coincides with
+            another raw anchor's or an existing anchor's distance — a
+            user-fixable problem (e.g. two anchors placed on top of each
+            other), unlike the ValueError cases above.
     """
     anchors: list[Anchor] = []
     seen_distances = {a.distance_from_start for a in (existing_anchors or [])}
@@ -209,7 +212,10 @@ def build_user_anchors(
         if distance < 0 or distance > track.total_distance:
             raise ValueError("Anchor distance_from_start is outside track bounds.")
         if distance in seen_distances:
-            raise ValueError(f"Anchor distance {distance}m coincides with another anchor.")
+            raise InputError(
+                f"Two anchors land on the exact same point on the route ({distance / 1000:.2f} km from the "
+                "start). Move one of them slightly, or remove the duplicate."
+            )
         seen_distances.add(distance)
 
         anchors.append(Anchor(distance_from_start=distance, timestamp=raw.timestamp, source=raw.source))

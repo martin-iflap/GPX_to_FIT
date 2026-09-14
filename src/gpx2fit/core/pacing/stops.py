@@ -7,7 +7,7 @@ adjacent leg's pace.
 
 from dataclasses import replace
 
-from gpx2fit.core.models import Anchor, ModeAStop, RawStop, ResolvedStop, Track, TrackPoint
+from gpx2fit.core.models import Anchor, InputError, ModeAStop, RawStop, ResolvedStop, Track, TrackPoint
 from gpx2fit.core.pacing.anchors import nearest_point_distance_from_start
 
 
@@ -61,11 +61,12 @@ def resolve_stops(
         distance_from_start.
     Raises:
         ValueError: If a raw stop provides neither distance_from_start nor
-            lat/lon, a resolved distance falls outside track bounds,
+            lat/lon, a resolved distance falls outside track bounds, or
             neither/both of duration and (start_timestamp, end_timestamp)
-            are given, end_timestamp isn't later than start_timestamp, or a
+            are given.
+        InputError: If end_timestamp isn't later than start_timestamp, or a
             stop's distance coincides with a hard anchor's or another
-            stop's.
+            stop's — both user-fixable data problems, not bugs.
     """
     mode_a: list[ModeAStop] = []
     mode_b: list[ResolvedStop] = []
@@ -75,7 +76,10 @@ def resolve_stops(
     for raw in raw_stops:
         distance = _resolve_distance(track, raw)
         if distance in seen_distances:
-            raise ValueError(f"Stop distance {distance}m coincides with an existing anchor or stop.")
+            raise InputError(
+                f"A stop at {distance / 1000:.2f} km lands on the exact same point as another anchor or stop. "
+                "Move it slightly, or remove the duplicate."
+            )
         seen_distances.add(distance)
 
         has_duration = raw.duration is not None
@@ -89,7 +93,10 @@ def resolve_stops(
             mode_a.append(ModeAStop(distance, raw.duration))
         elif raw.start_timestamp is not None and raw.end_timestamp is not None:
             if raw.end_timestamp <= raw.start_timestamp:
-                raise ValueError("Stop end_timestamp must be later than start_timestamp.")
+                raise InputError(
+                    f"The stop at {distance / 1000:.2f} km has a departure time that isn't later than its "
+                    "arrival time. Fix its arrival/departure times."
+                )
             mode_b.append(ResolvedStop(distance, raw.start_timestamp, raw.end_timestamp))
 
     mode_a.sort(key=lambda s: s.distance_from_start)

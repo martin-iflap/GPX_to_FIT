@@ -5,6 +5,20 @@ from datetime import datetime, timedelta
 from enum import Enum
 
 
+class InputError(ValueError):
+    """Raised when a problem traces back to invalid user-supplied data (e.g.
+    contradictory anchor/stop times, a corrupt GPX file) rather than a bug in
+    this code.
+
+    The GUI (`gui/js/pyodideBridge.js`'s `classifyPyError`) distinguishes
+    this from every other exception by name, to show its message directly
+    instead of a raw traceback. That means every `raise InputError(...)`
+    message must be written for the end user, not a developer: plain
+    language, no internal identifiers, and (where useful) a hint at how to
+    fix it.
+    """
+
+
 class SportType(Enum):
     """Allowed sport types of the activity, used as a dispatch key for pacing and FIT file generation."""
     RUNNING = "running"
@@ -193,7 +207,10 @@ class ResolvedPhotoAnchor:
         lat: Matched track point's latitude, in degrees.
         lon: Matched track point's longitude, in degrees.
         timestamp: The photo's own timestamp, carried through unchanged.
-        status: "ok" if the match is within MAX_MATCH_DISTANCE_M, "too_far" otherwise.
+        status: "ok" if the match is within MAX_MATCH_DISTANCE_M, "too_far"
+            if it isn't, or "outside_activity_time" if the photo's timestamp
+            falls outside the activity's time span (checked first — see
+            pacing.photo_anchors.resolve_photo_anchors).
         gap_m: Distance in meters between the photo's raw GPS and the matched point.
     """
     distance_from_start: float
@@ -205,15 +222,17 @@ class ResolvedPhotoAnchor:
 
 
 # TODO:
-# 1. Check the limits. (fallback would be Enri maps). day_1 = 1803. day_2 = 642. day_3 = 788. day_4 = 1417. day_5 = 1354. total=6004.
-# 5. Implement surface + max speed capping speed adjustments.
-# 5,5. Add Pydantic models for shared data structures between python and JS?
+# 1. Check the limits. (fallback = Enri maps). day_1 = 1803. day_2 = 642. day_3 = 788. day_4 = 1417. day_5 = 1354. total=6004.
+# 4. Convert some of the classes in models.py to pydantic.BaseModel.
+# 3. Add tests for the important JS functions.
+# 5. Fine tune surface + max speed capping speed adjustments.
 # 6. Add the graph with activity data below the map once converted and add reconvert button.
 # 6,5. Add possibility to hide the side and bottom panels to see the map better.
 # 7. Make sure the app works also for phones.
 # 8. Add cycling sport type. It will require separate speed computing logic and all.
 # 9. Make the default map display pre-gpx-loaded an image to save requests (or just try to save the map somehow).
 # 10. It would be absolutely crazy if the users could drag and adjust speed in the graph and it would recalculate based on their changes.
+# 11. Would it make sense to convert some of the code to Cython?
 
 
 # take a look at the PyCharm MCP for Claude
@@ -222,7 +241,7 @@ class ResolvedPhotoAnchor:
 
 
 # 1.
-# verify the new code is good, gotta be perfect.
-# wire valhalla to the app, I would like to make the request from backend, but I will have to take a look at it.
+# keep an eye on the error handling
+# update plan.md and claude.md to match current state of the code and ideas.
 # 2.
 # perhaps utilize the valhalla elapsed time and cost somehow.

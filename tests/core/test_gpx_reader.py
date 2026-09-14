@@ -1,6 +1,7 @@
 import pytest
 
 from gpx2fit.core.gpx_reader import parse_gpx_bytes
+from gpx2fit.core.models import InputError
 from tests.conftest import haversine_m
 
 
@@ -49,10 +50,18 @@ class TestBasicParsing:
         assert track.points[1].distance_from_start == pytest.approx(expected_leg_1, rel=0.01)
         assert track.points[2].distance_from_start == pytest.approx(expected_leg_1 + expected_leg_2, rel=0.01)
 
-    def test_no_points_yields_empty_track(self):
+    def test_no_points_raises_input_error(self):
         gpx_bytes = _gpx("")
-        track = parse_gpx_bytes(gpx_bytes)
-        assert track.points == []
+        with pytest.raises(InputError):
+            parse_gpx_bytes(gpx_bytes)
+
+    def test_invalid_utf8_raises_input_error(self):
+        with pytest.raises(InputError):
+            parse_gpx_bytes(b"\xff\xfe\x00\x01")
+
+    def test_unparseable_xml_raises_input_error(self):
+        with pytest.raises(InputError):
+            parse_gpx_bytes(b"this is not gpx or xml at all")
 
 
 class TestDevice:

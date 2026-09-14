@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from gpx2fit.core.models import Anchor, RawAnchor, Track
+from gpx2fit.core.models import Anchor, InputError, RawAnchor, Track
 from gpx2fit.core.pacing.anchors import (
     distance_meters,
     add_start_end_anchors,
@@ -207,7 +207,7 @@ class TestBuildUserAnchors:
             RawAnchor(timestamp=datetime(2024, 1, 1, 8, 30, 0), distance_from_start=500.0),
             RawAnchor(timestamp=datetime(2024, 1, 1, 9, 0, 0), distance_from_start=500.0),
         ]
-        with pytest.raises(ValueError):
+        with pytest.raises(InputError):
             build_user_anchors(track, raw)
 
     def test_raw_anchor_coinciding_with_an_existing_anchor_raises(self):
@@ -215,5 +215,5 @@ class TestBuildUserAnchors:
         raw = [RawAnchor(timestamp=datetime(2024, 1, 1, 8, 30, 0), distance_from_start=0.0)]
         existing = [Anchor(distance_from_start=0.0, timestamp=datetime(2024, 1, 1, 8, 0, 0), source="user")]
 
-        with pytest.raises(ValueError):
+        with pytest.raises(InputError):
             build_user_anchors(track, raw, existing_anchors=existing)

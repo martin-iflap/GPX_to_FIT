@@ -1,7 +1,7 @@
 """Read GPX route files and convert them into the core Track representation."""
 
 import gpxpy
-from gpx2fit.core.models import Track, TrackPoint
+from gpx2fit.core.models import InputError, Track, TrackPoint
 
 
 def parse_gpx_bytes(gpx_bytes: bytes, device: str | None = None) -> Track:
@@ -16,14 +16,25 @@ def parse_gpx_bytes(gpx_bytes: bytes, device: str | None = None) -> Track:
         distance_from_start computed as the cumulative 3D (falling back to
         2D) distance from the first point. Points have no timestamp yet —
         that's assigned later by pacing.
+    Raises:
+        InputError: If gpx_bytes isn't valid UTF-8, isn't parseable as GPX,
+            or contains no track points — all signs of a corrupt file or one
+            that isn't actually a GPX track export.
 
     Note:
         If a point is missing elevation, it inherits the previous point's
         elevation (0.0 if it's the very first point) rather than introducing
         a fake cliff that would distort gradient-based pacing.
     """
-    xml_text = gpx_bytes.decode('utf-8')
-    gpx = gpxpy.parse(xml_text)
+    try:
+        xml_text = gpx_bytes.decode('utf-8')
+    except UnicodeDecodeError as e:
+        raise InputError("This doesn't look like a valid GPX file (not readable as UTF-8 text).") from e
+
+    try:
+        gpx = gpxpy.parse(xml_text)
+    except Exception as e:
+        raise InputError(f"Could not parse this file as GPX: {e}") from e
 
     track_points = []
     prev_point = None
@@ -51,5 +62,8 @@ def parse_gpx_bytes(gpx_bytes: bytes, device: str | None = None) -> Track:
                     timestamp=None,
                 ))
                 prev_point = point
+
+    if not track_points:
+        raise InputError("This GPX file doesn't contain any track points.")
 
     return Track(points=track_points, device=device)

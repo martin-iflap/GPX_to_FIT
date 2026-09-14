@@ -3,12 +3,27 @@
 from bisect import bisect_left, bisect_right
 from datetime import timedelta
 
-from gpx2fit.core.models import Anchor, ModeAStop, SportType, Track, TrackPoint
+from gpx2fit.core.models import Anchor, InputError, ModeAStop, SportType, Track, TrackPoint
 from gpx2fit.core.pacing.gradient import calculate_minetti_speeds, calculate_tobler_speeds
 
 # Above this workout-average speed, a HIKING activity is paced like a run (Minetti)
 # rather than a walk (Tobler) — see combine()'s docstring for why.
 HIKING_TOBLER_THRESHOLD_MPS = 1.8
+
+# Human-readable label for each Anchor.source, used only to make InputError
+# messages (contradictory anchor/stop times) point at a concrete, recognizable
+# entry rather than an opaque distance/timestamp pair.
+_ANCHOR_SOURCE_LABELS = {
+    "user": "anchor",
+    "photo": "photo anchor",
+    "stop_arrival": "stop arrival",
+    "stop_departure": "stop departure",
+}
+
+def _describe_anchor(anchor: Anchor) -> str:
+    """Human-readable description of an anchor for InputError messages, e.g. "photo anchor at 5.30 km (2026-09-13 14:02)"."""
+    label = _ANCHOR_SOURCE_LABELS.get(anchor.source, "anchor")
+    return f"{label} at {anchor.distance_from_start / 1000:.2f} km ({anchor.timestamp:%Y-%m-%d %H:%M})"
 
 
 def _pace_segment(
@@ -58,13 +73,14 @@ def _pace_segment(
         See combine()'s docstring for when this can happen and why it's safe.
 
     Raises:
-        ValueError: If end_anchor's timestamp isn't strictly later than
+        InputError: If end_anchor's timestamp isn't strictly later than
             start_anchor's — anchors are sorted by ascending distance before
             reaching here, so this means two anchors' timestamps contradict
             their distance order (e.g. a photo anchor built from a capture
             time that doesn't actually fall within the activity). Also
             raised if this segment's Mode A stop durations alone consume
-            the entire anchor-to-anchor time budget.
+            the entire anchor-to-anchor time budget. Both are user-fixable
+            (bad anchor/stop times), not bugs.
     """
     segment_mode_a_stops = segment_mode_a_stops or []
     if len(segment_points) < 2:
@@ -85,10 +101,11 @@ def _pace_segment(
 
     anchor_total_time = (end_anchor.timestamp - start_anchor.timestamp).total_seconds()
     if anchor_total_time <= 0:
-        raise ValueError(
-            f"Anchor at {end_anchor.distance_from_start}m ({end_anchor.timestamp}) is not "
-            f"later than the anchor at {start_anchor.distance_from_start}m ({start_anchor.timestamp}); "
-            "anchors must have strictly increasing timestamps as distance increases."
+        raise InputError(
+            f"The {_describe_anchor(end_anchor)} isn't later in time than the {_describe_anchor(start_anchor)}, "
+            "even though it's further along the route. Anchor and stop times must increase in the same order as "
+            "their distance along the route — check the times you entered for these two points and fix whichever "
+            "one is wrong."
         )
 
     segment_track = Track(points=segment_points)
@@ -123,8 +140,10 @@ def _pace_segment(
     total_stop_seconds = sum(s.duration.total_seconds() for s in segment_mode_a_stops)
     active_time = anchor_total_time - total_stop_seconds
     if active_time <= 0:
-        raise ValueError(
-            "Mode A stop duration(s) exceed the segment's anchor-to-anchor time budget."
+        raise InputError(
+            f"The stop(s) between the {_describe_anchor(start_anchor)} and the {_describe_anchor(end_anchor)} "
+            "take longer than the time available between those two points. Shorten the stop duration(s), or "
+            "adjust the anchor/stop times so there's enough time for them."
         )
 
     scale = active_time / modeled_total_time
@@ -279,16 +298,17 @@ def combine(
         now timestamped.
     Raises:
         IndexError: If anchors is empty.
-        ValueError: If any two consecutive anchors don't have strictly
+        InputError: If any two consecutive anchors don't have strictly
             increasing timestamps (a sign that an anchor's timestamp doesn't
             actually belong on this track — e.g. a photo anchor built from a
-            capture time outside the activity, see pacing.photo_anchors),
+            capture time outside the activity, see pacing.photo_anchors), or
             if a segment's Mode A stop durations alone consume its entire
-            anchor-to-anchor time budget, or if _resolve_anchor_bounds can't
-            map every anchor to its own track point (see its docstring) —
-            this should never happen for anchors built via
-            pacing.anchors.build_user_anchors, which already rejects two
-            anchors resolving to the same distance.
+            anchor-to-anchor time budget. Both are user-fixable data
+            problems, not bugs.
+        ValueError: If _resolve_anchor_bounds can't map every anchor to its
+            own track point (see its docstring) — this should never happen
+            for anchors built via pacing.anchors.build_user_anchors, which
+            already rejects two anchors resolving to the same distance.
     """
     workout_total_time = (anchors[-1].timestamp - anchors[0].timestamp).total_seconds()
     workout_avg_speed_mps = track.total_distance / workout_total_time if workout_total_time > 0 else 0.0

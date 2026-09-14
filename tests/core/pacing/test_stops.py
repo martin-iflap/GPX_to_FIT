@@ -2,7 +2,7 @@ from datetime import timedelta
 
 import pytest
 
-from gpx2fit.core.models import RawStop, SportType, Track
+from gpx2fit.core.models import InputError, RawStop, SportType, Track
 from gpx2fit.core.pacing.combine import combine
 from gpx2fit.core.pacing.stops import (
     ModeAStop,
@@ -32,7 +32,7 @@ class TestResolveStopsModeB:
         hard_anchors = [anchor(0.0, START), anchor(1000.0, START + timedelta(minutes=20))]
         raw = [RawStop(distance_from_start=500.0, start_timestamp=START, end_timestamp=START)]
 
-        with pytest.raises(ValueError):
+        with pytest.raises(InputError):
             resolve_stops(track, raw, hard_anchors)
 
 
@@ -84,7 +84,7 @@ class TestResolveStopsValidation:
         hard_anchors = [anchor(0.0, START), anchor(500.0, START + timedelta(minutes=10)), anchor(1000.0, START + timedelta(minutes=20))]
         raw = [RawStop(distance_from_start=500.0, duration=timedelta(minutes=5))]
 
-        with pytest.raises(ValueError):
+        with pytest.raises(InputError):
             resolve_stops(track, raw, hard_anchors)
 
     @pytest.mark.parametrize(
@@ -115,7 +115,7 @@ class TestResolveStopsValidation:
             RawStop(distance_from_start=500.0, **second_kwargs),
         ]
 
-        with pytest.raises(ValueError):
+        with pytest.raises(InputError):
             resolve_stops(track, raw, hard_anchors)
 
 
