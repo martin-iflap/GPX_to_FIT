@@ -54,7 +54,7 @@ initTheme(themeToggle);
 
 /* ---------- status ---------- */
 
-const STATUS_ERROR_TIMEOUT_MS = 5000;
+const STATUS_ERROR_TIMEOUT_MS = 10000;
 let statusTimeoutId = null;
 
 /**

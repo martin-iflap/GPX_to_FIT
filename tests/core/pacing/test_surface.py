@@ -8,7 +8,7 @@ from gpx2fit.core.pacing.surface import (
     calculate_surface_multipliers,
     resolve_point_edge_indexes,
 )
-from tests.conftest import point
+from tests.core.conftest import point
 
 
 def _track(coords: list[tuple[float, float]]) -> Track:

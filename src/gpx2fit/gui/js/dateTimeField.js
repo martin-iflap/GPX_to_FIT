@@ -15,7 +15,7 @@ const SLOT_STEP_MINUTES = 30;
 const SLOTS_PER_DAY = (24 * 60) / SLOT_STEP_MINUTES;
 
 /** Every half-hour slot of the day in order: [{hours:0,minutes:0}, {hours:0,minutes:30}, ..., {hours:23,minutes:30}]. */
-function buildDaySlots() {
+export function buildDaySlots() {
   return Array.from({ length: SLOTS_PER_DAY }, (_, i) => {
     const totalMinutes = i * SLOT_STEP_MINUTES;
     return { hours: Math.floor(totalMinutes / 60), minutes: totalMinutes % 60 };
@@ -23,7 +23,7 @@ function buildDaySlots() {
 }
 
 /** Index into `buildDaySlots()`'s result of the slot closest to `now` (ties/midnight wrap to slot 0). */
-function nearestSlotIndex(now) {
+export function nearestSlotIndex(now) {
   const totalMinutes = now.getHours() * 60 + now.getMinutes();
   return Math.round(totalMinutes / SLOT_STEP_MINUTES) % SLOTS_PER_DAY;
 }

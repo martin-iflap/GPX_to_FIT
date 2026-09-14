@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from gpx2fit.core.models import Track
-from tests.conftest import point
+from tests.core.conftest import point
 
 
 class TestTotalElevationGain:

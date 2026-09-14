@@ -2,7 +2,7 @@ import pytest
 
 from gpx2fit.core.gpx_reader import parse_gpx_bytes
 from gpx2fit.core.models import InputError
-from tests.conftest import haversine_m
+from tests.core.conftest import haversine_m
 
 
 def _gpx(trkpts: str, creator: str | None = "Test Creator") -> bytes:

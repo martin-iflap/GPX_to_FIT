@@ -10,7 +10,7 @@ from gpx2fit.core.pacing.anchors import (
     nearest_point_candidates,
     nearest_point_distance_from_start,
 )
-from tests.conftest import haversine_m, point
+from tests.core.conftest import haversine_m, point
 
 
 class TestDistanceMeters:

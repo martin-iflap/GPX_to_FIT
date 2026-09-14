@@ -11,7 +11,7 @@ from gpx2fit.core.pacing.stops import (
     expand_track_with_stops,
     resolve_stops,
 )
-from tests.conftest import START, anchor, point
+from tests.core.conftest import START, anchor, point
 
 
 class TestResolveStopsModeB:

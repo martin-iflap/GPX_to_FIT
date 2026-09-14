@@ -40,11 +40,11 @@ let queueTail = Promise.resolve();
 // message and flag it for the UI. Every other exception (including plain
 // ValueErrors raised for internal contract violations) passes through
 // unchanged, traceback and all.
-function classifyPyError(error) {
+export function classifyPyError(error) {
   const rawMessage = error instanceof Error ? error.message : String(error);
   const lines = rawMessage.split('\n').map((line) => line.trim()).filter(Boolean);
   const lastLine = lines[lines.length - 1] || '';
-  const match = /^InputError:\s*(.*)$/.exec(lastLine);
+  const match = /^(?:[\w.]+\.)?InputError:\s*(.*)$/.exec(lastLine);
   if (!match) {
     return error;
   }

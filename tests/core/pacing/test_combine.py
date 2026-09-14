@@ -4,7 +4,7 @@ import pytest
 
 from gpx2fit.core.models import InputError, ModeAStop, SportType, Track
 from gpx2fit.core.pacing.combine import HIKING_TOBLER_THRESHOLD_MPS, combine
-from tests.conftest import START, anchor, point, timestamp_of
+from tests.core.conftest import START, anchor, point, timestamp_of
 
 
 class TestCombineBasicPacing:

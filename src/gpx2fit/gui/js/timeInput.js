@@ -14,7 +14,7 @@ import { createDateTimeField, createDaySelector, createTimeField } from './dateT
  * a 4-hour duration spans 2 calendar days despite being under 24h. Returns
  * 1 (i.e. "single-day, no day selector needed") if the duration is unknown.
  */
-function computeDayCount(referenceStart, totalDurationSeconds) {
+export function computeDayCount(referenceStart, totalDurationSeconds) {
   if (!Number.isFinite(totalDurationSeconds) || totalDurationSeconds <= 0) {
     return 1;
   }

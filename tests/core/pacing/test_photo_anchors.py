@@ -5,7 +5,7 @@ import pytest
 from gpx2fit.core.models import RawPhotoAnchor, Track
 from gpx2fit.core.pacing.anchors import distance_meters
 from gpx2fit.core.pacing.photo_anchors import ACTIVITY_TIME_TOLERANCE, MAX_MATCH_DISTANCE_M, resolve_photo_anchors
-from tests.conftest import point
+from tests.core.conftest import point
 
 
 class TestResolvePhotoAnchors:

@@ -9,7 +9,7 @@ from fit_tool.profile.profile_type import Sport
 
 from gpx2fit.core.fit_writer import _fit_timestamp, write_fit
 from gpx2fit.core.models import SportType, Track
-from tests.conftest import point, timestamp_of
+from tests.core.conftest import point, timestamp_of
 
 
 class TestFitTimestamp:

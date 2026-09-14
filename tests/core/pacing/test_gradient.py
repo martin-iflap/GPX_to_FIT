@@ -2,7 +2,7 @@ import math
 import pytest
 from gpx2fit.core.models import Track
 from gpx2fit.core.pacing.gradient import calculate_gradient, calculate_minetti_speeds, calculate_tobler_speeds
-from tests.conftest import point
+from tests.core.conftest import point
 
 
 def _track(legs: list[tuple[float, float]]) -> Track:

@@ -99,7 +99,7 @@ function addRow(fileName, removeAnchor) {
 }
 
 /** Formats a gap distance for display: meters below 1km, one-decimal km above. */
-function formatGapMeters(meters) {
+export function formatGapMeters(meters) {
   if (meters >= 1000) {
     return `${(meters / 1000).toFixed(1)} km`;
   }
@@ -112,7 +112,7 @@ function formatGapMeters(meters) {
  * @param {File} file
  * @returns {Promise<{lat: number, lon: number, timestamp: Date} | null>}
  */
-async function readPhotoMetadata(file) {
+export async function readPhotoMetadata(file) {
   const tags = await exifr.parse(file, { gps: true, exif: true, tiff: true });
   // exifr reports unresolvable GPS as `null` (e.g. a GPS IFD present but
   // missing GPSLatitudeRef, as some phones write when a fix failed) rather
