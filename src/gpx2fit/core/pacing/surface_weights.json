@@ -3,11 +3,11 @@
     "surface": {
       "paved_smooth": 1.0,
       "paved": 1.0,
-      "paved_rough": 0.95,
-      "compacted": 0.9,
-      "dirt": 0.9,
-      "gravel": 0.8,
-      "path": 0.75,
+      "paved_rough": 0.97,
+      "compacted": 1.0,
+      "dirt": 0.95,
+      "gravel": 0.88,
+      "path": 0.9,
       "impassable": 0.5
     },
     "road_class": {
@@ -16,9 +16,9 @@
       "primary": 1.0,
       "secondary": 1.0,
       "tertiary": 1.0,
-      "unclassified": 0.95,
-      "residential": 1.0,
-      "service_other": 0.95
+      "unclassified": 0.92,
+      "residential": 0.95,
+      "service_other": 0.85
     },
     "use": {
       "road": 1.0,
@@ -31,22 +31,22 @@
     },
     "sac_scale": {
       "1": 1.0,
-      "2": 0.9,
-      "3": 0.75,
-      "4": 0.6,
-      "5": 0.45,
-      "6": 0.3
+      "2": 0.63,
+      "3": 0.39,
+      "4": 0.24,
+      "5": 0.15,
+      "6": 0.1
     }
   },
   "running": {
     "surface": {
       "paved_smooth": 1.0,
       "paved": 1.0,
-      "paved_rough": 0.92,
-      "compacted": 0.83,
-      "dirt": 0.85,
-      "gravel": 0.75,
-      "path": 0.7,
+      "paved_rough": 0.96,
+      "compacted": 1.0,
+      "dirt": 0.93,
+      "gravel": 0.84,
+      "path": 0.86,
       "impassable": 0.4
     },
     "road_class": {
@@ -55,9 +55,9 @@
       "primary": 1.0,
       "secondary": 1.0,
       "tertiary": 1.0,
-      "unclassified": 0.93,
-      "residential": 1.0,
-      "service_other": 0.93
+      "unclassified": 0.9,
+      "residential": 0.93,
+      "service_other": 0.82
     },
     "use": {
       "road": 1.0,
@@ -70,11 +70,11 @@
     },
     "sac_scale": {
       "1": 0.95,
-      "2": 0.8,
-      "3": 0.6,
-      "4": 0.4,
-      "5": 0.25,
-      "6": 0.15
+      "2": 0.47,
+      "3": 0.25,
+      "4": 0.13,
+      "5": 0.08,
+      "6": 0.05
     }
   }
 }

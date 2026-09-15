@@ -320,4 +320,4 @@ def calculate_surface_multipliers(
     return multipliers
 
 
-# todo: all the weights need to be tuned (also the surface_weights.json file), this is just a first draft.
+# todo: surface_weights.json's tables are tuned mostly for hiking. The weights might need adjusting, especially for running.
