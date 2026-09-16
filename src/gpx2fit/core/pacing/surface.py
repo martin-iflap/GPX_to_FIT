@@ -7,7 +7,7 @@ This module never performs the HTTP call itself. It only
 multipliers, using sport-specific weight tables loaded from
 surface_weights.json.
 combine.py is expected to multiply these into the per-leg speeds returned
-by gradient.py's calculate_minetti_speeds/calculate_tobler_speeds.
+by gradient.py's minetti_speeds_from_gradients/tobler_speeds_from_gradients.
 
 Combining signals: `surface`, `road_class`, and `use` are correlated tags
 that often restate the same underlying fact about an edge (e.g. a minor

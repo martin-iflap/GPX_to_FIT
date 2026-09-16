@@ -1,14 +1,27 @@
 """Fit per-leg pacing speeds to known anchor timestamps and stamp them onto a track."""
 
+import math
+import statistics
 from bisect import bisect_left, bisect_right
 from datetime import timedelta
 
 from gpx2fit.core.models import Anchor, InputError, ModeAStop, SportType, Track, TrackPoint
-from gpx2fit.core.pacing.gradient import calculate_minetti_speeds, calculate_tobler_speeds
+from gpx2fit.core.pacing.gradient import calculate_gradient, minetti_speeds_from_gradients, tobler_speeds_from_gradients
 
 # Above this workout-average speed, a HIKING activity is paced like a run (Minetti)
 # rather than a walk (Tobler) — see combine()'s docstring for why.
 HIKING_TOBLER_THRESHOLD_MPS = 1.8
+
+# A surface multiplier can never drag a leg's speed below this fraction of
+# its gradient-modeled speed — see _pace_segment.
+_MIN_SURFACE_MULTIPLIER = 0.05
+
+# A leg's final speed (gradient model * surface multiplier) is
+# pulled toward the segment's own median leg speed, asymptotically bounded
+# to within roughly this factor of it in either direction — see
+# _compress_speed_toward_typical. Real pace doesn't swing within one
+# activity by the 10-30x range the raw gradient curves alone can produce.
+_MAX_SPEED_RATIO = 2.5
 
 # Human-readable label for each Anchor.source, used only to make InputError
 # messages (contradictory anchor/stop times) point at a concrete, recognizable
@@ -26,8 +39,36 @@ def _describe_anchor(anchor: Anchor) -> str:
     return f"{label} at {anchor.distance_from_start / 1000:.2f} km ({anchor.timestamp:%Y-%m-%d %H:%M})"
 
 
+def _resolve_pacing_model(total_elevation_gain: int, average_speed: float, length: float) -> None:
+    """"""
+    # todo: implement a better model determining logic here.
+    pass
+
+
+def _compress_speed_toward_typical(speed: float, typical_speed: float, max_ratio: float) -> float:
+    """Pull `speed` toward `typical_speed`, asymptotically bounded to within `max_ratio` of it either way.
+
+    Works in log-space so the bound is symmetric for speeding up and slowing
+    down: `tanh` maps a ratio near 1 (log-ratio near 0) to itself almost
+    unchanged, and maps arbitrarily large or small ratios to a value that
+    gets closer and closer to, but never reaches, `max_ratio` (or its
+    reciprocal). This is deliberately not a hard min/max clamp which could
+    produce constant-speed plateaus.
+
+    Args:
+        speed: Must be > 0.
+        typical_speed: Must be > 0.
+        max_ratio: Must be > 1.
+    """
+    log_limit = math.log(max_ratio)
+    log_ratio = math.log(speed / typical_speed)
+    compressed_log_ratio = log_limit * math.tanh(log_ratio / log_limit)
+    return typical_speed * math.exp(compressed_log_ratio)
+
+
 def _pace_segment(
     segment_points: list[TrackPoint],
+    segment_gradients: list[float],
     start_anchor: Anchor,
     end_anchor: Anchor,
     sport: SportType,
@@ -37,12 +78,14 @@ def _pace_segment(
 ) -> None:
     """Assign timestamps to one anchor-to-anchor segment's points, in place.
 
-    Picks a per-leg relative speed model (Minetti or Tobler).
-    Then scales the modeled per-leg times so the segment's total *active*
-    time (anchor-to-anchor duration minus any Mode A stop durations in this
-    segment) matches exactly, and stamps each point's timestamp accordingly.
-    Each Mode A stop's duration is then added, at its own point, to every
-    later timestamp in the segment.
+    Picks a per-leg relative speed model (Minetti or Tobler), compresses
+    each leg's resulting speed toward the segment's own median leg speed
+    (see _MAX_SPEED_RATIO / _compress_speed_toward_typical). Then scales the
+    modeled per-leg times so the segment's total *active* time (anchor-to-anchor
+    duration minus any Mode A stop durations in this segment) matches exactly,
+    and stamps each point's timestamp accordingly. Each Mode A stop's duration
+    is then added, at its own point, to every later timestamp in the
+    segment.
 
     Args:
         segment_points: Points between start_anchor and end_anchor, inclusive,
@@ -50,6 +93,9 @@ def _pace_segment(
             appear as a duplicated, zero-distance point pair (see
             pacing/stops.py's expand_track_with_stops) — the first of the
             pair becomes its arrival, the second its departure.
+        segment_gradients: This segment's per-leg gradients (N-1 values for
+            N points), sliced from the whole track's smoothed gradients so the
+            smoothing window isn't cut off at this segment's anchors.
         start_anchor: Anchor at the beginning of this segment.
         end_anchor: Anchor at the end of this segment.
         sport: Sport type, used to pick the speed model.
@@ -66,9 +112,8 @@ def _pace_segment(
         Beyond the two boundary points (always stamped from the anchors
         themselves), does nothing to the segment's interior if the segment
         has fewer than 2 points, if the chosen model yields no speeds, or if
-        the modeled time comes out zero/negative (e.g. a gradient extreme
-        enough to fall outside gradient.py's calibrated domain, driving
-        every leg's modeled speed to 0) — in that case the interior points
+        the modeled time comes out zero/negative (e.g. every leg in the
+        segment has zero real distance) — in that case the interior points
         are left with whatever timestamp they already had (typically None).
         See combine()'s docstring for when this can happen and why it's safe.
 
@@ -86,16 +131,7 @@ def _pace_segment(
     if len(segment_points) < 2:
         return
 
-    # Stamped unconditionally, before any of the degenerate-model checks
-    # below can bail out early: for the track's very first segment,
-    # segment_points[0] is the track's global first point, and for its very
-    # last segment, segment_points[-1] is the track's global last point —
-    # neither has a neighboring segment to fall back on to pick up a
-    # timestamp later (every other shared boundary point does, since
-    # consecutive segments overlap by one point). Without this, a degenerate
-    # segment (e.g. a bad elevation reading driving every leg's modeled
-    # speed to 0) would leave fit_writer unable to find a start/end time at
-    # all, rather than merely losing pacing detail for that one segment.
+    # Stamped unconditionally, before any of the degenerate-model checks below can bail out early.
     segment_points[0].timestamp = start_anchor.timestamp
     segment_points[-1].timestamp = end_anchor.timestamp
 
@@ -108,13 +144,12 @@ def _pace_segment(
             "one is wrong."
         )
 
-    segment_track = Track(points=segment_points)
     if sport == SportType.RUNNING:
-        speeds = calculate_minetti_speeds(segment_track)
+        speeds = minetti_speeds_from_gradients(segment_gradients)
     elif sport == SportType.HIKING and workout_avg_speed_mps > HIKING_TOBLER_THRESHOLD_MPS:
-        speeds = calculate_minetti_speeds(segment_track)
+        speeds = minetti_speeds_from_gradients(segment_gradients)
     else:
-        speeds = calculate_tobler_speeds(segment_track)
+        speeds = tobler_speeds_from_gradients(segment_gradients)
     if not speeds:
         return
 
@@ -123,7 +158,20 @@ def _pace_segment(
             raise ValueError(
                 f"Length of segment_multipliers ({len(segment_multipliers)}) does not match number of legs ({len(speeds)})."
             )
-        speeds = [speed * multiplier for speed, multiplier in zip(speeds, segment_multipliers)]
+        # Floored so a surface multiplier can never fully zero out a leg's speed.
+        speeds = [
+            speed * max(multiplier, _MIN_SURFACE_MULTIPLIER)
+            for speed, multiplier in zip(speeds, segment_multipliers)
+        ]
+
+    # Pull each leg's speed toward this segment's own typical pace.
+    positive_speeds = [speed for speed in speeds if speed > 0]
+    if positive_speeds:
+        typical_speed = statistics.median(positive_speeds)
+        speeds = [
+            _compress_speed_toward_typical(speed, typical_speed, _MAX_SPEED_RATIO) if speed > 0 else speed
+            for speed in speeds
+        ]
 
     leg_distances = [
         curr.distance_from_start - prev.distance_from_start
@@ -316,13 +364,21 @@ def combine(
     mode_a_stops = mode_a_stops or []
     anchor_indexes = _resolve_anchor_bounds(track.points, anchors)
     buckets = _bucket_mode_a_stops(anchors, mode_a_stops)
+    # Calculated once over the whole track: a mid-route anchor is a known
+    # time, not a break in the terrain, so each segment's gradient smoothing
+    # should still see the route on the far side of its anchors.
+    gradients = calculate_gradient(track)
     for i in range(len(anchors) - 1):
         segment_points = track.points[anchor_indexes[i]: anchor_indexes[i + 1] + 1]
+        segment_gradients = gradients[anchor_indexes[i]: anchor_indexes[i + 1]]
         segment_multipliers = multipliers[anchor_indexes[i]: anchor_indexes[i + 1]] if multipliers is not None else None
-        _pace_segment(segment_points, anchors[i], anchors[i + 1], sport, workout_avg_speed_mps, segment_multipliers, buckets[i])
+        _pace_segment(
+            segment_points, segment_gradients, anchors[i], anchors[i + 1], sport, workout_avg_speed_mps,
+            segment_multipliers, buckets[i],
+        )
 
     return track
 
 # todo:
-# improve the threshold for hiking speed, and probably come up with some formula that also takes ascent into account
-# cap the maximum speed relative to the average speed, so that downhills are not too fast (no way someone was running 3:20 downhill on average 6:10 Z2 run)
+# _MAX_SPEED_RATIO is a first-guess constant (2.5) - it needs real tuning,
+# and ideally should vary by sport/terrain rather than being one fixed number.

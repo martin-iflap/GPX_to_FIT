@@ -1,10 +1,24 @@
+import math
+import statistics
 from datetime import timedelta
 
 import pytest
 
 from gpx2fit.core.models import InputError, ModeAStop, SportType, Track
-from gpx2fit.core.pacing.combine import HIKING_TOBLER_THRESHOLD_MPS, combine
+from gpx2fit.core.pacing.combine import _MAX_SPEED_RATIO, HIKING_TOBLER_THRESHOLD_MPS, combine
+from gpx2fit.core.pacing.gradient import (
+    GRADIENT_WINDOW_M,
+    calculate_gradient,
+    minetti_speeds_from_gradients,
+)
 from tests.core.conftest import START, anchor, point, timestamp_of
+
+
+def _compress_speed_toward_typical(speed: float, typical_speed: float, max_ratio: float) -> float:
+    """Reference tanh soft-bound, computed independently of the implementation under test — see combine.py's own."""
+    log_limit = math.log(max_ratio)
+    log_ratio = math.log(speed / typical_speed)
+    return typical_speed * math.exp(log_limit * math.tanh(log_ratio / log_limit))
 
 
 class TestCombineBasicPacing:
@@ -54,22 +68,23 @@ class TestCombineBasicPacing:
 
 
 class TestCombineDegenerateSegment:
-    def test_extreme_gradient_that_zeroes_out_modeled_speed_still_stamps_segment_boundaries(self):
-        # A -90% grade over a short leg is outside Minetti's calibrated
-        # domain and yields a modeled speed of exactly 0.0 (see
-        # gradient.py), so the segment's total modeled time is 0 even
-        # though its anchor-to-anchor duration is real. This is exactly the
-        # kind of bad elevation reading real GPX files can contain (e.g. a
-        # GPS/barometer glitch on the very first recorded point). Before the
-        # fix, combine() bailed out of this segment without ever stamping
-        # its boundary points, leaving the whole track without a start
-        # (or, symmetrically, end) timestamp for fit_writer to find.
+    def test_zero_distance_segment_still_stamps_segment_boundaries(self):
+        # Two points recorded at the same distance_from_start (e.g. a
+        # duplicate/glitched GPS fix) give the segment zero real distance to
+        # model, so its total modeled time is 0 even though its
+        # anchor-to-anchor duration is real (gradient.py's clamp means an
+        # extreme *gradient* alone, e.g. -90%, no longer zeroes out a real,
+        # distance-bearing leg's speed — see test_gradient.py). Before the
+        # original fix this was based on, combine() bailed out of this
+        # segment without ever stamping its boundary points, leaving the
+        # whole track without a start (or, symmetrically, end) timestamp for
+        # fit_writer to find.
         track = Track(points=[
             point(elevation=0.0, distance_from_start=0.0),
-            point(elevation=-9.0, distance_from_start=10.0),
+            point(elevation=-9.0, distance_from_start=0.0),
         ])
         end_time = START + timedelta(minutes=1)
-        anchors = [anchor(0.0, START), anchor(10.0, end_time)]
+        anchors = [anchor(0.0, START), anchor(0.0, end_time)]
 
         result = combine(track, anchors, SportType.RUNNING)
 
@@ -103,24 +118,192 @@ class TestCombineDegenerateSegment:
             combine(track, anchors, SportType.RUNNING)
 
     def test_degenerate_first_segment_does_not_break_a_later_well_behaved_segment(self):
-        # The degenerate segment (0 -> 10) is followed by a normal, flat
-        # one (10 -> 210); the later segment's own pacing must still work
-        # even though the first segment never modeled any interior points.
+        # The degenerate (zero-distance) segment is followed by a normal,
+        # flat one (0 -> 200); the later segment's own pacing must still
+        # work even though the first segment never modeled any interior
+        # points.
         mid_time = START + timedelta(minutes=1)
         end_time = mid_time + timedelta(minutes=2)
         track = Track(points=[
             point(elevation=0.0, distance_from_start=0.0),
-            point(elevation=-9.0, distance_from_start=10.0),
-            point(elevation=-9.0, distance_from_start=110.0),
-            point(elevation=-9.0, distance_from_start=210.0),
+            point(elevation=-9.0, distance_from_start=0.0),
+            point(elevation=-9.0, distance_from_start=100.0),
+            point(elevation=-9.0, distance_from_start=200.0),
         ])
-        anchors = [anchor(0.0, START), anchor(10.0, mid_time), anchor(210.0, end_time)]
+        anchors = [anchor(0.0, START), anchor(0.0, mid_time), anchor(200.0, end_time)]
 
         result = combine(track, anchors, SportType.RUNNING)
 
         assert result.points[0].timestamp == START
         assert result.points[1].timestamp == mid_time
         assert result.points[-1].timestamp == end_time
+
+
+class TestCombineHandlesExtremeLocalGradient:
+    def test_a_single_extreme_gradient_leg_does_not_get_modeled_as_instantaneous(self):
+        # One very short, very steep leg (a -90% grade "spike" over 10m —
+        # the kind of thing a noisy GPS/DEM elevation reading can produce
+        # even on an otherwise ordinary, moderately-graded route) sits among
+        # several flat legs. Before gradient.py clamped its input domain,
+        # this leg's modeled speed came out to exactly 0.0, which combine.py
+        # converted to a modeled time of 0 seconds — its real 10m of
+        # distance got stamped as covered instantly, and the segment's
+        # single scale factor then had to spread the *entire* time budget
+        # across the remaining legs, making them look faster than their own
+        # gradient justified (this is the bug reported: steep sections
+        # coming out as the *fastest* splits).
+        track = Track(points=[
+            point(elevation=0.0, distance_from_start=0.0),
+            point(elevation=0.0, distance_from_start=100.0),
+            point(elevation=-9.0, distance_from_start=110.0),  # -90% grade over 10m
+            point(elevation=-9.0, distance_from_start=210.0),
+            point(elevation=-9.0, distance_from_start=310.0),
+        ])
+        end_time = START + timedelta(minutes=10)
+        anchors = [anchor(0.0, START), anchor(310.0, end_time)]
+
+        result = combine(track, anchors, SportType.RUNNING)
+
+        by_distance = {p.distance_from_start: timestamp_of(p) for p in result.points}
+        spike_leg_seconds = (by_distance[110.0] - by_distance[100.0]).total_seconds()
+        # The spike leg covers 10m of the 310m route; modeled sanely (a
+        # finite, if slow, speed) it should take a non-negligible share of
+        # the 10-minute budget, not be squeezed to near-zero.
+        assert spike_leg_seconds > 1.0
+
+        # No leg should be modeled as "free" distance that inflates every
+        # other leg to compensate — every leg's pace should stay within a
+        # sane range of the others, not vary by an order of magnitude.
+        leg_paces = [
+            (timestamp_of(b) - timestamp_of(a)).total_seconds() / (b.distance_from_start - a.distance_from_start)
+            for a, b in zip(result.points, result.points[1:])
+        ]
+        assert max(leg_paces) / min(leg_paces) < 5.0
+
+
+class TestCombineBoundsExtremeSpeedRatio:
+    def test_a_sustained_steep_climb_does_not_model_as_near_stationary(self):
+        # A real, *sustained* ~40% grade climb — well within gradient.py's
+        # calibrated Minetti domain, so its own domain fallback doesn't
+        # touch this at all (that only kicks in past ~45%). Minetti's raw
+        # cost curve alone models a sustained climb like this at a small
+        # fraction of the flat legs' speed, which — once scaled to fit a
+        # slow enough overall pace — can be slow enough to look
+        # indistinguishable from "stopped" to a real device or platform's
+        # own moving-time detection, discarding that whole climb's real
+        # distance and duration from the activity's moving stats even
+        # though combine()'s total elapsed time is correct.
+        flat = [point(elevation=0.0, distance_from_start=float(d)) for d in range(0, 220, 20)]
+        climb = [point(elevation=float(i) * 8.0, distance_from_start=200.0 + i * 20.0) for i in range(1, 6)]
+        track = Track(points=flat + climb)
+        end_time = START + timedelta(minutes=20)
+        anchors = [anchor(0.0, START), anchor(track.points[-1].distance_from_start, end_time)]
+
+        # Ground truth for the bound: combine() should compress gradient.py's
+        # own raw speeds toward their median using the same tanh soft-bound
+        # (see _compress_speed_toward_typical, reproduced above), not by
+        # some other amount.
+        raw_speeds = minetti_speeds_from_gradients(calculate_gradient(Track(points=track.points)))
+        typical_raw_speed = statistics.median(s for s in raw_speeds if s > 0)
+        raw_ratio = max(raw_speeds) / min(raw_speeds)
+        expected_ratio = (
+            _compress_speed_toward_typical(max(raw_speeds), typical_raw_speed, _MAX_SPEED_RATIO)
+            / _compress_speed_toward_typical(min(raw_speeds), typical_raw_speed, _MAX_SPEED_RATIO)
+        )
+
+        result = combine(track, anchors, SportType.RUNNING)
+
+        assert result.points[-1].timestamp == end_time
+        leg_paces = [
+            (timestamp_of(b) - timestamp_of(a)).total_seconds() / (b.distance_from_start - a.distance_from_start)
+            for a, b in zip(result.points, result.points[1:])
+        ]
+        # A pace ratio (time/distance) is the inverse of a speed ratio, so
+        # it comes out numerically equal to expected_ratio (a speed ratio).
+        assert max(leg_paces) / min(leg_paces) == pytest.approx(expected_ratio)
+        # Narrower than the gradient model's own spread — the point of the
+        # compression. (The exact amount is pinned by the approx check above;
+        # gradient.py's softened Minetti curve already narrows the spread
+        # before compression, so there's less left for it to take off here.)
+        assert expected_ratio < raw_ratio
+
+    def test_two_distinctly_different_steep_legs_stay_distinguishable_not_pinned_to_one_floor(self):
+        # Regression test for the previous hard min/max clamp's failure
+        # mode: it pinned every leg past its bound to the exact same floor
+        # (or ceiling) speed, so a route with several *differently* steep
+        # sections would show them all at one identical, flat pace instead
+        # of each other's own, still-slower-than-flat pace. Two climbs of
+        # different steepness must end up at two different (both slow)
+        # paces, not collapse onto one.
+        track = Track(points=[
+            point(elevation=0.0, distance_from_start=0.0),
+            point(elevation=0.0, distance_from_start=20.0),
+            point(elevation=12.0, distance_from_start=40.0),  # 60% grade
+            point(elevation=12.0, distance_from_start=60.0),
+            point(elevation=28.0, distance_from_start=80.0),  # 80% grade
+        ])
+        end_time = START + timedelta(minutes=20)
+        anchors = [anchor(0.0, START), anchor(80.0, end_time)]
+
+        result = combine(track, anchors, SportType.RUNNING)
+
+        by_distance = {p.distance_from_start: timestamp_of(p) for p in result.points}
+        sixty_percent_leg_seconds = (by_distance[40.0] - by_distance[20.0]).total_seconds()
+        eighty_percent_leg_seconds = (by_distance[80.0] - by_distance[60.0]).total_seconds()
+        assert sixty_percent_leg_seconds != eighty_percent_leg_seconds
+        assert eighty_percent_leg_seconds > sixty_percent_leg_seconds
+
+
+class TestCombineUsesSmoothedWholeTrackGradient:
+    def test_dem_quantized_gentle_slope_does_not_produce_spiky_leg_paces(self):
+        # A uniform 3% slope sampled every 5 m with elevation rounded to
+        # whole metres. Paced on per-leg rise/run, this alternates between
+        # 0% and 20% legs — a pace graph of flat stretches and spikes on
+        # what is really a steady, even climb.
+        track = Track(points=[
+            point(elevation=float(round(0.03 * d)), distance_from_start=float(d)) for d in range(0, 1005, 5)
+        ])
+        anchors = [anchor(0.0, START), anchor(1000.0, START + timedelta(minutes=10))]
+
+        result = combine(track, anchors, SportType.RUNNING)
+
+        half_window = GRADIENT_WINDOW_M / 2
+        interior_paces = [
+            (timestamp_of(b) - timestamp_of(a)).total_seconds() / (b.distance_from_start - a.distance_from_start)
+            for a, b in zip(result.points, result.points[1:])
+            if a.distance_from_start >= half_window and b.distance_from_start <= 1000.0 - half_window
+        ]
+        assert max(interior_paces) / min(interior_paces) < 1.1
+
+    def test_gradient_window_reaches_across_mid_route_anchors(self):
+        # A mid-route anchor is a known time, not a break in the terrain:
+        # legs right after it must be smoothed with the terrain before it
+        # too, not with a window truncated at the anchor.
+        track = Track(points=[
+            point(elevation=0.0 if d <= 200 else 1.0, distance_from_start=float(d)) for d in range(0, 410, 10)
+        ])
+        anchor_index = 20  # the point at 200 m
+        mid_time = START + timedelta(minutes=2)
+        end_time = mid_time + timedelta(minutes=2)
+        anchors = [anchor(0.0, START), anchor(200.0, mid_time), anchor(400.0, end_time)]
+
+        whole_track_gradients = calculate_gradient(Track(points=track.points))[anchor_index:]
+        segment_only_gradients = calculate_gradient(Track(points=track.points[anchor_index:]))
+        # premise: truncating the window at the anchor would read a steeper step
+        assert segment_only_gradients[0] > whole_track_gradients[0] * 1.5
+
+        result = combine(track, anchors, SportType.RUNNING)
+
+        speeds = minetti_speeds_from_gradients(whole_track_gradients)
+        typical = statistics.median(speeds)
+        compressed = [_compress_speed_toward_typical(s, typical, _MAX_SPEED_RATIO) for s in speeds]
+        modeled = [10.0 / s for s in compressed]
+        budget = (end_time - mid_time).total_seconds()
+        expected_leg_seconds = [budget * m / sum(modeled) for m in modeled]
+
+        segment = result.points[anchor_index:]
+        actual_leg_seconds = [(timestamp_of(b) - timestamp_of(a)).total_seconds() for a, b in zip(segment, segment[1:])]
+        assert actual_leg_seconds == pytest.approx(expected_leg_seconds, rel=1e-4)
 
 
 class TestCombineMultiSegment:
@@ -393,11 +576,25 @@ class TestCombineModeAStops:
         assert omitted_times == explicit_none_times
 
 
+def _expected_leg_seconds_for_multipliers(multipliers: list[float], budget_seconds: float) -> list[float]:
+    """Independently reproduce combine()'s multiplier -> compressed-speed -> scaled-time math for a flat (equal base speed, equal distance) segment."""
+    typical = statistics.median(multipliers)
+    compressed = [_compress_speed_toward_typical(m, typical, _MAX_SPEED_RATIO) for m in multipliers]
+    seconds_ratio = [1.0 / c for c in compressed]
+    total_ratio = sum(seconds_ratio)
+    return [budget_seconds * r / total_ratio for r in seconds_ratio]
+
+
 class TestCombineSurfaceMultipliers:
-    def test_leg_times_scale_inversely_with_their_multiplier(self):
+    def test_leg_times_scale_by_their_compressed_multiplier_ratio(self):
         # Flat track (gradient 0 on every leg) so every leg's modeled speed
         # is identical before multipliers are applied — any difference in
-        # the resulting leg durations can only come from the multipliers.
+        # the resulting leg durations comes from the multipliers, after
+        # combine()'s own speed compression (see _MAX_SPEED_RATIO)
+        # pulls extreme ratios toward the segment's median, the same as it
+        # does for extreme gradients — so legs with multipliers 1/2/4 no
+        # longer land on *exactly* inverse-proportional (4:2:1) times, only
+        # on the same order (slowest multiplier still takes the most time).
         track = Track(points=[point(elevation=0.0, distance_from_start=d) for d in (0.0, 100.0, 200.0, 300.0)])
         end_time = START + timedelta(seconds=700)
         anchors = [anchor(0.0, START), anchor(300.0, end_time)]
@@ -405,12 +602,10 @@ class TestCombineSurfaceMultipliers:
         result = combine(track, anchors, SportType.RUNNING, multipliers=[1.0, 2.0, 4.0])
 
         times = [timestamp_of(p) for p in result.points]
-        # Equal-distance legs with multipliers 1/2/4 model to raw times in
-        # ratio 4:2:1 (inversely proportional to their multiplier), which
-        # scale-to-total-duration to exactly 400s/200s/100s of 700s.
-        assert (times[1] - times[0]).total_seconds() == pytest.approx(400.0)
-        assert (times[2] - times[1]).total_seconds() == pytest.approx(200.0)
-        assert (times[3] - times[2]).total_seconds() == pytest.approx(100.0)
+        leg_seconds = [(b - a).total_seconds() for a, b in zip(times, times[1:])]
+        assert leg_seconds[0] > leg_seconds[1] > leg_seconds[2]
+        for actual, expected in zip(leg_seconds, _expected_leg_seconds_for_multipliers([1.0, 2.0, 4.0], 700.0)):
+            assert actual == pytest.approx(expected)
 
     def test_all_ones_multipliers_match_no_multipliers_at_all(self):
         def _track() -> Track:
@@ -451,10 +646,13 @@ class TestCombineSurfaceMultipliers:
         times = [timestamp_of(p) for p in result.points]
         # First segment: no differentiating multiplier -> even split.
         assert (times[1] - times[0]).total_seconds() == pytest.approx((times[2] - times[1]).total_seconds())
-        # Second segment: leg 2->3 (multiplier 1.0) takes twice as long as
-        # leg 3->4 (multiplier 2.0) once scaled to the segment's 300s budget.
-        assert (times[3] - times[2]).total_seconds() == pytest.approx(200.0)
-        assert (times[4] - times[3]).total_seconds() == pytest.approx(100.0)
+        # Second segment: leg 2->3 (multiplier 1.0) takes longer than leg
+        # 3->4 (multiplier 2.0), by the same compressed ratio combine() uses
+        # (see _expected_leg_seconds_for_multipliers) — not exactly double,
+        # since compression pulls the raw 2x ratio toward the median.
+        second_segment_seconds = [(times[3] - times[2]).total_seconds(), (times[4] - times[3]).total_seconds()]
+        for actual, expected in zip(second_segment_seconds, _expected_leg_seconds_for_multipliers([1.0, 2.0], 300.0)):
+            assert actual == pytest.approx(expected)
 
 
 class TestCombineReturnsSameTrack:

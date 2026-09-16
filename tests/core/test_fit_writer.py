@@ -2,10 +2,13 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from fit_tool.fit_file import FitFile
+from fit_tool.profile.messages.activity_message import ActivityMessage
+from fit_tool.profile.messages.event_message import EventMessage
 from fit_tool.profile.messages.file_id_message import FileIdMessage
 from fit_tool.profile.messages.lap_message import LapMessage
 from fit_tool.profile.messages.record_message import RecordMessage
-from fit_tool.profile.profile_type import Sport
+from fit_tool.profile.messages.session_message import SessionMessage
+from fit_tool.profile.profile_type import Event, EventType, Sport
 
 from gpx2fit.core.fit_writer import _fit_timestamp, write_fit
 from gpx2fit.core.models import SportType, Track
@@ -155,3 +158,127 @@ class TestWriteFitOutput:
         assert lap.total_elapsed_time == pytest.approx(
             (timestamp_of(track.points[-1]) - timestamp_of(track.points[0])).total_seconds()
         )
+
+    def test_decoded_record_speed_matches_distance_and_timestamp_deltas(self):
+        # Written explicitly so FIT readers that expect a speed field
+        # (rather than deriving it themselves from distance/timestamp) can
+        # still show pace. Leg 1 is 100m/30s, leg 2 is 150m/30s.
+        track = self._build_track(SportType.RUNNING)
+        decoded = FitFile.from_bytes(write_fit(track))
+        records = [r.message for r in decoded.records if isinstance(r.message, RecordMessage)]
+
+        leg1_speed = 100.0 / 30.0
+        leg2_speed = 150.0 / 30.0
+        assert records[0].speed == pytest.approx(leg1_speed, abs=0.01)
+        assert records[1].speed == pytest.approx(leg1_speed, abs=0.01)
+        assert records[2].speed == pytest.approx(leg2_speed, abs=0.01)
+        assert records[0].enhanced_speed == pytest.approx(leg1_speed, abs=0.01)
+
+    def test_lap_avg_and_max_speed_match_track_totals(self):
+        track = self._build_track(SportType.RUNNING)
+        decoded = FitFile.from_bytes(write_fit(track))
+        lap = next(r.message for r in decoded.records if isinstance(r.message, LapMessage))
+
+        total_seconds = (timestamp_of(track.points[-1]) - timestamp_of(track.points[0])).total_seconds()
+        assert lap.avg_speed == pytest.approx(track.total_distance / total_seconds, abs=0.01)
+        assert lap.max_speed == pytest.approx(150.0 / 30.0, abs=0.01)
+
+
+def _decoded_messages(track: Track) -> list:
+    return [r.message for r in FitFile.from_bytes(write_fit(track)).records]
+
+
+def _timer_events(messages: list) -> list[tuple[int, int]]:
+    """(event_type, timestamp) for every timer event, in file order."""
+    return [
+        (m.event_type, m.timestamp)
+        for m in messages
+        if isinstance(m, EventMessage) and m.event == Event.TIMER.value
+    ]
+
+
+_T0 = datetime(2024, 1, 1, 8, 0, 0)
+
+
+def _track_with_stop() -> Track:
+    """0 m -> 100 m in 60 s, a 10-minute stop at 100 m, then 100 m more in 60 s."""
+    return Track(
+        points=[
+            point(distance_from_start=0.0, timestamp=_T0),
+            point(distance_from_start=100.0, timestamp=_T0 + timedelta(seconds=60)),
+            point(distance_from_start=100.0, timestamp=_T0 + timedelta(seconds=660)),
+            point(distance_from_start=200.0, timestamp=_T0 + timedelta(seconds=720)),
+        ],
+        sport=SportType.RUNNING,
+    )
+
+
+class TestWriteFitTimerEvents:
+    # Without timer events, Strava derives moving time purely from speed
+    # and discards anything slower than its resting threshold; with them,
+    # it uses the recorded timer time instead.
+
+    def test_timer_starts_before_the_first_record_and_stops_after_the_last(self):
+        track = TestWriteFitOutput()._build_track(SportType.RUNNING)
+        messages = _decoded_messages(track)
+        record_indexes = [i for i, m in enumerate(messages) if isinstance(m, RecordMessage)]
+        event_indexes = [i for i, m in enumerate(messages) if isinstance(m, EventMessage)]
+
+        assert _timer_events(messages) == [
+            (EventType.START.value, _fit_timestamp(timestamp_of(track.points[0]))),
+            (EventType.STOP_ALL.value, _fit_timestamp(timestamp_of(track.points[-1]))),
+        ]
+        assert event_indexes[0] < record_indexes[0]
+        assert event_indexes[-1] > record_indexes[-1]
+
+    def test_a_stop_is_written_as_a_timer_pause_between_arrival_and_departure(self):
+        messages = _decoded_messages(_track_with_stop())
+
+        assert _timer_events(messages) == [
+            (EventType.START.value, _fit_timestamp(_T0)),
+            (EventType.STOP_ALL.value, _fit_timestamp(_T0 + timedelta(seconds=60))),
+            (EventType.START.value, _fit_timestamp(_T0 + timedelta(seconds=660))),
+            (EventType.STOP_ALL.value, _fit_timestamp(_T0 + timedelta(seconds=720))),
+        ]
+        # The pause sits between the arrival record and the departure record.
+        kinds = [
+            "record" if isinstance(m, RecordMessage) else m.event_type
+            for m in messages
+            if isinstance(m, RecordMessage) or isinstance(m, EventMessage)
+        ]
+        assert kinds == [
+            EventType.START.value, "record", "record",
+            EventType.STOP_ALL.value, EventType.START.value,
+            "record", "record", EventType.STOP_ALL.value,
+        ]
+
+    def test_timer_time_excludes_stops_but_elapsed_time_includes_them(self):
+        messages = _decoded_messages(_track_with_stop())
+
+        for summary_type in (LapMessage, SessionMessage):
+            summary = next(m for m in messages if isinstance(m, summary_type))
+            assert summary.total_elapsed_time == pytest.approx(720.0)
+            assert summary.total_timer_time == pytest.approx(120.0)
+        activity = next(m for m in messages if isinstance(m, ActivityMessage))
+        assert activity.total_timer_time == pytest.approx(120.0)
+
+    def test_avg_speed_is_based_on_timer_time_not_elapsed_time(self):
+        messages = _decoded_messages(_track_with_stop())
+        session = next(m for m in messages if isinstance(m, SessionMessage))
+        assert session.avg_speed == pytest.approx(200.0 / 120.0, abs=0.01)
+
+    def test_zero_distance_leg_without_elapsed_time_is_not_a_pause(self):
+        # A duplicated GPX point costs no time, so it isn't a stop.
+        track = Track(points=[
+            point(distance_from_start=0.0, timestamp=_T0),
+            point(distance_from_start=50.0, timestamp=_T0 + timedelta(seconds=30)),
+            point(distance_from_start=50.0, timestamp=_T0 + timedelta(seconds=30)),
+            point(distance_from_start=100.0, timestamp=_T0 + timedelta(seconds=60)),
+        ])
+        messages = _decoded_messages(track)
+
+        assert [event_type for event_type, _ in _timer_events(messages)] == [
+            EventType.START.value, EventType.STOP_ALL.value,
+        ]
+        session = next(m for m in messages if isinstance(m, SessionMessage))
+        assert session.total_timer_time == pytest.approx(60.0)

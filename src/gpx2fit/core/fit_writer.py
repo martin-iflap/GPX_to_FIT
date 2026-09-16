@@ -4,14 +4,15 @@ from datetime import datetime, timezone
 
 from fit_tool.fit_file_builder import FitFileBuilder
 from fit_tool.profile.messages.activity_message import ActivityMessage
+from fit_tool.profile.messages.event_message import EventMessage
 from fit_tool.profile.messages.file_id_message import FileIdMessage
 from fit_tool.profile.messages.lap_message import LapMessage
 from fit_tool.profile.messages.record_message import RecordMessage
 from fit_tool.profile.messages.session_message import SessionMessage
 from fit_tool.profile.messages.sport_message import SportMessage
-from fit_tool.profile.profile_type import Activity, FileType, Manufacturer, Sport
+from fit_tool.profile.profile_type import Activity, Event, EventType, FileType, Manufacturer, Sport
 
-from gpx2fit.core.models import Track
+from gpx2fit.core.models import Track, TrackPoint
 
 
 def _fit_timestamp(value: datetime) -> int:
@@ -31,14 +32,33 @@ def _fit_timestamp(value: datetime) -> int:
     return round(utc_value.timestamp() * 1000)
 
 
+def _timer_event(event_type: EventType, timestamp: datetime) -> EventMessage:
+    """A timer START or STOP_ALL event at `timestamp`."""
+    event = EventMessage()
+    event.event = Event.TIMER
+    event.event_type = event_type
+    event.timestamp = _fit_timestamp(timestamp)
+    return event
+
+
 def write_fit(track: Track) -> bytes:
     """Write a .fit file from a fully-paced track.
 
     Builds a FileIdMessage and SportMessage, one RecordMessage per track
-    point (position/elevation/distance/timestamp), and a LapMessage,
+    point (position/elevation/distance/timestamp/speed), and a LapMessage,
     SessionMessage, and ActivityMessage summarizing the whole activity.
+    Records are wrapped in timer events the way a real device writes them:
+    START before the first, STOP_ALL after the last, and a STOP_ALL/START
+    pause around every stop (a zero-distance leg that still takes time).
+    Without timer events, Strava derives moving time from speed alone and
+    drops every slow stretch (e.g. a steep climb on a long hike) as
+    "resting"; with them, it uses the recorded timer time, which here is
+    elapsed time minus stops. Average speed is likewise over timer time.
     Every point must already have a timestamp — this is the last step in the
-    pipeline, run after pacing.combine has stamped them all.
+    pipeline, run after pacing.combine has stamped them all. Per-point speed
+    is derived here from consecutive distance/timestamp deltas (not carried
+    over from pacing) so that FIT readers which expect an explicit speed
+    field, rather than deriving it themselves, can still show pace.
 
     Args:
         track: A track whose points all have a timestamp, in route order.
@@ -84,7 +104,37 @@ def write_fit(track: Track) -> bytes:
 
     total_elapsed_seconds = (end_time - start_time).total_seconds()
 
-    for point in track.points:
+    builder.add(_timer_event(EventType.START, start_time))
+
+    point_speeds: list[float] = [0.0] * len(track.points)
+    for index, (prev, curr) in enumerate(zip(track.points, track.points[1:]), start=1):
+        if prev.timestamp is None or curr.timestamp is None:
+            raise RuntimeError("Missing timestamp for fit file creation.")
+        delta_distance = curr.distance_from_start - prev.distance_from_start
+        delta_seconds = (curr.timestamp - prev.timestamp).total_seconds()
+        point_speeds[index] = delta_distance / delta_seconds if delta_seconds > 0 else 0.0
+    if len(point_speeds) > 1:
+        point_speeds[0] = point_speeds[1]
+
+    paused_seconds = 0.0
+    previous_point: TrackPoint | None = None
+    for point, speed in zip(track.points, point_speeds):
+        if point.timestamp is None:
+            raise RuntimeError("Missing timestamp for fit file creation.")
+        if (
+            previous_point is not None
+            and previous_point.timestamp is not None
+            and point.distance_from_start == previous_point.distance_from_start
+            and point.timestamp > previous_point.timestamp
+        ):
+            # Time passing with no distance covered can only be a stop
+            # (pacing gives an ordinary duplicated point zero time), so it's
+            # written as a timer pause rather than left as zero-speed time.
+            builder.add(_timer_event(EventType.STOP_ALL, previous_point.timestamp))
+            builder.add(_timer_event(EventType.START, point.timestamp))
+            paused_seconds += (point.timestamp - previous_point.timestamp).total_seconds()
+        previous_point = point
+
         record = RecordMessage()
         record.position_lat = point.lat
         record.position_long = point.lon
@@ -93,29 +143,38 @@ def write_fit(track: Track) -> bytes:
             # missing <ele>), not literal sea level, so it's left unset here.
             record.altitude = point.elevation
         record.distance = point.distance_from_start
-        if point.timestamp is None:
-            raise RuntimeError("Missing timestamp for fit file creation.")
+        record.speed = speed
+        record.enhanced_speed = speed
         record.timestamp = _fit_timestamp(point.timestamp)
         builder.add(record)
 
+    builder.add(_timer_event(EventType.STOP_ALL, end_time))
+    total_timer_seconds = total_elapsed_seconds - paused_seconds
+
     lap = LapMessage()
     session = SessionMessage()
+    avg_speed = track.total_distance / total_timer_seconds if total_timer_seconds > 0 else 0.0
+    max_speed = max(point_speeds, default=0.0)
     # assign the same values to both lap and session messages
     for message in (lap, session):
         message.start_time = _fit_timestamp(start_time)
         message.timestamp = _fit_timestamp(end_time)
         message.total_elapsed_time = total_elapsed_seconds
-        message.total_timer_time = total_elapsed_seconds
+        message.total_timer_time = total_timer_seconds
         message.total_distance = track.total_distance
         message.total_ascent = round(track.total_elevation_gain)
         message.sport = sport
+        message.avg_speed = avg_speed
+        message.enhanced_avg_speed = avg_speed
+        message.max_speed = max_speed
+        message.enhanced_max_speed = max_speed
 
     builder.add(lap)
     builder.add(session)
 
     activity = ActivityMessage()
     activity.timestamp = _fit_timestamp(end_time)
-    activity.total_timer_time = total_elapsed_seconds
+    activity.total_timer_time = total_timer_seconds
     activity.num_sessions = 1
     activity.type = Activity.MANUAL
     builder.add(activity)
