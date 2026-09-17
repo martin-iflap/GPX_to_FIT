@@ -78,12 +78,61 @@ describe('createTimeField', () => {
     assert.equal(minutesInput.value, '59');
   });
 
-  it('moves focus back to hours on Backspace from an empty minutes box', () => {
-    const { hoursInput, minutesInput } = mount();
+  it('never moves focus on Backspace, even from an empty minutes box', () => {
+    // Holding Backspace to clear the minutes used to carry focus into the
+    // hours box mid-repeat and start deleting digits there too.
+    const { minutesInput } = mount();
     minutesInput.focus();
     minutesInput.value = '';
     minutesInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }));
+    assert.equal(document.activeElement, minutesInput);
+  });
+
+  it('moves focus back to hours on ArrowLeft from the start of the minutes box', () => {
+    const { hoursInput, minutesInput } = mount();
+    setValueAndDispatchInput(hoursInput, '10');
+    setValueAndDispatchInput(minutesInput, '30');
+    minutesInput.focus();
+    minutesInput.setSelectionRange(0, 0);
+    const event = new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true });
+    minutesInput.dispatchEvent(event);
     assert.equal(document.activeElement, hoursInput);
+    // Caret after the last digit, not a selection: the next keystroke has to
+    // edit the end of "10", not replace it.
+    assert.equal(hoursInput.selectionStart, 2);
+    assert.equal(hoursInput.selectionEnd, 2);
+    // Otherwise the arrow would move the caret inside the hours box as well.
+    assert.equal(event.defaultPrevented, true);
+  });
+
+  it('leaves ArrowLeft alone when the minutes value is selected rather than collapsed', () => {
+    // Auto-advance from the hours box selects the minutes; the first ArrowLeft
+    // there should collapse that selection the way the browser does.
+    const { minutesInput } = mount();
+    setValueAndDispatchInput(minutesInput, '30');
+    minutesInput.focus();
+    minutesInput.setSelectionRange(0, 2);
+    minutesInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+    assert.equal(document.activeElement, minutesInput);
+  });
+
+  it('leaves ArrowLeft alone when the caret is mid-value', () => {
+    const { minutesInput } = mount();
+    setValueAndDispatchInput(minutesInput, '30');
+    minutesInput.focus();
+    minutesInput.setSelectionRange(1, 1);
+    minutesInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+    assert.equal(document.activeElement, minutesInput);
+  });
+
+  it('moves forward on ArrowRight from the end of the hours box', () => {
+    const { hoursInput, minutesInput } = mount();
+    setValueAndDispatchInput(hoursInput, '10');
+    hoursInput.focus();
+    hoursInput.setSelectionRange(2, 2);
+    hoursInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    assert.equal(document.activeElement, minutesInput);
+    assert.equal(minutesInput.selectionStart, 0);
   });
 
   it('reports null while incomplete and the pair once both boxes are filled', () => {

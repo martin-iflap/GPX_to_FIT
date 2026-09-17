@@ -6,7 +6,7 @@
 // mode pair, selected via `variant`.
 
 import { formatClock, formatDateTime, formatDuration } from './format.js';
-import { createDateTimeField, createDaySelector, createTimeField } from './dateTimeField.js';
+import { createDateTimeField, createDaySelector, createTimeField, linkSegmentPair } from './dateTimeField.js';
 
 /**
  * How many distinct calendar days `referenceStart` through
@@ -23,6 +23,46 @@ export function computeDayCount(referenceStart, totalDurationSeconds) {
   const endMidnight = new Date(end.getFullYear(), end.getMonth(), end.getDate());
   const dayDiff = Math.round((endMidnight.getTime() - startMidnight.getTime()) / 86_400_000);
   return dayDiff + 1;
+}
+
+const MINUTES_MAX = 59;
+
+/**
+ * Gives a plain text input the two things the duration boxes actually used
+ * `<input type="number">` for: digits-only entry and Up/Down stepping.
+ *
+ * They can't be number inputs any more because number inputs refuse to report
+ * a caret position (`selectionStart` throws), and without one the
+ * edge-triggered left/right navigation in `linkSegmentPair` has no way to tell
+ * an arrow at the end of the hours box from an arrow in the middle of it. The
+ * only thing lost is the native spinner, which also leaves the pair looking
+ * like the HH:MM boxes it sits beside.
+ *
+ * @param {HTMLInputElement} input
+ * @param {{max?: number|null}} [options] - upper bound for stepping only, as
+ *   `max` on a number input was: a typed 90 minutes still resolves as 1h30m.
+ */
+function wireNumericBox(input, { max = null } = {}) {
+  input.addEventListener('input', () => {
+    const digits = input.value.replace(/\D/g, '');
+    if (digits !== input.value) {
+      input.value = digits;
+    }
+  });
+
+  input.addEventListener('keydown', (event) => {
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') {
+      return;
+    }
+    // Left as-is these would jump the caret to one end of the value instead.
+    event.preventDefault();
+    const current = Number(input.value.replace(/\D/g, '')) || 0;
+    const stepped = current + (event.key === 'ArrowUp' ? 1 : -1);
+    input.value = String(Math.min(Math.max(stepped, 0), max ?? Number.MAX_SAFE_INTEGER));
+    // A native spinner fires 'input' too, so everything downstream (the digit
+    // filter above, the preview) stays on one path.
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
 }
 
 /**
@@ -58,7 +98,7 @@ export function computeDayCount(referenceStart, totalDurationSeconds) {
  *   from the activity's first day) that estimated time actually falls on,
  *   so a multi-day activity's day selector opens pre-set to the right day
  *   instead of always defaulting to day 1 — which otherwise routinely
- *   prefills a time that's invalid to confirm (earlier than an anchor
+ *   pre-fills a time that's invalid to confirm (earlier than an anchor
  *   already placed on a later day). Applied once, the first time the day
  *   selector's day count is computed; ignored without `initialTimeOfDay`.
  * @param {number} [opts.initialDurationSeconds] - pre-fills the Duration
@@ -88,8 +128,8 @@ export function createTimeToggle({
   const isDurationOnly = variant === 'durationOnly';
   const state = { mode: 'duration', dayOffset: 0 };
   const otherKey = variant === 'durationOrEnd' ? 'end' : 'timeOfDay';
-  // Consumed once, the first time refreshDaySelector runs (see below) —
-  // after that the day selector's own click handler is the only thing that
+  // Consumed once, the first time refreshDaySelector runs (see below).
+  // After that the day selector's own click handler is the only thing that
   // should move it, so a later, unrelated refresh doesn't keep snapping the
   // day back to this initial value.
   let pendingInitialDayOffset = typeof initialDayOffset === 'number' ? initialDayOffset : null;
@@ -120,10 +160,10 @@ export function createTimeToggle({
   const durationFields = document.createElement('div');
   durationFields.className = 'duration-fields';
 
+  // type="text" + inputMode="numeric", not type="number" — see wireNumericBox.
   const hoursInput = document.createElement('input');
-  hoursInput.type = 'number';
-  hoursInput.min = '0';
-  hoursInput.step = '1';
+  hoursInput.type = 'text';
+  hoursInput.inputMode = 'numeric';
   hoursInput.value = '0';
   hoursInput.className = 'text-input duration-input';
   hoursInput.setAttribute('aria-label', 'Hours');
@@ -133,10 +173,8 @@ export function createTimeToggle({
   hoursSuffix.textContent = 'h';
 
   const minutesInput = document.createElement('input');
-  minutesInput.type = 'number';
-  minutesInput.min = '0';
-  minutesInput.max = '59';
-  minutesInput.step = '1';
+  minutesInput.type = 'text';
+  minutesInput.inputMode = 'numeric';
   minutesInput.value = '0';
   minutesInput.className = 'text-input duration-input';
   minutesInput.setAttribute('aria-label', 'Minutes');
@@ -209,7 +247,7 @@ export function createTimeToggle({
   container.classList.add('time-toggle');
   // isDurationOnly never populates modesEl with buttons (see above) — skip
   // mounting it too, otherwise its empty `.segmented` background/padding
-  // still renders as a blank grey box with nothing inside it. Add the
+  // still renders as a blank gray box with nothing inside it. Add the
   // equivalent spacing back as plain padding (see .time-toggle--duration-only
   // in styles.css) so the fields don't end up sitting flush against whatever
   // is above this toggle in the caller's own layout (e.g. the stop
@@ -335,7 +373,12 @@ export function createTimeToggle({
     durationBtn.addEventListener('click', () => setMode('duration'));
     otherBtn.addEventListener('click', () => setMode(otherKey));
   }
+  // Registered before the preview listener so the preview always reads a
+  // value the digit filter has already been through.
+  wireNumericBox(hoursInput);
+  wireNumericBox(minutesInput, { max: MINUTES_MAX });
   [hoursInput, minutesInput].forEach((el) => el.addEventListener('input', updatePreview));
+  linkSegmentPair(hoursInput, minutesInput);
 
   if (typeof initialDurationSeconds === 'number' && initialDurationSeconds > 0) {
     const totalMinutes = Math.round(initialDurationSeconds / 60);

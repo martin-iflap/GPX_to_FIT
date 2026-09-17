@@ -14,6 +14,71 @@ import { pad } from './format.js';
 const SLOT_STEP_MINUTES = 30;
 const SLOTS_PER_DAY = (24 * 60) / SLOT_STEP_MINUTES;
 
+/**
+ * Whether `input`'s caret sits exactly at `position` with nothing selected.
+ * A range selection deliberately counts as "not at the edge": the arrow key
+ * that follows one collapses it, which is the browser's own behavior and
+ * shouldn't also hop to the neighboring box.
+ */
+function caretIsAt(input, position) {
+  return input.selectionStart === position && input.selectionEnd === position;
+}
+
+/**
+ * Focuses `input` and puts the caret after its last character rather than
+ * selecting the whole value. This is the right landing for *backwards*
+ * navigation: the ArrowLeft that brought focus here should keep operating one
+ * character at a time, and whatever is typed or deleted next has to apply to
+ * the end of the existing value, not replace it. Forward auto-advance still
+ * selects (see createTimeField below) — there, replacing the old value
+ * wholesale is exactly what typing a new one should do.
+ */
+export function focusSegmentEnd(input) {
+  input.focus();
+  const end = input.value.length;
+  input.setSelectionRange(end, end);
+}
+
+/**
+ * Wires caret movement across two adjacent segment boxes (hours, then
+ * minutes) so the pair behaves like one field instead of two unrelated
+ * inputs: ArrowLeft at the start of `second` jumps to the end of `first`, and
+ * ArrowRight at the end of `first` jumps to the start of `second`. Anywhere
+ * else in either value the arrows stay native.
+ *
+ * Deliberately *not* wired to Backspace. An empty-and-jump rule there reads
+ * well in isolation but not while holding the key down to clear the field:
+ * focus lands in the hours box mid-repeat and the same press starts eating
+ * digits the user never meant to touch.
+ *
+ * Both boxes must be text-backed (`type="text"` with `inputMode="numeric"`) —
+ * `type="number"` doesn't support `selectionStart` (Chrome and Firefox throw
+ * InvalidStateError), so there is no way to tell an arrow at the edge from
+ * one in the middle. That is why the duration boxes in timeInput.js are text
+ * inputs with their own stepping rather than number inputs.
+ *
+ * @param {HTMLInputElement} first
+ * @param {HTMLInputElement} second
+ */
+export function linkSegmentPair(first, second) {
+  second.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowLeft' && caretIsAt(second, 0)) {
+      // Without this the arrow would also move the caret inside `first`,
+      // stepping one character further left than the user asked for.
+      event.preventDefault();
+      focusSegmentEnd(first);
+    }
+  });
+
+  first.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowRight' && caretIsAt(first, first.value.length)) {
+      event.preventDefault();
+      second.focus();
+      second.setSelectionRange(0, 0);
+    }
+  });
+}
+
 /** Every half-hour slot of the day in order: [{hours:0,minutes:0}, {hours:0,minutes:30}, ..., {hours:23,minutes:30}]. */
 export function buildDaySlots() {
   return Array.from({ length: SLOTS_PER_DAY }, (_, i) => {
@@ -125,12 +190,7 @@ export function createTimeField({ container, ariaLabel = 'Time', quickPicks = tr
     notifyChange();
   });
 
-  minutesInput.addEventListener('keydown', (event) => {
-    if (event.key === 'Backspace' && minutesInput.value === '') {
-      hoursInput.focus();
-      hoursInput.select();
-    }
-  });
+  linkSegmentPair(hoursInput, minutesInput);
 
   if (quickPicks) {
     const dropdown = document.createElement('div');

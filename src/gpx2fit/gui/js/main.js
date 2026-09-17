@@ -11,9 +11,10 @@ import { createDateTimeField } from './dateTimeField.js';
 import * as anchorsModule from './anchors.js';
 import * as stopsModule from './stops.js';
 import { initTheme } from './theme.js';
+import { initShortcuts } from './shortcuts.js';
 import { createAnchorPlacer } from './anchorPopovers.js';
 import { initPhotoDrop, resetPhotoDrop } from './photoAnchors.js';
-import { describeError, formatDistanceKm, formatFileSize } from './format.js';
+import { describeError, fitFileNameFromGpx, formatDistanceKm, formatFileSize } from './format.js';
 
 const dropzone = document.getElementById('dropzone');
 const gpxFileInput = document.getElementById('gpxFileInput');
@@ -38,12 +39,18 @@ const runButton = document.getElementById('runButton');
 const statusEl = document.getElementById('status');
 const downloadLink = document.getElementById('downloadLink');
 const themeToggle = document.getElementById('themeToggle');
+const shortcutsToggle = document.getElementById('shortcutsToggle');
+const shortcutsPanelEl = document.getElementById('shortcutsPanel');
 
 // Route data from the most recently parsed GPX file, and the current values
 // of the sport/start-time controls. Read by the convert handler and by the
 // anchor placer (via the getters passed to createAnchorPlacer below).
 let routePoints = null;
 let totalDistance = null;
+// Name of the GPX file behind routePoints, used to name the FIT download after
+// it. Set only once a parse succeeds, so a failed upload can't rename the
+// output of the route that is still loaded.
+let gpxFileName = null;
 let sportValue = 'hiking';
 let startTimeResult = { isValid: false };
 
@@ -51,6 +58,14 @@ anchorsModule.initAnchorList(anchorListEl, anchorEmptyStateEl);
 stopsModule.initStopList(stopListEl, stopEmptyStateEl);
 mapModule.initMap('map');
 initTheme(themeToggle);
+initShortcuts({
+  triggerButton: shortcutsToggle,
+  panelContainer: shortcutsPanelEl,
+  sportControlEl,
+  runButton,
+  gpxFileInput,
+  photoFileInput: photoFileInputEl,
+});
 
 /* ---------- status ---------- */
 
@@ -179,6 +194,7 @@ async function handleFile(file) {
 
     routePoints = points;
     totalDistance = summary.total_distance;
+    gpxFileName = file.name;
 
     summaryDistanceEl.textContent = formatDistanceKm(summary.total_distance);
     summaryElevationEl.textContent = `${Math.round(summary.total_elevation_gain)} m`;
@@ -263,10 +279,14 @@ runButton.addEventListener('click', async () => {
 
     const blob = new Blob([fitBytes], { type: 'application/octet-stream' });
     downloadLink.href = URL.createObjectURL(blob);
+    downloadLink.download = fitFileNameFromGpx(gpxFileName);
     downloadLink.hidden = false;
     downloadLink.textContent = `Download FIT (${formatFileSize(blob.size)})`;
     setStatus('FIT file generated successfully.');
     downloadLink.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    // So the Ctrl+Enter path ends one plain Enter away from the file, rather
+    // than leaving focus on a button that just disabled itself.
+    downloadLink.focus();
   } catch (error) {
     console.error(error);
     const { message, kind } = describeError(error);

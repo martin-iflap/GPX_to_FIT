@@ -171,6 +171,14 @@ body {
   font-size: 0.85rem;
 }
 
+/* Positioning context for .shortcuts-panel, which hangs below these buttons. */
+.header-actions {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
 .theme-toggle {
   display: flex;
   align-items: center;
@@ -194,6 +202,60 @@ body {
 .theme-toggle:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* Anchored under the header buttons rather than centred over the page: the
+   sidebar is its own grid column, so this never has to out-stack Leaflet's
+   panes (which run up to ~700) the way a full-page modal would. */
+.shortcuts-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + var(--space-2));
+  z-index: 30;
+  width: 236px;
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-base);
+  box-shadow: 0 12px 32px var(--shadow-color);
+}
+
+.shortcuts-panel-heading {
+  margin: 0 0 var(--space-2);
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.shortcut-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 3px 0;
+}
+
+.shortcut-keys {
+  display: flex;
+  flex-shrink: 0;
+  gap: 3px;
+}
+
+.shortcut-keys kbd {
+  padding: 1px 5px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 5px;
+  background: var(--bg-elevated-2);
+  color: var(--text-secondary);
+  font-family: var(--font-family);
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+
+.shortcut-label {
+  font-size: 0.78rem;
+  color: var(--text-tertiary);
+  text-align: right;
 }
 
 .sidebar-body {
@@ -728,6 +790,14 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 
 .download-link:hover {
   background: var(--accent-soft);
+}
+
+/* This link receives focus programmatically after a successful convert (see
+   main.js), so the ring has to be visible — it's the cue that Enter now
+   downloads. */
+.download-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* ---------- map markers / popover ---------- */

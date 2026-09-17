@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 
 import {
   describeError,
+  fitFileNameFromGpx,
   formatClock,
   formatDateTime,
   formatDistanceKm,
@@ -89,6 +90,65 @@ describe('formatFileSize', () => {
 
   it('caps at GB rather than continuing past it', () => {
     assert.equal(formatFileSize(1024 * 1024 * 1024 * 1024), '1024.0 GB');
+  });
+});
+
+describe('fitFileNameFromGpx', () => {
+  it('reuses the GPX name with a .fit extension', () => {
+    assert.equal(fitFileNameFromGpx('Mont Blanc loop.gpx'), 'Mont Blanc loop.fit');
+  });
+
+  it('matches the extension case-insensitively', () => {
+    assert.equal(fitFileNameFromGpx('Morning run.GPX'), 'Morning run.fit');
+  });
+
+  it('keeps a name that has no extension at all', () => {
+    assert.equal(fitFileNameFromGpx('Morning run'), 'Morning run.fit');
+  });
+
+  it('keeps dots inside the name', () => {
+    assert.equal(fitFileNameFromGpx('Stage 2.1 - ridge.gpx'), 'Stage 2.1 - ridge.fit');
+  });
+
+  it('falls back to activity.fit for generic export names', () => {
+    for (const name of ['export.gpx', 'Export.gpx', 'track.gpx', 'route.gpx', 'untitled.gpx']) {
+      assert.equal(fitFileNameFromGpx(name), 'activity.fit');
+    }
+  });
+
+  it('treats underscores and spaces as separators when matching generic names', () => {
+    assert.equal(fitFileNameFromGpx('my_track.gpx'), 'activity.fit');
+    assert.equal(fitFileNameFromGpx('GPX Export.gpx'), 'activity.fit');
+  });
+
+  it('ignores a trailing copy or id number when matching generic names', () => {
+    assert.equal(fitFileNameFromGpx('export (1).gpx'), 'activity.fit');
+    assert.equal(fitFileNameFromGpx('export-2.gpx'), 'activity.fit');
+    assert.equal(fitFileNameFromGpx('activity_12345678.gpx'), 'activity.fit');
+  });
+
+  it('keeps a real name that merely ends in a number', () => {
+    assert.equal(fitFileNameFromGpx('Ben Nevis 2024.gpx'), 'Ben Nevis 2024.fit');
+  });
+
+  it('falls back when there is no name', () => {
+    assert.equal(fitFileNameFromGpx(null), 'activity.fit');
+    assert.equal(fitFileNameFromGpx(undefined), 'activity.fit');
+    assert.equal(fitFileNameFromGpx(''), 'activity.fit');
+    assert.equal(fitFileNameFromGpx('.gpx'), 'activity.fit');
+  });
+
+  it('strips characters that are not valid in a file name', () => {
+    assert.equal(fitFileNameFromGpx('A/B: ridge?.gpx'), 'AB ridge.fit');
+  });
+
+  it('trims surrounding whitespace and trailing dots', () => {
+    assert.equal(fitFileNameFromGpx('  Ridge walk ...gpx  '), 'Ridge walk.fit');
+  });
+
+  it('truncates an overlong name', () => {
+    const longName = `${'a'.repeat(150)}.gpx`;
+    assert.equal(fitFileNameFromGpx(longName), `${'a'.repeat(100)}.fit`);
   });
 });
 

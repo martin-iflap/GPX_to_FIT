@@ -70,6 +70,103 @@ describe('createTimeToggle', () => {
     });
   });
 
+  describe('duration segment navigation', () => {
+    function mountDuration() {
+      const { container, toggle } = mount({
+        variant: 'durationOrEnd',
+        getReferenceTime: () => new Date(2024, 0, 1, 10, 0),
+      });
+      return {
+        toggle,
+        hoursInput: container.querySelector('input[aria-label="Hours"]'),
+        minutesInput: container.querySelector('input[aria-label="Minutes"]'),
+      };
+    }
+
+    function pressKey(input, key) {
+      const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+      input.dispatchEvent(event);
+      return event;
+    }
+
+    it('keeps the boxes caret-readable, which is what the arrow keys need', () => {
+      // A type="number" input throws on selectionStart, so the edge checks in
+      // linkSegmentPair could never fire there.
+      const { hoursInput, minutesInput } = mountDuration();
+      assert.equal(hoursInput.type, 'text');
+      assert.equal(minutesInput.type, 'text');
+      assert.equal(minutesInput.inputMode, 'numeric');
+    });
+
+    it('moves to the minutes box on ArrowRight from the end of the hours box', () => {
+      const { hoursInput, minutesInput } = mountDuration();
+      setValueAndDispatchInput(hoursInput, '12');
+      hoursInput.focus();
+      hoursInput.setSelectionRange(2, 2);
+      pressKey(hoursInput, 'ArrowRight');
+      assert.equal(document.activeElement, minutesInput);
+      assert.equal(minutesInput.selectionStart, 0);
+    });
+
+    it('moves back to the hours box on ArrowLeft from the start of the minutes box', () => {
+      const { hoursInput, minutesInput } = mountDuration();
+      setValueAndDispatchInput(hoursInput, '12');
+      setValueAndDispatchInput(minutesInput, '30');
+      minutesInput.focus();
+      minutesInput.setSelectionRange(0, 0);
+      pressKey(minutesInput, 'ArrowLeft');
+      assert.equal(document.activeElement, hoursInput);
+      assert.equal(hoursInput.selectionStart, 2);
+    });
+
+    it('leaves the arrows alone mid-value', () => {
+      const { hoursInput, minutesInput } = mountDuration();
+      setValueAndDispatchInput(hoursInput, '12');
+      hoursInput.focus();
+      hoursInput.setSelectionRange(1, 1);
+      pressKey(hoursInput, 'ArrowRight');
+      assert.equal(document.activeElement, hoursInput);
+
+      setValueAndDispatchInput(minutesInput, '30');
+      minutesInput.focus();
+      minutesInput.setSelectionRange(1, 1);
+      pressKey(minutesInput, 'ArrowLeft');
+      assert.equal(document.activeElement, minutesInput);
+    });
+
+    it('does not move focus on Backspace from an empty minutes box', () => {
+      const { minutesInput } = mountDuration();
+      setValueAndDispatchInput(minutesInput, '');
+      minutesInput.focus();
+      pressKey(minutesInput, 'Backspace');
+      assert.equal(document.activeElement, minutesInput);
+    });
+
+    it('still steps the value with Up/Down, clamped the way min/max used to be', () => {
+      const { hoursInput, minutesInput, toggle } = mountDuration();
+      setValueAndDispatchInput(hoursInput, '1');
+      pressKey(hoursInput, 'ArrowUp');
+      assert.equal(hoursInput.value, '2');
+
+      setValueAndDispatchInput(minutesInput, '59');
+      pressKey(minutesInput, 'ArrowUp');
+      assert.equal(minutesInput.value, '59');
+
+      setValueAndDispatchInput(minutesInput, '0');
+      pressKey(minutesInput, 'ArrowDown');
+      assert.equal(minutesInput.value, '0');
+
+      // Stepping re-resolves the toggle, exactly as a native spinner did.
+      assert.equal(toggle.getResult().durationSeconds, 2 * 3600);
+    });
+
+    it('drops anything that is not a digit', () => {
+      const { minutesInput } = mountDuration();
+      setValueAndDispatchInput(minutesInput, '4x-5');
+      assert.equal(minutesInput.value, '45');
+    });
+  });
+
   describe('durationOrEnd variant, end mode', () => {
     function switchToEndMode(container) {
       const buttons = container.querySelectorAll('.segmented-option');
