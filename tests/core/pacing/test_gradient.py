@@ -3,6 +3,7 @@ import pytest
 from gpx2fit.core.models import Track
 from gpx2fit.core.pacing.gradient import (
     GRADIENT_WINDOW_M,
+    blended_speeds_from_gradients,
     calculate_gradient,
     minetti_speeds_from_gradients,
     tobler_speeds_from_gradients,
@@ -284,6 +285,47 @@ class TestToblerSpeeds:
         # Tobler's function peaks at gradient == -0.05, not 0.
         [flat_speed, gentle_downhill_speed] = tobler_speeds_from_gradients([0.0, -0.05])
         assert gentle_downhill_speed > flat_speed
+
+
+class TestBlendedSpeeds:
+    GRADIENTS = [-0.25, -0.1, 0.0, 0.1, 0.25]
+
+    def test_weight_zero_is_exactly_minetti(self):
+        assert blended_speeds_from_gradients(self.GRADIENTS, 0.0) == pytest.approx(
+            minetti_speeds_from_gradients(self.GRADIENTS)
+        )
+
+    def test_weight_one_is_exactly_tobler(self):
+        assert blended_speeds_from_gradients(self.GRADIENTS, 1.0) == pytest.approx(
+            tobler_speeds_from_gradients(self.GRADIENTS)
+        )
+
+    @pytest.mark.parametrize("weight", [0.0, 0.25, 0.5, 0.75, 1.0])
+    def test_flat_ground_is_one_at_every_weight(self, weight):
+        # Both curves are normalized to flat ground, so no blend of them can
+        # move it — this is what makes a weight readable as "x% Tobler"
+        # rather than a change of reference speed.
+        assert blended_speeds_from_gradients([0.0], weight) == pytest.approx([1.0])
+
+    def test_half_and_half_is_the_geometric_mean_of_the_two_curves(self):
+        [minetti] = minetti_speeds_from_gradients([0.2])
+        [tobler] = tobler_speeds_from_gradients([0.2])
+        assert blended_speeds_from_gradients([0.2], 0.5) == pytest.approx([math.sqrt(minetti * tobler)])
+
+    @pytest.mark.parametrize("gradient", [-0.3, -0.15, 0.15, 0.3])
+    def test_blend_moves_monotonically_from_one_curve_to_the_other(self, gradient):
+        speeds = [blended_speeds_from_gradients([gradient], w / 10)[0] for w in range(11)]
+        deltas = [later - earlier for earlier, later in zip(speeds, speeds[1:])]
+        assert all(d > 0 for d in deltas) or all(d < 0 for d in deltas)
+        assert min(speeds[0], speeds[-1]) <= min(speeds) and max(speeds) <= max(speeds[0], speeds[-1])
+
+    @pytest.mark.parametrize("weight", [-0.01, 1.01, 2.0])
+    def test_weight_outside_the_unit_interval_raises(self, weight):
+        with pytest.raises(ValueError):
+            blended_speeds_from_gradients([0.1], weight)
+
+    def test_empty_gradients_give_empty_speeds(self):
+        assert blended_speeds_from_gradients([], 0.5) == []
 
     def test_speed_is_symmetric_around_the_peak_offset(self):
         # Gradients equidistant from -0.05 (the peak) should give equal speed.

@@ -6,11 +6,9 @@ from bisect import bisect_left, bisect_right
 from datetime import timedelta
 
 from gpx2fit.core.models import Anchor, InputError, ModeAStop, SportType, Track, TrackPoint
-from gpx2fit.core.pacing.gradient import calculate_gradient, minetti_speeds_from_gradients, tobler_speeds_from_gradients
+from gpx2fit.core.pacing.curve_selection import resolve_tobler_weight
+from gpx2fit.core.pacing.gradient import blended_speeds_from_gradients, calculate_gradient
 
-# Above this workout-average speed, a HIKING activity is paced like a run (Minetti)
-# rather than a walk (Tobler) — see combine()'s docstring for why.
-HIKING_TOBLER_THRESHOLD_MPS = 1.8
 
 # A surface multiplier can never drag a leg's speed below this fraction of
 # its gradient-modeled speed — see _pace_segment.
@@ -39,10 +37,18 @@ def _describe_anchor(anchor: Anchor) -> str:
     return f"{label} at {anchor.distance_from_start / 1000:.2f} km ({anchor.timestamp:%Y-%m-%d %H:%M})"
 
 
-def _resolve_pacing_model(total_elevation_gain: int, average_speed: float, length: float) -> None:
-    """"""
-    # todo: implement a better model determining logic here.
-    pass
+def _total_stop_seconds(anchors: list[Anchor], mode_a_stops: list[ModeAStop]) -> float:
+    """Total time this workout spends stopped rather than moving.
+
+    A Mode A stop contributes its duration directly; a Mode B stop arrives as
+    two anchors at the same distance with different timestamps. `anchors` must
+    be sorted by ascending distance_from_start.
+    """
+    seconds = sum(stop.duration.total_seconds() for stop in mode_a_stops)
+    for previous, current in zip(anchors, anchors[1:]):
+        if current.distance_from_start == previous.distance_from_start:
+            seconds += (current.timestamp - previous.timestamp).total_seconds()
+    return seconds
 
 
 def _compress_speed_toward_typical(speed: float, typical_speed: float, max_ratio: float) -> float:
@@ -55,10 +61,7 @@ def _compress_speed_toward_typical(speed: float, typical_speed: float, max_ratio
     reciprocal). This is deliberately not a hard min/max clamp which could
     produce constant-speed plateaus.
 
-    Args:
-        speed: Must be > 0.
-        typical_speed: Must be > 0.
-        max_ratio: Must be > 1.
+    Both speeds must be > 0 and `max_ratio` > 1.
     """
     log_limit = math.log(max_ratio)
     log_ratio = math.log(speed / typical_speed)
@@ -71,51 +74,45 @@ def _pace_segment(
     segment_gradients: list[float],
     start_anchor: Anchor,
     end_anchor: Anchor,
-    sport: SportType,
-    workout_avg_speed_mps: float,
+    tobler_weight: float,
     segment_multipliers: list[float] | None = None,
     segment_mode_a_stops: list[ModeAStop] | None = None,
 ) -> None:
     """Assign timestamps to one anchor-to-anchor segment's points, in place.
 
-    Picks a per-leg relative speed model (Minetti or Tobler), compresses
-    each leg's resulting speed toward the segment's own median leg speed
-    (see _MAX_SPEED_RATIO / _compress_speed_toward_typical). Then scales the
-    modeled per-leg times so the segment's total *active* time (anchor-to-anchor
-    duration minus any Mode A stop durations in this segment) matches exactly,
-    and stamps each point's timestamp accordingly. Each Mode A stop's duration
-    is then added, at its own point, to every later timestamp in the
-    segment.
+    Computes a per-leg relative speed from the workout's blend of the Minetti
+    and Tobler curves, compresses each leg's resulting speed toward the segment's
+    own median leg speed (see _MAX_SPEED_RATIO / _compress_speed_toward_typical).
+    Then scales the modeled per-leg times so the segment's total *active* time
+    (anchor-to-anchor duration minus any Mode A stop durations in this segment)
+    matches exactly, and stamps each point's timestamp accordingly. Each Mode A
+    stop's duration is then added, at its own point, to every later timestamp
+    in the segment.
 
     Args:
-        segment_points: Points between start_anchor and end_anchor, inclusive,
-            in route order. A Mode A stop in this segment must already
-            appear as a duplicated, zero-distance point pair (see
-            pacing/stops.py's expand_track_with_stops) — the first of the
-            pair becomes its arrival, the second its departure.
-        segment_gradients: This segment's per-leg gradients (N-1 values for
-            N points), sliced from the whole track's smoothed gradients so the
-            smoothing window isn't cut off at this segment's anchors.
+        segment_points: Points from start_anchor to end_anchor inclusive, in
+            route order. A Mode A stop in this segment must already appear as a
+            duplicated, zero-distance point pair (see pacing.stops
+            expand_track_with_stops) — the first of the pair becomes its
+            arrival, the second its departure.
+        segment_gradients: This segment's per-leg gradients, sliced from the
+            whole track's smoothed gradients so the smoothing window isn't cut
+            off at this segment's anchors.
         start_anchor: Anchor at the beginning of this segment.
         end_anchor: Anchor at the end of this segment.
-        sport: Sport type, used to pick the speed model.
-        workout_avg_speed_mps: Average speed over the whole workout (not just
-            this segment) — used only to decide between Minetti and Tobler for HIKING.
-        segment_multipliers: Optional per-leg speed multipliers, one for each leg
-            (N-1 values for N points). If provided, the per-leg speeds are multiplied
-            by the corresponding multiplier before scaling to match the segment's
-            anchor-to-anchor duration (now the multipliers are surface based).
+        tobler_weight: How far this workout's speed curve sits between Minetti
+            (0.0) and Tobler (1.0), resolved once for the whole workout by
+            pacing.curve_selection.resolve_tobler_weight.
+        segment_multipliers: Optional per-leg surface multipliers, one per leg.
         segment_mode_a_stops: This segment's Mode A stops, sorted ascending
             by distance_from_start.
 
     Note:
         Beyond the two boundary points (always stamped from the anchors
-        themselves), does nothing to the segment's interior if the segment
-        has fewer than 2 points, if the chosen model yields no speeds, or if
-        the modeled time comes out zero/negative (e.g. every leg in the
-        segment has zero real distance) — in that case the interior points
-        are left with whatever timestamp they already had (typically None).
-        See combine()'s docstring for when this can happen and why it's safe.
+        themselves), leaves the segment's interior untouched if it has fewer
+        than 2 points or if the modeled time comes out zero (e.g. every leg has
+        zero real distance) — those points keep whatever timestamp they had,
+        typically None. See combine()'s docstring for why that's safe.
 
     Raises:
         InputError: If end_anchor's timestamp isn't strictly later than
@@ -144,12 +141,7 @@ def _pace_segment(
             "one is wrong."
         )
 
-    if sport == SportType.RUNNING:
-        speeds = minetti_speeds_from_gradients(segment_gradients)
-    elif sport == SportType.HIKING and workout_avg_speed_mps > HIKING_TOBLER_THRESHOLD_MPS:
-        speeds = minetti_speeds_from_gradients(segment_gradients)
-    else:
-        speeds = tobler_speeds_from_gradients(segment_gradients)
+    speeds = blended_speeds_from_gradients(segment_gradients, tobler_weight)
     if not speeds:
         return
 
@@ -217,34 +209,17 @@ def _pace_segment(
 
 
 def _resolve_anchor_bounds(track_points: list[TrackPoint], anchors: list[Anchor]) -> list[int]:
-    """Resolve each anchor to an index of the first track point that matches its distance.
+    """Map each anchor to the index of the track point at its distance_from_start.
 
-    Each anchor is matched against ``track_points`` using its
-    ``distance_from_start`` value. For an anchor with a unique distance
-    among the anchors, the index of the first track point with that distance is returned.
+    Consecutive anchors may intentionally share a distance (a stop's arrival
+    and departure); each is then given its own point from the run of track
+    points at that distance, in order. `track_points` must be sorted by
+    distance_from_start (binary search), and anchors sharing a distance must be
+    consecutive.
 
-    Multiple consecutive anchors may intentionally share the same
-    ``distance_from_start`` (for example, an arrival and departure anchor
-    for a stop). When this happens, and there are enough track points at
-    that distance to give each anchor its own point, the anchors are
-    assigned distinct track-point indices in order.
-
-    If there are not enough matching track points for a group of anchors
-    sharing a distance the function raises a ValueError.
-
-    Args:
-        track_points: Track points to match against. The points must be
-            sorted by ``distance_from_start`` because binary search is
-            used to locate matching points.
-        anchors: Anchors to resolve. Anchors sharing the same
-            ``distance_from_start`` must be consecutive if they are
-            intended to form a single duplicate-distance group.
-
-    Returns:
-        A list of track-point indices of the first track point
-        that matches each anchor's distance, one for each anchor.
     Raises:
-        ValueError: If there are not enough track points to assign each anchor a distinct index.
+        ValueError: If a group of anchors sharing a distance outnumbers the
+            track points at that distance.
     """
     distances = [p.distance_from_start for p in track_points]
     anchor_indexes = [0] * len(anchors)
@@ -303,14 +278,12 @@ def combine(
 
     Anchors split the track into consecutive segments (anchors[0] to
     anchors[1], anchors[1] to anchors[2], ...), each with a known duration.
-    Within each segment, per-leg gradients drive a relative speed model
-    (see pacing/gradient.py):
-
-    - RUNNING always uses the Minetti energy-cost model.
-    - HIKING uses Minetti too, but only if the *whole workout's* average
-      speed (total distance / total anchor-to-anchor time) is brisk enough
-      (> HIKING_TOBLER_THRESHOLD_MPS) to look more like a run than a walk;
-      otherwise it uses Tobler's hiking function.
+    Within each segment, per-leg gradients drive a relative speed model (see
+    pacing/gradient.py): a blend of the Minetti running curve and the Tobler
+    walking one, mixed according to how slow and how steep this workout is.
+    That blend is resolved **once, for the whole workout** (see
+    pacing.curve_selection.resolve_tobler_weight), and then used by every
+    segment.
 
     The modeled per-leg times are then scaled by a single per-segment factor
     so their sum matches that segment's *active* time (anchor-to-anchor
@@ -328,16 +301,13 @@ def combine(
             Mutated in place.
         anchors: Two or more Anchors, sorted by ascending distance_from_start,
             spanning the track from its first point to its last.
-        sport: Sport type used to select the speed model.
-        multipliers: Optional per-leg speed multipliers, aligned to `track`
-            as passed here (N-1 values for `track`'s N points) — if `track`
-            has already been expanded with stop points (see
-            pacing.stops.expand_track_with_stops), the multipliers must be
-            expanded the same way first (pacing.stops.expand_multipliers_with_stops)
-            before being passed in. Calculated by pacing.surface module from
-            a Valhalla trace_attributes response. If provided, the per-leg
-            speeds are multiplied by the corresponding multiplier before
-            scaling to match the segment's anchor-to-anchor duration.
+        sport: Sport type, which biases the Minetti/Tobler blend — see
+            pacing.curve_selection.TOBLER_THRESHOLDS.
+        multipliers: Optional per-leg surface speed multipliers from
+            pacing.surface, aligned to `track` as passed here (N-1 values for
+            its N points) — if `track` has already been expanded with stop
+            points, the multipliers must be expanded the same way first (see
+            pacing.stops.expand_multipliers_with_stops).
         mode_a_stops: Mode A stops (distance + duration only, arrival not
             yet known), sorted ascending by distance_from_start.
 
@@ -358,9 +328,6 @@ def combine(
             for anchors built via pacing.anchors.build_user_anchors, which
             already rejects two anchors resolving to the same distance.
     """
-    workout_total_time = (anchors[-1].timestamp - anchors[0].timestamp).total_seconds()
-    workout_avg_speed_mps = track.total_distance / workout_total_time if workout_total_time > 0 else 0.0
-
     mode_a_stops = mode_a_stops or []
     anchor_indexes = _resolve_anchor_bounds(track.points, anchors)
     buckets = _bucket_mode_a_stops(anchors, mode_a_stops)
@@ -368,17 +335,38 @@ def combine(
     # time, not a break in the terrain, so each segment's gradient smoothing
     # should still see the route on the far side of its anchors.
     gradients = calculate_gradient(track)
+
+    workout_total_time = (anchors[-1].timestamp - anchors[0].timestamp).total_seconds()
+    active_seconds = workout_total_time - _total_stop_seconds(anchors, mode_a_stops)
+    leg_distances = [
+        curr.distance_from_start - prev.distance_from_start
+        for prev, curr in zip(track.points, track.points[1:])
+    ]
+    tobler_weight = resolve_tobler_weight(gradients, leg_distances, active_seconds, sport)
+
     for i in range(len(anchors) - 1):
         segment_points = track.points[anchor_indexes[i]: anchor_indexes[i + 1] + 1]
         segment_gradients = gradients[anchor_indexes[i]: anchor_indexes[i + 1]]
         segment_multipliers = multipliers[anchor_indexes[i]: anchor_indexes[i + 1]] if multipliers is not None else None
         _pace_segment(
-            segment_points, segment_gradients, anchors[i], anchors[i + 1], sport, workout_avg_speed_mps,
+            segment_points, segment_gradients, anchors[i], anchors[i + 1], tobler_weight,
             segment_multipliers, buckets[i],
         )
 
     return track
 
+
 # todo:
 # _MAX_SPEED_RATIO is a first-guess constant (2.5) - it needs real tuning,
 # and ideally should vary by sport/terrain rather than being one fixed number.
+
+# Possible optimization once the pacing logic settles: the Minetti curve is
+# currently evaluated twice over the whole track - once inside
+# resolve_tobler_weight as its probe, once inside blended_speeds_from_gradients
+# per segment. Both could be computed once here, next to calculate_gradient,
+# and the resulting speeds sliced per segment the way gradients already are;
+# _pace_segment would then take segment speeds instead of tobler_weight and
+# stop knowing curve names at all. Measured cost of the duplicate pass is only
+# ~3 ms per 10k legs, so this is about structure, not speed. And it does mean
+# threading a speeds list through three call sites, so it is worth doing only
+# if _pace_segment comes out simpler for it.

@@ -4,14 +4,23 @@ from datetime import timedelta
 
 import pytest
 
-from gpx2fit.core.models import InputError, ModeAStop, SportType, Track
-from gpx2fit.core.pacing.combine import _MAX_SPEED_RATIO, HIKING_TOBLER_THRESHOLD_MPS, combine
+from gpx2fit.core.models import InputError, ModeAStop, SportType, Track, TrackPoint
+from gpx2fit.core.pacing.combine import _MAX_SPEED_RATIO, combine
 from gpx2fit.core.pacing.gradient import (
     GRADIENT_WINDOW_M,
+    blended_speeds_from_gradients,
     calculate_gradient,
     minetti_speeds_from_gradients,
 )
-from tests.core.conftest import START, anchor, point, timestamp_of
+from tests.core.conftest import (
+    START,
+    anchor,
+    flat_track,
+    point,
+    resolved_weight,
+    rolling_track,
+    timestamp_of,
+)
 
 
 def _compress_speed_toward_typical(speed: float, typical_speed: float, max_ratio: float) -> float:
@@ -19,6 +28,11 @@ def _compress_speed_toward_typical(speed: float, typical_speed: float, max_ratio
     log_limit = math.log(max_ratio)
     log_ratio = math.log(speed / typical_speed)
     return typical_speed * math.exp(log_limit * math.tanh(log_ratio / log_limit))
+
+
+def _leg_seconds(points: list[TrackPoint]) -> list[float]:
+    """Each leg's duration in seconds, from already-stamped points."""
+    return [(timestamp_of(b) - timestamp_of(a)).total_seconds() for a, b in zip(points, points[1:])]
 
 
 class TestCombineBasicPacing:
@@ -190,7 +204,7 @@ class TestCombineBoundsExtremeSpeedRatio:
         # fraction of the flat legs' speed, which — once scaled to fit a
         # slow enough overall pace — can be slow enough to look
         # indistinguishable from "stopped" to a real device or platform's
-        # own moving-time detection, discarding that whole climb's real
+        # own moving-time detection discarding that whole climb's real
         # distance and duration from the activity's moving stats even
         # though combine()'s total elapsed time is correct.
         flat = [point(elevation=0.0, distance_from_start=float(d)) for d in range(0, 220, 20)]
@@ -202,8 +216,14 @@ class TestCombineBoundsExtremeSpeedRatio:
         # Ground truth for the bound: combine() should compress gradient.py's
         # own raw speeds toward their median using the same tanh soft-bound
         # (see _compress_speed_toward_typical, reproduced above), not by
-        # some other amount.
-        raw_speeds = minetti_speeds_from_gradients(calculate_gradient(Track(points=track.points)))
+        # some other amount. Which curve those raw speeds come from is
+        # resolve_tobler_weight's call, not this test's — a 40% grade
+        # ground out at 0.25 m/s resolves to Tobler, and the bound has to
+        # hold whatever the blend is.
+        raw_speeds = blended_speeds_from_gradients(
+            calculate_gradient(Track(points=track.points)),
+            resolved_weight(track, (end_time - START).total_seconds(), SportType.RUNNING),
+        )
         typical_raw_speed = statistics.median(s for s in raw_speeds if s > 0)
         raw_ratio = max(raw_speeds) / min(raw_speeds)
         expected_ratio = (
@@ -283,14 +303,17 @@ class TestCombineUsesSmoothedWholeTrackGradient:
             point(elevation=0.0 if d <= 200 else 1.0, distance_from_start=float(d)) for d in range(0, 410, 10)
         ])
         anchor_index = 20  # the point at 200 m
-        mid_time = START + timedelta(minutes=2)
-        end_time = mid_time + timedelta(minutes=2)
+        mid_time = START + timedelta(minutes=1)
+        end_time = mid_time + timedelta(minutes=1)
         anchors = [anchor(0.0, START), anchor(200.0, mid_time), anchor(400.0, end_time)]
 
         whole_track_gradients = calculate_gradient(Track(points=track.points))[anchor_index:]
         segment_only_gradients = calculate_gradient(Track(points=track.points[anchor_index:]))
         # premise: truncating the window at the anchor would read a steeper step
         assert segment_only_gradients[0] > whole_track_gradients[0] * 1.5
+        # premise: this is a brisk, near-flat workout, so it paces on pure
+        # Minetti — which keeps the expected speeds below a single curve.
+        assert resolved_weight(track, (end_time - START).total_seconds(), SportType.RUNNING) == 0.0
 
         result = combine(track, anchors, SportType.RUNNING)
 
@@ -329,39 +352,95 @@ class TestCombineModelSelection:
     def _run_with_avg_speed(self, sport: SportType, avg_speed_mps: float) -> Track:
         distance = 1000.0
         duration = timedelta(seconds=distance / avg_speed_mps)
+        # Gently rolling — well below either sport's verticality threshold,
+        # so these tests exercise the speed criterion alone.
         track = Track(points=[
             point(elevation=0.0, distance_from_start=0.0),
-            point(elevation=30.0, distance_from_start=250.0),
-            point(elevation=60.0, distance_from_start=500.0),
-            point(elevation=20.0, distance_from_start=750.0),
+            point(elevation=10.0, distance_from_start=250.0),
+            point(elevation=20.0, distance_from_start=500.0),
+            point(elevation=7.0, distance_from_start=750.0),
             point(elevation=0.0, distance_from_start=1000.0),
         ])
         anchors = [anchor(0.0, START), anchor(1000.0, START + duration)]
         return combine(track, anchors, sport)
 
-    def test_hiking_below_threshold_still_produces_valid_pacing(self):
-        # Slow hiking pace (well under the Tobler/Minetti switch threshold).
+    def test_a_slow_hike_still_produces_valid_pacing(self):
         result = self._run_with_avg_speed(SportType.HIKING, avg_speed_mps=1.0)
         assert result.points[0].timestamp is not None
         assert result.points[-1].timestamp is not None
         assert result.points[0].timestamp < result.points[-1].timestamp
 
-    def test_hiking_above_threshold_still_produces_valid_pacing(self):
-        # Brisk hiking pace, above HIKING_TOBLER_THRESHOLD_MPS -> uses Minetti.
-        assert HIKING_TOBLER_THRESHOLD_MPS < 3.0
+    def test_a_brisk_hike_still_produces_valid_pacing(self):
         result = self._run_with_avg_speed(SportType.HIKING, avg_speed_mps=3.0)
         assert result.points[0].timestamp is not None
         assert result.points[-1].timestamp is not None
         assert result.points[0].timestamp < result.points[-1].timestamp
 
-    def test_running_and_brisk_hiking_produce_the_same_relative_pacing_shape(self):
-        # Above the threshold, HIKING is defined to use the same model as RUNNING.
-        running = self._run_with_avg_speed(SportType.RUNNING, avg_speed_mps=3.0)
-        hiking = self._run_with_avg_speed(SportType.HIKING, avg_speed_mps=3.0)
+    def test_the_same_terrain_paced_slower_shifts_toward_the_walking_curve(self):
+        track = flat_track([float(d) for d in range(0, 5050, 50)])
+        fast = self._weight_for(track, avg_speed_mps=3.0)
+        slow = self._weight_for(track, avg_speed_mps=1.2)
+        assert fast < slow
 
-        running_times = [p.timestamp for p in running.points]
-        hiking_times = [p.timestamp for p in hiking.points]
-        assert running_times == hiking_times
+    def _weight_for(self, track: Track, avg_speed_mps: float) -> float:
+        return resolved_weight(track, track.total_distance / avg_speed_mps, SportType.RUNNING)
+
+    def test_a_workout_that_resolves_to_the_same_curve_for_both_sports_paces_identically(self):
+        # Well above both sports' speed thresholds and well below both
+        # verticality ones, so the declared sport can't change the answer.
+        running = self._run_with_avg_speed(SportType.RUNNING, avg_speed_mps=4.0)
+        hiking = self._run_with_avg_speed(SportType.HIKING, avg_speed_mps=4.0)
+
+        assert [p.timestamp for p in running.points] == [p.timestamp for p in hiking.points]
+
+    def test_the_declared_sport_changes_the_pacing_of_a_borderline_workout(self):
+        running = self._run_with_avg_speed(SportType.RUNNING, avg_speed_mps=2.0)
+        hiking = self._run_with_avg_speed(SportType.HIKING, avg_speed_mps=2.0)
+
+        assert [p.timestamp for p in running.points] != [p.timestamp for p in hiking.points]
+        # Same anchors either way — only the shape in between differs.
+        assert running.points[-1].timestamp == hiking.points[-1].timestamp
+
+    def test_a_long_stop_does_not_make_a_brisk_run_pace_like_a_walk(self):
+        # combine() resolves the blend from *active* time, so a 45-minute
+        # lunch break must leave the moving legs paced exactly as they were.
+        moving_time = timedelta(seconds=2000.0 / 3.5)
+        stop_duration = timedelta(minutes=45)
+
+        without_stop = combine(
+            rolling_track(distance=2000.0, climb_per_km=40.0),
+            [anchor(0.0, START), anchor(2000.0, START + moving_time)],
+            SportType.RUNNING,
+        )
+
+        with_stop_track = rolling_track(distance=2000.0, climb_per_km=40.0)
+        stop_index = 20  # the point at 1000 m
+        stop_point = with_stop_track.points[stop_index]
+        # What pacing.stops.expand_track_with_stops produces: a duplicated,
+        # zero-distance point at the stop's own distance.
+        with_stop_track.points.insert(
+            stop_index, point(elevation=stop_point.elevation, distance_from_start=stop_point.distance_from_start)
+        )
+        with_stop = combine(
+            with_stop_track,
+            [anchor(0.0, START), anchor(2000.0, START + moving_time + stop_duration)],
+            SportType.RUNNING,
+            mode_a_stops=[ModeAStop(1000.0, stop_duration)],
+        )
+
+        moving_legs_without = _leg_seconds(without_stop.points)
+        moving_legs_with = [
+            seconds for seconds, (a, b) in zip(
+                _leg_seconds(with_stop.points), zip(with_stop.points, with_stop.points[1:])
+            )
+            if b.distance_from_start > a.distance_from_start
+        ]
+        # Not bit-identical: the stop's duplicated point is one extra sample
+        # inside the gradient smoothing window, which nudges the surrounding legs.
+        # Had the stop been counted as moving time, the workout would
+        # have resolved to Tobler instead and the legs would differ by far
+        # more than this.
+        assert moving_legs_with == pytest.approx(moving_legs_without, rel=1e-3)
 
 
 class TestCombineInvalidAnchorMappingGuard:

@@ -98,6 +98,7 @@ async function ensurePyodide() {
       ['src/gpx2fit/core/pacing/anchors.py', await fetchText('/src/gpx2fit/core/pacing/anchors.py')],
       ['src/gpx2fit/core/pacing/photo_anchors.py', await fetchText('/src/gpx2fit/core/pacing/photo_anchors.py')],
       ['src/gpx2fit/core/pacing/gradient.py', await fetchText('/src/gpx2fit/core/pacing/gradient.py')],
+      ['src/gpx2fit/core/pacing/curve_selection.py', await fetchText('/src/gpx2fit/core/pacing/curve_selection.py')],
       ['src/gpx2fit/core/pacing/surface.py', await fetchText('/src/gpx2fit/core/pacing/surface.py')],
       ['src/gpx2fit/core/pacing/surface_weights.json', await fetchText('/src/gpx2fit/core/pacing/surface_weights.json')],
       ['src/gpx2fit/core/pacing/combine.py', await fetchText('/src/gpx2fit/core/pacing/combine.py')],

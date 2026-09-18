@@ -242,6 +242,41 @@ def minetti_speeds_from_gradients(
     return speeds
 
 
+def blended_speeds_from_gradients(gradients: list[float], tobler_weight: float) -> list[float]:
+    """Per-leg speeds from a geometric blend of the Minetti and Tobler curves.
+
+    Each leg's speed is ``minetti ** (1 - tobler_weight) * tobler ** tobler_weight``,
+    i.e. straight-line interpolation in log-space — the same space combine.py's
+    speed compression works in, so a half-and-half blend lands on the geometric
+    mean of the two curves rather than being dragged toward whichever one
+    happens to be larger. Both curves are normalized to flat ground, so every
+    blend is exactly 1.0 there too.
+    The weight is resolved once per workout by pacing.curve_selection.resolve_tobler_weight.
+
+    Args:
+        gradients: Per-leg gradients, e.g. from calculate_gradient.
+        tobler_weight: 0.0 for pure Minetti, 1.0 for pure Tobler, anything in
+            between for a blend. Must be within [0.0, 1.0].
+    Returns:
+        One speed per gradient, as a multiple of flat-ground speed.
+    Raises:
+        ValueError: If tobler_weight isn't within [0.0, 1.0].
+    """
+    if not 0.0 <= tobler_weight <= 1.0:
+        raise ValueError(f"tobler_weight must be within [0.0, 1.0], got {tobler_weight}.")
+    if tobler_weight == 0.0:
+        return minetti_speeds_from_gradients(gradients)
+    if tobler_weight == 1.0:
+        return tobler_speeds_from_gradients(gradients)
+
+    return [
+        minetti_speed ** (1.0 - tobler_weight) * tobler_speed ** tobler_weight
+        for minetti_speed, tobler_speed in zip(
+            minetti_speeds_from_gradients(gradients), tobler_speeds_from_gradients(gradients)
+        )
+    ]
+
+
 # TODO: Tobler has no tuning knob of its own the way Minetti has its
 # exponents. Now that both curves share a flat-ground reference they can be
 # compared directly: across ±30% grade Tobler spans 0.35-1.19 (3.4x) and the
