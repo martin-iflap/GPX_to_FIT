@@ -221,27 +221,47 @@ class ResolvedPhotoAnchor:
     gap_m: float
 
 
+@dataclass
+class ProfileSample:
+    """One point of the post-conversion activity profile the GUI charts under the map.
+
+    Built by activity_profile.build_activity_profile from a fully-paced
+    track, downsampled so the chart gets a bounded number of points however
+    dense the GPX is.
+
+    Attributes:
+        distance_from_start: Distance in meters from the track start.
+        elapsed_seconds: Seconds since the activity's first timestamp (stops included).
+        speed_mps: Average speed in m/s over the stretch ending at this
+            sample, 0.0 for both samples of a stop.
+        elevation: Elevation in meters, or None where the GPX had no elevation.
+        lat: Latitude in degrees, so the GUI can mark the hovered spot on the map.
+        lon: Longitude in degrees.
+        is_stop: True for a stop's arrival and departure samples.
+    """
+    distance_from_start: float
+    elapsed_seconds: float
+    speed_mps: float
+    elevation: float | None
+    lat: float
+    lon: float
+    is_stop: bool = False
+
+
 # TODO:
-# 1. Check the limits. (fallback = Enri maps). day_1 = 1803. day_2 = 642. day_3 = 788. day_4 = 1417. day_5 = 1354. total=6004.
-# 4. Convert some of the classes in models.py to pydantic.BaseModel.
-# 3. Add tests for the important JS functions.
-# 5. Fine tune surface + max speed capping speed adjustments.
-# 6. Add the graph with activity data below the map once converted and add reconvert button.
-# 6,5. Add possibility to hide the side and bottom panels to see the map better.
-# 7. Make sure the app works also for phones.
-# 8. Add cycling sport type. It will require separate speed computing logic and all.
-# 9. Make the default map display pre-gpx-loaded an image to save requests (or just try to save the map somehow).
-# 10. It would be absolutely crazy if the users could drag and adjust speed in the graph and it would recalculate based on their changes.
-# 11. Would it make sense to convert some of the code to Cython?
+# 1. Tune curve_selection.resolve_tobler_weight's six constants against real activities - the shape is in, the numbers are guesses.
+# 2. Fine tune surface + max speed capping speed adjustments. Check out the todos.
+# 3. Improve the overall page, we also want to add support and privacy pages and a few other things.
+# 4. Add a smoothness slider to the frontend to allow the user to adjust the smoothness/variance of the pacing model.
+# 5. Make sure the app works also for phones.
+# 6. Add cycling sport type. It will require separate speed computing logic and all.
+# 7. Make the default map display pre-gpx-loaded an image to save requests (or just try to save the map somehow).
+# 8. It would be absolutely crazy if the users could drag and adjust speed in the graph and it would recalculate based on their changes.
+# 9. Would it make sense to convert some of the code to Cython or Numpy?
+# 10. Perhaps in the future take a real activity and use it as model for fine tuning the pacing model. Basically just give it to Claude and ask
+#     it to fine tune the model so its getting closer and closer to reality. I could do something myself but i am kinda lazy so will see.
 
 
 # take a look at the PyCharm MCP for Claude
 # (Get-ChildItem -Recurse -File | Get-Content | Measure-Object).Count
 # rm ~/.claude/projects/YOUR_PROJECT_FOLDER/SESSION_ID.jsonl - delete session history if not needed anymore
-
-
-# 1.
-# keep an eye on the error handling
-# update plan.md and claude.md to match current state of the code and ideas.
-# 2.
-# perhaps utilize the valhalla elapsed time and cost somehow.

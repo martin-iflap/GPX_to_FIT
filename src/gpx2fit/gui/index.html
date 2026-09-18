@@ -8,12 +8,54 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <div class="app-shell">
+    <div id="appShell" class="app-shell">
       <section id="mapPanel">
         <div id="map"></div>
         <div id="mapEmptyState" class="map-empty-state">
           <p>Upload a GPX file to preview the route</p>
         </div>
+
+        <!-- Slides up over the bottom of the map (rather than shrinking it)
+             once js/profilePanel.js adds .has-profile to #appShell. -->
+        <section id="profilePanel" class="profile-panel" aria-label="Activity profile" aria-hidden="true" inert>
+          <header class="profile-panel-header">
+            <!-- Legend items double as show/hide toggles for their series. -->
+            <div class="profile-legend">
+              <button id="profileSpeedToggle" type="button" class="profile-legend-item" aria-pressed="true" title="Show or hide this series">
+                <span class="profile-legend-swatch profile-legend-swatch--speed"></span>
+                <span id="profileSpeedLabel">Speed (km/h)</span>
+              </button>
+              <button id="profileElevationToggle" type="button" class="profile-legend-item" aria-pressed="true" title="Show or hide this series">
+                <span class="profile-legend-swatch profile-legend-swatch--elevation"></span>
+                <span>Elevation (m)</span>
+              </button>
+            </div>
+            <div class="profile-panel-actions">
+              <div id="profileMetricControl" class="segmented segmented--compact" role="tablist" aria-label="Speed unit">
+                <button type="button" class="segmented-option" data-value="pace" role="tab" aria-selected="false">Pace</button>
+                <button type="button" class="segmented-option is-active" data-value="speed" role="tab" aria-selected="true">km/h</button>
+              </div>
+              <div id="profileAxisControl" class="segmented segmented--compact" role="tablist" aria-label="Chart x axis">
+                <button type="button" class="segmented-option is-active" data-value="time" role="tab" aria-selected="true">Time</button>
+                <button type="button" class="segmented-option" data-value="distance" role="tab" aria-selected="false">Distance</button>
+              </div>
+              <button id="profileCloseButton" type="button" class="theme-toggle" aria-label="Hide activity profile" title="Hide activity profile">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+                  <polyline points="6 9 12 15 18 9"></polyline>
+                </svg>
+              </button>
+            </div>
+          </header>
+          <div id="profileChart" class="profile-chart-area"></div>
+        </section>
+
+        <!-- Shown only while a profile exists but the panel is hidden. -->
+        <button id="profileShowButton" type="button" class="profile-show-button" hidden>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="3 17 9 11 13 15 21 7"></polyline>
+          </svg>
+          Show profile
+        </button>
       </section>
 
       <aside id="sidebar">

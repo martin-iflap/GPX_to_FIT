@@ -17,6 +17,9 @@
   --danger: #ff3b30;
   --warning: #b5750a;
   --shadow-color: rgba(15, 23, 42, 0.16);
+  --chart-elevation-fill: rgba(15, 23, 42, 0.1);
+  --chart-elevation-stroke: rgba(15, 23, 42, 0.28);
+  --chart-grid: rgba(15, 23, 42, 0.07);
 
   --radius-sm: 10px;
   --radius-md: 12px;
@@ -50,6 +53,9 @@
   --danger: #ff453a;
   --warning: #d99b2b;
   --shadow-color: rgba(0, 0, 0, 0.5);
+  --chart-elevation-fill: rgba(255, 255, 255, 0.1);
+  --chart-elevation-stroke: rgba(255, 255, 255, 0.3);
+  --chart-grid: rgba(255, 255, 255, 0.07);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -69,6 +75,9 @@
     --danger: #ff453a;
     --warning: #d99b2b;
     --shadow-color: rgba(0, 0, 0, 0.5);
+    --chart-elevation-fill: rgba(255, 255, 255, 0.1);
+    --chart-elevation-stroke: rgba(255, 255, 255, 0.3);
+    --chart-grid: rgba(255, 255, 255, 0.07);
   }
 }
 
@@ -109,14 +118,29 @@ body {
 /* ---------- layout ---------- */
 
 .app-shell {
+  --profile-height: 240px;
+  /* Eases in as well as out: a curve that starts at full speed makes the
+     opening look like a jump, since its first frames cover most of the distance. */
+  --profile-transition: 500ms cubic-bezier(0.4, 0, 0.2, 1);
   display: grid;
   grid-template-columns: 1fr 380px;
   height: 100vh;
 }
 
+/* Clips the profile panel while it waits below the map's bottom edge.
+   `clip`, not just `hidden`: an overflow: hidden box is still a scroll
+   container, so the browser can scroll it (shifting the whole map) to
+   reveal something inside; `hidden` stays as the fallback for older browsers.
+   isolation keeps Leaflet's high z-indexes (panes up to 700, controls 1000)
+   inside this box, so the panel only has to out-stack them here. */
 #mapPanel {
   position: relative;
-  height: 100%;
+  grid-column: 1;
+  grid-row: 1;
+  min-height: 0;
+  overflow: hidden;
+  overflow: clip;
+  isolation: isolate;
 }
 
 #map {
@@ -142,7 +166,9 @@ body {
 }
 
 #sidebar {
-  height: 100%;
+  grid-column: 2;
+  grid-row: 1;
+  min-height: 0;
   overflow-y: auto;
   background: var(--bg-elevated);
   backdrop-filter: blur(20px) saturate(140%);
@@ -952,17 +978,296 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   color: var(--text-tertiary);
 }
 
+/* ---------- activity profile panel ---------- */
+
+/* Overlays the bottom of the map instead of taking layout space, so the map
+   never resizes (no re-zoom, no extra tile loads). Waits just below the
+   map's bottom edge, clipped by #mapPanel, and slides up when opened. */
+#profilePanel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1100;
+  height: var(--profile-height);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated);
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  border-top: 1px solid var(--border-subtle);
+  box-shadow: 0 -12px 40px var(--shadow-color);
+  transform: translateY(calc(100% + 40px));
+  transition: transform var(--profile-transition);
+  /* Keeps the panel on its own compositor layer ahead of time, so the first
+     frames of the slide aren't spent promoting it (and its backdrop blur). */
+  will-change: transform;
+}
+
+.app-shell.has-profile #profilePanel {
+  transform: none;
+}
+
+/* Leaflet's bottom corners (the tile attribution) ride up with the panel so they stay visible. */
+#mapPanel .leaflet-bottom {
+  transition: transform var(--profile-transition);
+}
+
+.app-shell.has-profile #mapPanel .leaflet-bottom {
+  transform: translateY(calc(-1 * var(--profile-height)));
+}
+
+.profile-show-button {
+  position: absolute;
+  left: 50%;
+  bottom: var(--space-4);
+  z-index: 1050;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  box-shadow: 0 8px 24px var(--shadow-color);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.profile-show-button[hidden] {
+  display: none;
+}
+
+.profile-show-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.profile-panel-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  padding: var(--space-2) var(--space-3) 0 var(--space-4);
+}
+
+.profile-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.profile-legend {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.profile-legend-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0.25rem 0.5rem;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: background var(--transition), opacity var(--transition);
+}
+
+.profile-legend-item:hover:not(:disabled) {
+  background: var(--bg-elevated-2);
+}
+
+.profile-legend-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* The last visible series can't be hidden; it keeps its normal look, just not clickable. */
+.profile-legend-item:disabled {
+  cursor: default;
+}
+
+.profile-legend-item[aria-pressed="false"] {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+
+.profile-legend-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+}
+
+.profile-legend-swatch--speed {
+  height: 3px;
+  background: var(--accent);
+}
+
+.profile-legend-swatch--elevation {
+  background: var(--chart-elevation-fill);
+  border: 1px solid var(--chart-elevation-stroke);
+}
+
+.segmented--compact .segmented-option {
+  padding: 0.25rem 0.75rem;
+  font-size: 0.78rem;
+  /* Otherwise a squeezed header wraps a label onto two lines, making that control taller than its neighbours. */
+  white-space: nowrap;
+}
+
+.profile-chart-area {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.profile-chart svg {
+  display: block;
+  /* Keeps vertical page scrolling working on touch screens while a finger drags across the chart. */
+  touch-action: pan-y;
+}
+
+.profile-grid line {
+  stroke: var(--chart-grid);
+  stroke-width: 1;
+}
+
+.profile-elevation-area {
+  fill: var(--chart-elevation-fill);
+}
+
+.profile-elevation-line {
+  fill: none;
+  stroke: var(--chart-elevation-stroke);
+  stroke-width: 1;
+}
+
+.profile-speed-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.75;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.profile-axis-label {
+  fill: var(--text-tertiary);
+  font-family: var(--font-family);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.profile-axis-label--speed {
+  fill: var(--accent);
+}
+
+.profile-crosshair {
+  stroke: var(--text-tertiary);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.profile-speed-dot {
+  fill: var(--accent);
+  stroke: var(--bg-base);
+  stroke-width: 2;
+}
+
+.profile-elevation-dot {
+  fill: var(--chart-elevation-stroke);
+  stroke: var(--bg-base);
+  stroke-width: 1.5;
+}
+
+.profile-tooltip {
+  position: absolute;
+  z-index: 5;
+  min-width: 150px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+  box-shadow: 0 8px 24px var(--shadow-color);
+  font-size: 0.76rem;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.profile-tooltip-row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.profile-tooltip-label {
+  color: var(--text-tertiary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell {
+    --profile-transition: 0s;
+  }
+}
+
 /* ---------- responsive ---------- */
 
 @media (max-width: 860px) {
   .app-shell {
     grid-template-columns: 1fr;
-    grid-template-rows: 45vh 1fr;
     height: auto;
     min-height: 100vh;
   }
 
+  /* The map is too short here to cover, so the panel takes its own space
+     under it instead, pushing the sidebar down; the map itself still keeps its size. */
+  #mapPanel {
+    overflow: visible;
+  }
+
+  #map {
+    height: 45vh;
+  }
+
+  #profilePanel {
+    position: relative;
+    height: 0;
+    overflow: hidden;
+    transform: none;
+    box-shadow: none;
+    transition: height var(--profile-transition);
+  }
+
+  .app-shell.has-profile #profilePanel {
+    height: var(--profile-height);
+  }
+
+  .app-shell.has-profile #mapPanel .leaflet-bottom {
+    transform: none;
+  }
+
+  .profile-show-button {
+    bottom: auto;
+    top: calc(45vh - var(--space-4));
+    transform: translate(-50%, -100%);
+  }
+
   #sidebar {
+    grid-column: 1;
+    grid-row: 2;
     border-left: none;
     border-top: 1px solid var(--border-subtle);
     box-shadow: 0 -20px 60px var(--shadow-color);

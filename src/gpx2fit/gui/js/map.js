@@ -41,6 +41,7 @@ let map = null;
 let tileLayer = null;
 let routeLine = null;
 let routeHitLine = null;
+let hoverMarker = null;
 const markers = new Map();
 
 // Screen-pixel width of the invisible click target drawn on top of the
@@ -60,7 +61,10 @@ const ROUTE_HIT_WEIGHT = 22;
 export function initMap(containerId) {
   map = L.map(containerId, { zoomControl: true, attributionControl: true });
   map.setView([46.8, 8.2], 8);
-  window.addEventListener('resize', () => map.invalidateSize());
+  // Observes the container itself rather than the window, so any layout
+  // change that resizes the map (not just a window resize) keeps Leaflet in
+  // step. pan: false keeps the top-left anchored, so the view doesn't drift.
+  new ResizeObserver(() => map.invalidateSize({ pan: false })).observe(map.getContainer());
   return map;
 }
 
@@ -122,6 +126,27 @@ export function renderRoute(points, onRouteClick) {
 
   map.fitBounds(routeLine.getBounds(), { padding: [32, 32] });
   map.invalidateSize();
+}
+
+/** Shows (or moves) the dot marking the profile chart's hovered position on the route. */
+export function showHoverMarker(lat, lon) {
+  if (!hoverMarker) {
+    hoverMarker = L.circleMarker([lat, lon], { radius: 7, color: '#ffffff', weight: 2.5, fillOpacity: 1, interactive: false });
+  }
+  hoverMarker.setLatLng([lat, lon]);
+  if (!map.hasLayer(hoverMarker)) {
+    // Re-read on every show rather than once, in case the theme changed since.
+    const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#007aff';
+    hoverMarker.setStyle({ fillColor: accent });
+    hoverMarker.addTo(map);
+  }
+}
+
+/** Removes the profile hover dot, if shown. */
+export function hideHoverMarker() {
+  if (hoverMarker && map.hasLayer(hoverMarker)) {
+    map.removeLayer(hoverMarker);
+  }
 }
 
 function pinIcon(number) {

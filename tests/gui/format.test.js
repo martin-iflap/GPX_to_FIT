@@ -8,7 +8,10 @@ import {
   formatDateTime,
   formatDistanceKm,
   formatDuration,
+  formatElapsed,
   formatFileSize,
+  formatPace,
+  formatSpeedKmh,
   pad,
 } from '../../src/gpx2fit/gui/js/format.js';
 
@@ -64,6 +67,35 @@ describe('formatDistanceKm', () => {
 
   it('formats zero meters', () => {
     assert.equal(formatDistanceKm(0), '0.00 km');
+  });
+});
+
+describe('formatElapsed', () => {
+  it('formats as H:MM', () => {
+    assert.equal(formatElapsed(3725), '1:02');
+    assert.equal(formatElapsed(59 * 60), '0:59');
+  });
+
+  it('clamps negative input to zero', () => {
+    assert.equal(formatElapsed(-5), '0:00');
+  });
+});
+
+describe('formatSpeedKmh', () => {
+  it('converts m/s to km/h with one decimal', () => {
+    assert.equal(formatSpeedKmh(1.25), '4.5 km/h');
+    assert.equal(formatSpeedKmh(0), '0.0 km/h');
+  });
+});
+
+describe('formatPace', () => {
+  it('converts m/s to min:ss per km', () => {
+    assert.equal(formatPace(2.5), '6:40 /km');
+    assert.equal(formatPace(1000 / 300), '5:00 /km');
+  });
+
+  it('has no finite pace at zero speed', () => {
+    assert.equal(formatPace(0), '–:–– /km');
   });
 });
 

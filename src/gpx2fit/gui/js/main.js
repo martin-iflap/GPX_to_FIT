@@ -14,6 +14,7 @@ import { initTheme } from './theme.js';
 import { initShortcuts } from './shortcuts.js';
 import { createAnchorPlacer } from './anchorPopovers.js';
 import { initPhotoDrop, resetPhotoDrop } from './photoAnchors.js';
+import { initProfilePanel, showProfile, hideProfile } from './profilePanel.js';
 import { describeError, fitFileNameFromGpx, formatDistanceKm, formatFileSize } from './format.js';
 
 const dropzone = document.getElementById('dropzone');
@@ -41,6 +42,16 @@ const downloadLink = document.getElementById('downloadLink');
 const themeToggle = document.getElementById('themeToggle');
 const shortcutsToggle = document.getElementById('shortcutsToggle');
 const shortcutsPanelEl = document.getElementById('shortcutsPanel');
+const appShellEl = document.getElementById('appShell');
+const profilePanelEl = document.getElementById('profilePanel');
+const profileChartEl = document.getElementById('profileChart');
+const profileAxisControlEl = document.getElementById('profileAxisControl');
+const profileMetricControlEl = document.getElementById('profileMetricControl');
+const profileSpeedLabelEl = document.getElementById('profileSpeedLabel');
+const profileSpeedToggleEl = document.getElementById('profileSpeedToggle');
+const profileElevationToggleEl = document.getElementById('profileElevationToggle');
+const profileCloseButtonEl = document.getElementById('profileCloseButton');
+const profileShowButtonEl = document.getElementById('profileShowButton');
 
 // Route data from the most recently parsed GPX file, and the current values
 // of the sport/start-time controls. Read by the convert handler and by the
@@ -58,6 +69,19 @@ anchorsModule.initAnchorList(anchorListEl, anchorEmptyStateEl);
 stopsModule.initStopList(stopListEl, stopEmptyStateEl);
 mapModule.initMap('map');
 initTheme(themeToggle);
+initProfilePanel({
+  shellEl: appShellEl,
+  panelEl: profilePanelEl,
+  chartEl: profileChartEl,
+  axisControlEl: profileAxisControlEl,
+  metricControlEl: profileMetricControlEl,
+  speedLabelEl: profileSpeedLabelEl,
+  speedToggleEl: profileSpeedToggleEl,
+  elevationToggleEl: profileElevationToggleEl,
+  closeButtonEl: profileCloseButtonEl,
+  showButtonEl: profileShowButtonEl,
+  mapModule,
+});
 initShortcuts({
   triggerButton: shortcutsToggle,
   panelContainer: shortcutsPanelEl,
@@ -191,6 +215,7 @@ async function handleFile(file) {
     anchorsModule.resetAnchors();
     stopsModule.resetStops();
     resetPhotoDrop();
+    hideProfile();
 
     routePoints = points;
     totalDistance = summary.total_distance;
@@ -268,7 +293,9 @@ runButton.addEventListener('click', async () => {
       endIso: s.mode === 'startEnd' ? s.departure.toISOString() : undefined,
     }));
 
-    const fitBytes = await convert({
+    // Captured now, so flipping the sport toggle afterwards can't relabel this run's chart.
+    const convertedSport = sportValue;
+    const { fitBytes, profile } = await convert({
       startIso: startTimeField.getValue().toISOString(),
       durationSeconds: startTimeResult.durationSeconds,
       sportEnumName,
@@ -282,6 +309,7 @@ runButton.addEventListener('click', async () => {
     downloadLink.download = fitFileNameFromGpx(gpxFileName);
     downloadLink.hidden = false;
     downloadLink.textContent = `Download FIT (${formatFileSize(blob.size)})`;
+    showProfile(profile, convertedSport);
     setStatus('FIT file generated successfully.');
     downloadLink.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     // So the Ctrl+Enter path ends one plain Enter away from the file, rather

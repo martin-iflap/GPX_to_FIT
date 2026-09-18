@@ -95,6 +95,7 @@ async function ensurePyodide() {
       ['src/gpx2fit/core/models.py', await fetchText('/src/gpx2fit/core/models.py')],
       ['src/gpx2fit/core/gpx_reader.py', await fetchText('/src/gpx2fit/core/gpx_reader.py')],
       ['src/gpx2fit/core/fit_writer.py', await fetchText('/src/gpx2fit/core/fit_writer.py')],
+      ['src/gpx2fit/core/activity_profile.py', await fetchText('/src/gpx2fit/core/activity_profile.py')],
       ['src/gpx2fit/core/pacing/anchors.py', await fetchText('/src/gpx2fit/core/pacing/anchors.py')],
       ['src/gpx2fit/core/pacing/photo_anchors.py', await fetchText('/src/gpx2fit/core/pacing/photo_anchors.py')],
       ['src/gpx2fit/core/pacing/gradient.py', await fetchText('/src/gpx2fit/core/pacing/gradient.py')],
@@ -326,6 +327,8 @@ async function fetchSurfaceMultipliers(sportEnumName, runtime) {
  * Runs the full pacing + FIT-encoding pipeline over the already-parsed
  * `_track`: builds start/end anchors from the given duration, merges in any
  * mid-route anchors and stops, fits per-leg speeds, and writes a FIT file.
+ * It also returns a downsampled profile of the paced result
+ * (`activity_profile.build_activity_profile`) for the chart under the map.
  * Pacing runs against a fresh working copy of `_track`'s points (expanded
  * with a duplicate point per stop) — `_track` itself is never structurally
  * mutated, since it's a persistent global reused across repeated calls.
@@ -346,7 +349,10 @@ async function fetchSurfaceMultipliers(sportEnumName, runtime) {
  *   mid-route stops: exactly one of durationSeconds (Mode A) or
  *   startIso+endIso (Mode B) per entry
  * @param {string} [args.device] - device name to embed in the FIT file, applied to `_track.device`
- * @returns {Promise<Uint8Array>} the encoded FIT file
+ * @returns {Promise<{
+ *   fitBytes: Uint8Array,
+ *   profile: {distanceFromStart: number, elapsedSeconds: number, speedMps: number, elevation: number|null, lat: number, lon: number, isStop: boolean}[],
+ * }>} the encoded FIT file, plus the paced activity's profile samples
  */
 export async function convert({ startIso, durationSeconds, sportEnumName, anchors, stops, device }) {
   return enqueue(async () => {
@@ -438,8 +444,27 @@ export async function convert({ startIso, durationSeconds, sportEnumName, anchor
 
     combine(track=working_track, anchors=all_anchors, sport=sport, multipliers=working_multipliers, mode_a_stops=mode_a_stops)
     fit_bytes = write_fit(working_track)
+
+    from gpx2fit.core.activity_profile import build_activity_profile
+
+    _profile_samples = [
+        {
+            "distanceFromStart": s.distance_from_start,
+            "elapsedSeconds": s.elapsed_seconds,
+            "speedMps": s.speed_mps,
+            "elevation": s.elevation,
+            "lat": s.lat,
+            "lon": s.lon,
+            "isStop": s.is_stop,
+        }
+        for s in build_activity_profile(working_track)
+    ]
     `);
 
-    return runtime.globals.get('fit_bytes').toJs({ create_proxies: false });
+    const toJsOpts = { create_proxies: false, dict_converter: Object.fromEntries };
+    return {
+      fitBytes: runtime.globals.get('fit_bytes').toJs({ create_proxies: false }),
+      profile: runtime.globals.get('_profile_samples').toJs(toJsOpts),
+    };
   });
 }
