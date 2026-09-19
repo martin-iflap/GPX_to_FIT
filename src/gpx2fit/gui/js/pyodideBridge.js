@@ -349,23 +349,29 @@ async function fetchSurfaceMultipliers(sportEnumName, runtime) {
  *   mid-route stops: exactly one of durationSeconds (Mode A) or
  *   startIso+endIso (Mode B) per entry
  * @param {string} [args.device] - device name to embed in the FIT file, applied to `_track.device`
+ * @param {boolean} [args.surfaceLookup=true] - whether to fetch surface multipliers from
+ *   Valhalla; `false` skips the request entirely, so the route's coordinates never
+ *   leave the browser (the user-facing privacy opt-out)
  * @returns {Promise<{
  *   fitBytes: Uint8Array,
  *   profile: {distanceFromStart: number, elapsedSeconds: number, speedMps: number, elevation: number|null, lat: number, lon: number, isStop: boolean}[],
  * }>} the encoded FIT file, plus the paced activity's profile samples
  */
-export async function convert({ startIso, durationSeconds, sportEnumName, anchors, stops, device }) {
+export async function convert({ startIso, durationSeconds, sportEnumName, anchors, stops, device, surfaceLookup = true }) {
   return enqueue(async () => {
     const runtime = await ensurePyodide();
 
     // Surface multipliers are best-effort: a Valhalla outage or network
     // hiccup must not block the whole conversion, so any failure here just
-    // means the FIT file comes out without surface-based pacing.
+    // means the FIT file comes out without surface-based pacing. Opting out
+    // lands on that same no-multipliers path.
     let surfaceMultipliers = null;
-    try {
-      surfaceMultipliers = await fetchSurfaceMultipliers(sportEnumName, runtime);
-    } catch (err) {
-      console.warn('Surface multiplier fetch failed; continuing without surface-based pacing.', err);
+    if (surfaceLookup) {
+      try {
+        surfaceMultipliers = await fetchSurfaceMultipliers(sportEnumName, runtime);
+      } catch (err) {
+        console.warn('Surface multiplier fetch failed; continuing without surface-based pacing.', err);
+      }
     }
 
     runtime.globals.set('start_iso', startIso);

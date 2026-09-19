@@ -25,6 +25,7 @@ const summaryDistanceEl = document.getElementById('summaryDistance');
 const summaryElevationEl = document.getElementById('summaryElevation');
 const mapEmptyStateEl = document.getElementById('mapEmptyState');
 const sportControlEl = document.getElementById('sportControl');
+const surfaceLookupToggleEl = document.getElementById('surfaceLookupToggle');
 const deviceInputEl = document.getElementById('deviceInput');
 const startTimeFieldEl = document.getElementById('startTimeField');
 const startTimeToggleContainer = document.getElementById('startTimeToggle');
@@ -138,6 +139,29 @@ sportControlEl.querySelectorAll('.segmented-option').forEach((btn) => {
     });
     sportValue = btn.dataset.value;
   });
+});
+
+/* ---------- surface lookup toggle ---------- */
+
+// The one setting that sends route data off the device (to Valhalla), so the
+// user's choice is remembered across visits. Storage can throw or come back
+// empty (private window, blocked site data); then it's just on by default.
+const SURFACE_LOOKUP_STORAGE_KEY = 'surfaceLookup';
+
+try {
+  if (localStorage.getItem(SURFACE_LOOKUP_STORAGE_KEY) === 'off') {
+    surfaceLookupToggleEl.checked = false;
+  }
+} catch {
+  // Keep the default.
+}
+
+surfaceLookupToggleEl.addEventListener('change', () => {
+  try {
+    localStorage.setItem(SURFACE_LOOKUP_STORAGE_KEY, surfaceLookupToggleEl.checked ? 'on' : 'off');
+  } catch {
+    // Not remembered this time; the checkbox itself still applies.
+  }
 });
 
 /* ---------- start time control ---------- */
@@ -293,7 +317,7 @@ runButton.addEventListener('click', async () => {
       endIso: s.mode === 'startEnd' ? s.departure.toISOString() : undefined,
     }));
 
-    // Captured now, so flipping the sport toggle afterwards can't relabel this run's chart.
+    // Captured now, so flipping the sport toggle afterward can't relabel this run's chart.
     const convertedSport = sportValue;
     const { fitBytes, profile } = await convert({
       startIso: startTimeField.getValue().toISOString(),
@@ -302,6 +326,7 @@ runButton.addEventListener('click', async () => {
       anchors: anchorsPayload,
       stops: stopsPayload,
       device: deviceInputEl.value.trim() || undefined,
+      surfaceLookup: surfaceLookupToggleEl.checked,
     });
 
     const blob = new Blob([fitBytes], { type: 'application/octet-stream' });

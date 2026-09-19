@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>About &amp; privacy · GPX to FIT</title>
+    <meta name="description" content="How GPX to FIT turns a planned route into a realistically paced activity, entirely in your browser." />
+    <!-- Applies the theme the user picked in the app before first paint.
+         Deliberately not theme.js, which pulls in map.js and Leaflet. With no
+         stored choice, styles.css's prefers-color-scheme rules take over. -->
+    <script>
+      try {
+        const theme = localStorage.getItem('theme');
+        if (theme === 'light' || theme === 'dark') {
+          document.documentElement.setAttribute('data-theme', theme);
+        }
+      } catch {
+        // Storage blocked (private window, cleared site data): OS theme it is.
+      }
+    </script>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="about-page">
+      <a class="about-back" href="index.html">← Back to converter</a>
+
+      <header class="about-header">
+        <h1>GPX → FIT</h1>
+        <p class="subtle">Adaptive pacing with anchor-based timing</p>
+      </header>
+
+      <nav class="about-nav" aria-label="Sections">
+        <a href="#what">What it does</a>
+        <a href="#pacing">Pacing</a>
+        <a href="#anchors">Anchors</a>
+        <a href="#photos">Photos</a>
+        <a href="#stops">Stops</a>
+        <a href="#privacy">Privacy</a>
+      </nav>
+
+      <section id="what" class="about-section">
+        <h2>What it does</h2>
+        <p>
+          A GPX route only says <em>where</em> you went. It doesn't say <em>when</em> you were at each point. A basic
+          converter spreads your time evenly along the route, so the result looks like you walked
+          up a mountain at the same speed you ran down it.
+        </p>
+        <p>
+          This tool gives the route a realistic pace. You enter a start time and how long the activity took.
+          You can also add times you know from along the way. It then works out when you were
+          at every point and writes a <strong>FIT file</strong> you can upload to Strava, Garmin Connect and
+          similar services.
+        </p>
+      </section>
+
+      <section id="pacing" class="about-section">
+        <h2>How pacing works</h2>
+        <ul>
+          <li>
+            <strong>Gradient.</strong> Climbs slow you down and gentle descents speed you up. Running uses a curve
+            based on the energy cost of running on slopes (Minetti). Hiking uses Tobler's hiking function. The tool
+            blends the two automatically depending on how steep and how fast the activity is. For example, a slow day in the
+            mountains paces like a hike even if you picked "Running".
+          </li>
+          <li>
+            <strong>Smoothing.</strong> Slope is averaged over a couple of meters instead of point to point, so small
+            bumps in the elevation data don't cause sudden jumps in speed.
+          </li>
+          <li>
+            <strong>Surface (optional).</strong> When "Adjust pace for trail surface" is on, the route is matched
+            against OpenStreetMap to find out what's under your feet: asphalt, gravel, rough trail. You're
+            a little slower on rough ground. See <a href="#privacy">Privacy</a> for what this sends.
+          </li>
+          <li>
+            <strong>Exact fit.</strong> The result is always scaled so the activity starts and ends exactly
+            at the times you entered.
+          </li>
+        </ul>
+        <p>
+          After converting, a speed and elevation chart slides up over the map so you can check the pacing
+          before you download.
+        </p>
+      </section>
+
+      <section id="anchors" class="about-section">
+        <h2>Anchor points</h2>
+        <p>
+          An anchor sets a time you know for a point on the route, e.g. "I reached the summit at 11:40".
+          Click anywhere on the route to add one. The pacing between anchors is fitted separately, so each
+          anchor makes the result more accurate.
+        </p>
+        <p>
+          If you click a spot the route passes more than once, like an out-and-back or a loop that crosses itself,
+          you'll be asked which pass you meant.
+        </p>
+      </section>
+
+      <section id="photos" class="about-section">
+        <h2>Photo anchors</h2>
+        <p>
+          Photos you took during the activity usually record <strong>where</strong> and <strong>when</strong> they
+          were taken, which is exactly what an anchor is. Drop them onto the Photos box and every geotagged photo
+          becomes an anchor automatically.
+        </p>
+        <p>
+          The location and time are read from the photo's metadata <strong>inside your browser</strong>. The photos
+          themselves are never uploaded, and nothing is stored after you close the tab.
+        </p>
+        <h3>When a photo is skipped</h3>
+        <ul>
+          <li><strong>No location/timestamp data.</strong> The photo has no GPS position or capture time. This is common with screenshots, photos shared over messaging apps (which strip metadata) and cameras without GPS.</li>
+          <li><strong>Outside the activity's time.</strong> It was taken more than 15&nbsp;minutes before the start or after the end you entered.</li>
+          <li><strong>Too far from route.</strong> It was taken more than 150&nbsp;m from the route.</li>
+        </ul>
+        <h3>Tips</h3>
+        <ul>
+          <li>Phone photos work best, since they save GPS and an accurate time automatically.</li>
+          <li>If every photo shows up as "outside the activity's time", check the camera's clock and time zone.</li>
+          <li>Set the start time and duration before adding photos, since they're checked against them.</li>
+        </ul>
+      </section>
+
+      <section id="stops" class="about-section">
+        <h2>Stops</h2>
+        <p>
+          Click the route and choose "Add stop" to record a break, such as lunch, a summit rest or a café. You can give it
+          either:
+        </p>
+        <ul>
+          <li><strong>A duration only.</strong> The tool works out when you got there from the pacing, and you leave that many minutes later.</li>
+          <li><strong>An exact arrival and departure time</strong>, if you know them.</li>
+        </ul>
+        <p>
+          The stop is written into the FIT file as a real pause, so it's excluded from moving time and doesn't
+          lower your average pace.
+        </p>
+      </section>
+
+      <section id="privacy" class="about-section about-section--privacy">
+        <h2>Privacy</h2>
+        <p>
+          There's no server behind this site. The conversion itself is Python compiled to run in your
+          browser (Pyodide), so the processing happens on your own device.
+        </p>
+
+        <h3>Stays on your device</h3>
+        <ul>
+          <li>Your GPX file</li>
+          <li>Your photos and their metadata</li>
+          <li>Start time, duration, anchors, stops and device name</li>
+          <li>The generated FIT file</li>
+        </ul>
+        <p>There are no accounts, analytics, tracking or cookies.</p>
+
+        <h3>What does go over the network</h3>
+        <ul>
+          <li>
+            <strong>Surface lookup (optional).</strong> If "Adjust pace for trail surface" is on, the route's
+            coordinates are sent to OpenStreetMap's public
+            <a href="https://wiki.openstreetmap.org/wiki/Valhalla" target="_blank" rel="noopener">Valhalla server</a> when you
+            convert. It receives only the shape of the route, with no times, photos, file name or device. Turn the
+            option off and your route's coordinates are never sent anywhere.
+          </li>
+          <li>
+            <strong>Map tiles.</strong> The background map is loaded from
+            <a href="https://www.thunderforest.com/" target="_blank" rel="noopener">Thunderforest</a>, like any
+            web map. It can tell which area is being viewed.
+          </li>
+          <li>
+            <strong>App code.</strong> On first load, the app downloads its libraries (Pyodide, Leaflet, exifr
+            and a few Python packages) from public CDNs. This is the same for every visitor and has nothing to do
+            with your data.
+          </li>
+        </ul>
+
+        <h3>Stored in your browser</h3>
+        <p>Only two settings: light or dark theme, and whether surface lookup is on.</p>
+
+        <h3>Check it yourself</h3>
+        <p>
+          Open your browser's developer tools (F12), go to the <strong>Network</strong> tab and convert a
+          route. Every request the page makes is listed there.
+        </p>
+      </section>
+
+      <footer class="about-footer">
+        Map data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors ·
+        Maps © <a href="https://www.thunderforest.com/" target="_blank" rel="noopener">Thunderforest</a> ·
+        Surface matching by <a href="https://github.com/valhalla/valhalla" target="_blank" rel="noopener">Valhalla</a>
+      </footer>
+    </main>
+
+    <script>
+      // Opened from the app (its links use rel="opener"): "Back" returns to
+      // that tab, which still has the route, anchors and stops loaded, instead
+      // of starting an empty converter here. Anything else keeps the plain link.
+      function appTab() {
+        try {
+          const app = window.opener;
+          return app && !app.closed && app.document.getElementById('appShell') ? app : null;
+        } catch {
+          return null; // The opener navigated to another origin.
+        }
+      }
+
+      document.querySelector('.about-back').addEventListener('click', (event) => {
+        const app = appTab();
+        if (!app) {
+          return;
+        }
+        event.preventDefault();
+        const href = event.currentTarget.href;
+        app.focus();
+        window.close();
+        // Browsers only let a page close a link-opened tab while its history
+        // is a single entry; if it refused anyway, behave like the plain link.
+        setTimeout(() => {
+          if (!window.closed) {
+            location.href = href;
+          }
+        }, 150);
+      });
+
+      // Section jumps replace the URL rather than push a history entry, which
+      // is what keeps window.close() above allowed.
+      for (const link of document.querySelectorAll('a[href^="#"]')) {
+        link.addEventListener('click', (event) => {
+          event.preventDefault();
+          location.replace(link.hash);
+        });
+      }
+    </script>
+  </body>
+</html>

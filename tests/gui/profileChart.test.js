@@ -12,6 +12,7 @@ import {
   nearestSampleIndex,
   niceTicks,
   stepTicks,
+  stopRuns,
 } from '../../src/gpx2fit/gui/js/profileChart.js';
 
 const identity = (value) => value;
@@ -100,6 +101,22 @@ describe('linePath', () => {
   it('starts a new subpath after a null', () => {
     assert.equal(linePath([0, 1, 2, 3], [5, null, 6, 7], identity, identity), 'M0.0,5.0M2.0,6.0L3.0,7.0');
   });
+
+  it('leaves out skipped segments', () => {
+    assert.equal(linePath([0, 1, 2], [5, 6, 7], identity, identity, (i) => i === 2), 'M0.0,5.0L1.0,6.0M2.0,7.0');
+  });
+});
+
+describe('stopRuns', () => {
+  it('groups consecutive stop samples', () => {
+    assert.deepEqual(stopRuns(SAMPLES), [[2, 3]]);
+  });
+
+  it('keeps separate stops apart', () => {
+    const stop = { isStop: true };
+    const moving = { isStop: false };
+    assert.deepEqual(stopRuns([stop, stop, moving, stop, moving]), [[0, 1], [3, 3]]);
+  });
 });
 
 describe('areaPath', () => {
@@ -156,6 +173,27 @@ describe('createProfileChart', () => {
     chart.setOptions({ showSpeed: true, showElevation: false });
     assert.ok(container.querySelector('.profile-speed-line'));
     assert.equal(container.querySelector('.profile-elevation-area'), null);
+  });
+
+  it('draws a stop as its own line, at zero speed or along the bottom for pace', () => {
+    const container = sizedContainer(600, 200);
+    const chart = createProfileChart(container);
+    chart.setData(SAMPLES);
+    const stopY = () => Number(container.querySelector('.profile-stop-line').getAttribute('y1'));
+    // The x axis sits at the plot's bottom edge, 24px up from the container's.
+    assert.equal(stopY(), 176);
+
+    chart.setOptions({ metric: 'pace' });
+    assert.equal(stopY(), 176);
+  });
+
+  it('draws a stop as a dot on the distance axis, where it has no width', () => {
+    const container = sizedContainer(600, 200);
+    const chart = createProfileChart(container);
+    chart.setData(SAMPLES);
+    chart.setOptions({ axis: 'distance' });
+    assert.equal(container.querySelector('.profile-stop-line'), null);
+    assert.ok(container.querySelector('.profile-stop-dot'));
   });
 
   it('draws faster paces higher on a pace chart', () => {

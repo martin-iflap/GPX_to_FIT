@@ -60,13 +60,21 @@
 
       <aside id="sidebar">
         <header class="sidebar-header">
-          <div>
+          <div class="sidebar-title">
             <h1>GPX → FIT</h1>
             <p class="subtle">Adaptive pacing with anchor-based timing</p>
           </div>
           <div class="header-actions">
-            <!-- Same 18px stroke-icon shape as theme.js sun/moon, so the two
-                 header buttons read as a pair. -->
+            <!-- Opens in a new tab so the loaded route, anchors and stops survive. -->
+            <a id="aboutLink" class="theme-toggle" href="about.html" target="_blank" rel="opener" aria-label="About &amp; privacy" title="About &amp; privacy">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="9"></circle>
+                <line x1="12" y1="11" x2="12" y2="16"></line>
+                <line x1="12" y1="8" x2="12" y2="8"></line>
+              </svg>
+            </a>
+            <!-- Same 18px stroke-icon shape as theme.js sun/moon, so the
+                 header buttons read as a set. -->
             <button id="shortcutsToggle" class="theme-toggle" type="button" aria-label="Keyboard shortcuts" aria-expanded="false" title="Keyboard shortcuts (?)">
               <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <rect x="2" y="6" width="20" height="12" rx="2"></rect>
@@ -94,6 +102,14 @@
                 <p id="fileName" class="dropzone-filename" hidden></p>
               </div>
             </div>
+            <p class="privacy-note">
+              <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="5" y="11" width="14" height="10" rx="2"></rect>
+                <path d="M8 11V7a4 4 0 0 1 8 0v4"></path>
+              </svg>
+              Your files never leave your machine.
+              <a href="about.html#privacy" target="_blank" rel="opener">How?</a>
+            </p>
             <div id="routeSummary" class="route-summary" hidden>
               <div class="summary-stat">
                 <span class="summary-value" id="summaryDistance">—</span>
@@ -112,6 +128,14 @@
               <button type="button" class="segmented-option is-active" data-value="hiking" role="tab" aria-selected="true">Hiking</button>
               <button type="button" class="segmented-option" data-value="running" role="tab" aria-selected="false">Running</button>
             </div>
+            <label class="checkbox-row">
+              <input id="surfaceLookupToggle" type="checkbox" checked />
+              <span>Adjust pace for trail surface</span>
+            </label>
+            <p class="control-hint">
+              If disabled no information at all is ever sent to any server to ensure absolute privacy.
+              <a href="about.html#privacy" target="_blank" rel="opener">Details</a>
+            </p>
           </section>
 
           <section class="control">
@@ -146,7 +170,7 @@
               </div>
             </div>
             <ul id="photoList" class="anchor-list"></ul>
-            <p id="photoEmptyState" class="anchor-empty">No photos yet — geotagged photos become anchors automatically.</p>
+            <p id="photoEmptyState" class="anchor-empty">No photos yet — geotagged photos become anchors automatically. <a href="about.html#photos" target="_blank" rel="opener">How it works</a></p>
           </section>
 
           <section class="control">

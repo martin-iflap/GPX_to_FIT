@@ -102,16 +102,47 @@ export function buildSeries(samples, axis, metric) {
 }
 
 /**
+ * Index ranges of consecutive stop samples. core/activity_profile.py emits a
+ * stop as two zero-speed samples (arrival, departure), so each run is
+ * normally a pair.
+ * @param {{isStop?: boolean}[]} samples
+ * @returns {[number, number][]} inclusive [first, last] indices
+ */
+export function stopRuns(samples) {
+  const runs = [];
+  for (let i = 0; i < samples.length; i++) {
+    if (!samples[i].isStop) {
+      continue;
+    }
+    if (runs.length && runs[runs.length - 1][1] === i - 1) {
+      runs[runs.length - 1][1] = i;
+    } else {
+      runs.push([i, i]);
+    }
+  }
+  return runs;
+}
+
+/**
  * SVG path data for a line through (xs[i], ys[i]), starting a new subpath after every null y.
+ * @param xs
+ * @param ys
+ * @param scaleX
+ * @param scaleY
+ * @param {(i: number) => boolean} [skipSegment] - true leaves out the segment
+ *   from point i-1 to point i, as if there were a null between them
  * @returns {string}
  */
-export function linePath(xs, ys, scaleX, scaleY) {
+export function linePath(xs, ys, scaleX, scaleY, skipSegment) {
   let path = '';
   let penDown = false;
   for (let i = 0; i < xs.length; i++) {
     if (ys[i] == null) {
       penDown = false;
       continue;
+    }
+    if (penDown && skipSegment?.(i)) {
+      penDown = false;
     }
     path += `${penDown ? 'L' : 'M'}${scaleX(xs[i]).toFixed(1)},${scaleY(ys[i]).toFixed(1)}`;
     penDown = true;
@@ -241,17 +272,19 @@ export function createProfileChart(container, { onHover } = {}) {
   }
 
   function showHover(index) {
-    const { series, scaleX, scaleSpeed, scaleElevation, hoverGroup, crosshair, speedDot, elevationDot, plot } = layout;
+    const { series, scaleX, scaleSpeed, scaleElevation, stopY, hoverGroup, crosshair, speedDot, elevationDot, plot } = layout;
     const sample = samples[index];
     const px = scaleX(series.xs[index]);
     crosshair.setAttribute('x1', px);
     crosshair.setAttribute('x2', px);
 
-    const speed = series.speeds[index];
-    speedDot.setAttribute('visibility', speed == null || !scaleSpeed ? 'hidden' : 'visible');
-    if (speed != null && scaleSpeed) {
+    // A stop's dot rides its amber line, which on a pace chart isn't at the (null) pace value.
+    const speedY = !scaleSpeed ? null : sample.isStop ? stopY : series.speeds[index] == null ? null : scaleSpeed(series.speeds[index]);
+    speedDot.setAttribute('visibility', speedY == null ? 'hidden' : 'visible');
+    speedDot.classList.toggle('is-stop', Boolean(sample.isStop));
+    if (speedY != null) {
       speedDot.setAttribute('cx', px);
-      speedDot.setAttribute('cy', scaleSpeed(speed));
+      speedDot.setAttribute('cy', speedY);
     }
     const elevation = series.elevations[index];
     elevationDot.setAttribute('visibility', elevation == null || !scaleElevation ? 'hidden' : 'visible');
@@ -371,8 +404,23 @@ export function createProfileChart(container, { onHover } = {}) {
         svgEl('path', { d: linePath(series.xs, series.elevations, scaleX, scaleElevation) }, 'profile-elevation-line'),
       );
     }
+    // Stops are drawn in their own muted amber, so a flat stretch at zero reads
+    // as a break rather than a glitch. On a pace chart a stop has no pace, so
+    // it sits along the bottom (the slow end) instead.
+    const stopY = scaleSpeed ? (metric === 'pace' ? plotBottom : scaleSpeed(0)) : null;
     if (scaleSpeed) {
-      svg.append(svgEl('path', { d: linePath(series.xs, series.speeds, scaleX, scaleSpeed) }, 'profile-speed-line'));
+      const insideStop = (i) => samples[i].isStop && samples[i - 1].isStop;
+      svg.append(svgEl('path', { d: linePath(series.xs, series.speeds, scaleX, scaleSpeed, insideStop) }, 'profile-speed-line'));
+      const stops = svgEl('g', {}, 'profile-stops');
+      for (const [first, last] of stopRuns(samples)) {
+        const x1 = scaleX(series.xs[first]);
+        const x2 = scaleX(series.xs[last]);
+        // On the distance axis a stop has no width; a dot keeps it visible.
+        stops.append(x2 - x1 < 2
+          ? svgEl('circle', { cx: x1.toFixed(1), cy: stopY.toFixed(1), r: 2.5 }, 'profile-stop-dot')
+          : svgEl('line', { x1: x1.toFixed(1), x2: x2.toFixed(1), y1: stopY.toFixed(1), y2: stopY.toFixed(1) }, 'profile-stop-line'));
+      }
+      svg.append(stops);
     }
 
     const labels = svgEl('g', {}, 'profile-axis-labels');
@@ -402,7 +450,7 @@ export function createProfileChart(container, { onHover } = {}) {
     hoverGroup.append(crosshair, elevationDot, speedDot);
     svg.append(hoverGroup);
 
-    layout = { series, plot, scaleX, scaleSpeed, scaleElevation, hoverGroup, crosshair, speedDot, elevationDot };
+    layout = { series, plot, scaleX, scaleSpeed, scaleElevation, stopY, hoverGroup, crosshair, speedDot, elevationDot };
   }
 
   svg.addEventListener('pointermove', (event) => {

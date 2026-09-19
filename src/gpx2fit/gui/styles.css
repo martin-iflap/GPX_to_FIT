@@ -177,11 +177,27 @@ body {
   box-shadow: -20px 0 60px var(--shadow-color);
 }
 
+/* The icon buttons share a row with the title only; the subtitle gets the
+   full width below, otherwise the buttons squeeze it onto two lines. */
 .sidebar-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  column-gap: var(--space-3);
   padding: var(--space-5) var(--space-5) var(--space-4);
+}
+
+.sidebar-title {
+  display: contents;
+}
+
+.sidebar-header .subtle {
+  grid-column: 1 / -1;
+}
+
+.sidebar-header .header-actions {
+  grid-column: 2;
+  grid-row: 1;
 }
 
 .sidebar-header h1 {
@@ -217,6 +233,11 @@ body {
   color: var(--text-secondary);
   cursor: pointer;
   transition: color var(--transition), background var(--transition), transform var(--transition);
+}
+
+/* #aboutLink is an <a> sharing the icon-button look. */
+a.theme-toggle {
+  text-decoration: none;
 }
 
 .theme-toggle:hover {
@@ -390,6 +411,61 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   font-size: 0.85rem;
   font-weight: 600;
   color: var(--text-primary);
+}
+
+/* Deliberately quiet: tertiary text, so it reassures without competing with
+   the dropzone. The full story lives on about.html#privacy. */
+.privacy-note {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0 var(--space-1);
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--text-tertiary);
+  text-align: center;
+}
+
+.privacy-note svg {
+  flex-shrink: 0;
+}
+
+/* Small inline "learn more" links inside tertiary hint text. */
+.privacy-note a,
+.control-hint a,
+.anchor-empty a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.privacy-note a:hover,
+.control-hint a:hover,
+.anchor-empty a:hover {
+  text-decoration: underline;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+  font-size: 0.88rem;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.checkbox-row input {
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.control-hint {
+  margin: calc(-1 * var(--space-1)) 0 0;
+  padding-left: 21px;
+  font-size: 0.78rem;
+  color: var(--text-tertiary);
 }
 
 .route-summary {
@@ -1164,6 +1240,20 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   stroke-linecap: round;
 }
 
+/* Stops: the same weight as the speed line, just amber and a little faded,
+   so they read as "paused here" without adding a loud new colour. */
+.profile-stop-line {
+  stroke: var(--warning);
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  opacity: 0.8;
+}
+
+.profile-stop-dot {
+  fill: var(--warning);
+  opacity: 0.8;
+}
+
 .profile-axis-label {
   fill: var(--text-tertiary);
   font-family: var(--font-family);
@@ -1185,6 +1275,10 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   fill: var(--accent);
   stroke: var(--bg-base);
   stroke-width: 2;
+}
+
+.profile-speed-dot.is-stop {
+  fill: var(--warning);
 }
 
 .profile-elevation-dot {
@@ -1220,6 +1314,153 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 @media (prefers-reduced-motion: reduce) {
   .app-shell {
     --profile-transition: 0s;
+  }
+}
+
+/* ---------- about page (about.html) ---------- */
+
+.about-page {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-4) var(--space-8);
+}
+
+.about-back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  text-decoration: none;
+  transition: color var(--transition);
+}
+
+.about-back:hover {
+  color: var(--accent);
+}
+
+.about-header {
+  margin: var(--space-5) 0 var(--space-4);
+}
+
+.about-header h1 {
+  margin: 0;
+  font-size: 1.8rem;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.about-header .subtle {
+  font-size: 1rem;
+}
+
+.about-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-5);
+}
+
+.about-nav a {
+  padding: 4px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--bg-elevated-2);
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  text-decoration: none;
+  transition: color var(--transition), border-color var(--transition), background var(--transition);
+}
+
+.about-nav a:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.about-section {
+  margin-bottom: var(--space-4);
+  padding: var(--space-5);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  /* Keeps the heading clear of the top edge when jumped to via #anchor. */
+  scroll-margin-top: var(--space-4);
+}
+
+.about-section h2 {
+  margin: 0 0 var(--space-3);
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.about-section h3 {
+  margin: var(--space-4) 0 var(--space-2);
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.about-section p,
+.about-section li {
+  font-size: 0.92rem;
+  color: var(--text-secondary);
+}
+
+.about-section p {
+  margin: 0 0 var(--space-3);
+}
+
+.about-section p:last-child {
+  margin-bottom: 0;
+}
+
+.about-section ul {
+  margin: 0 0 var(--space-3);
+  padding-left: 1.2rem;
+}
+
+.about-section li + li {
+  margin-top: var(--space-1);
+}
+
+.about-section strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.about-section a,
+.about-footer a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.about-section a:hover,
+.about-footer a:hover {
+  text-decoration: underline;
+}
+
+/* The privacy section is the one people land on from "How?", so it gets a
+   faint accent to set it apart from the explanatory cards. */
+.about-section--privacy {
+  border-color: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.about-footer {
+  margin-top: var(--space-6);
+  font-size: 0.78rem;
+  color: var(--text-tertiary);
+  text-align: center;
+}
+
+@media (max-width: 480px) {
+  .about-page {
+    padding-top: var(--space-5);
+  }
+
+  .about-section {
+    padding: var(--space-4);
   }
 }
 

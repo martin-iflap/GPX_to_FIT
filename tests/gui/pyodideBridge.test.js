@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { afterEach, beforeEach, describe, it } from 'node:test';
 
-import { classifyPyError } from '../../src/gpx2fit/gui/js/pyodideBridge.js';
+import { classifyPyError, convert } from '../../src/gpx2fit/gui/js/pyodideBridge.js';
 
 describe('classifyPyError', () => {
   it('extracts the message and tags isInputError for a traceback ending in InputError', () => {
@@ -38,5 +38,57 @@ describe('classifyPyError', () => {
   it('passes through an error with an empty message unchanged', () => {
     const pyError = new Error('');
     assert.equal(classifyPyError(pyError), pyError);
+  });
+});
+
+// A stand-in Pyodide runtime: Python never runs, every global read comes back
+// as an empty value, so convert() can be exercised for what it does over the
+// network without a real WASM runtime.
+function fakePyodideRuntime() {
+  const globals = new Map();
+  return {
+    loadPackage: async () => {},
+    runPythonAsync: async () => {},
+    globals: {
+      set: (name, value) => globals.set(name, value),
+      get: () => ({ toJs: () => [] }),
+    },
+  };
+}
+
+describe('convert surfaceLookup', () => {
+  const VALHALLA_HOST = 'valhalla1.openstreetmap.de';
+  const convertArgs = {
+    startIso: '2026-06-01T08:00:00.000Z',
+    durationSeconds: 3600,
+    sportEnumName: 'HIKING',
+    anchors: [],
+  };
+  let fetchedUrls;
+  let originalFetch;
+
+  beforeEach(() => {
+    fetchedUrls = [];
+    originalFetch = globalThis.fetch;
+    globalThis.loadPyodide = async () => fakePyodideRuntime();
+    globalThis.fetch = async (url) => {
+      fetchedUrls.push(String(url));
+      return { ok: true, text: async () => '', json: async () => ({}) };
+    };
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    delete globalThis.loadPyodide;
+  });
+
+  it('asks Valhalla for surfaces by default', async () => {
+    await convert(convertArgs);
+    assert.ok(fetchedUrls.some((url) => url.includes(VALHALLA_HOST)));
+  });
+
+  it('sends nothing to Valhalla when surfaceLookup is false', async () => {
+    await convert({ ...convertArgs, surfaceLookup: false });
+    assert.ok(!fetchedUrls.some((url) => url.includes(VALHALLA_HOST)));
   });
 });
