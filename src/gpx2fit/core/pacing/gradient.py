@@ -10,6 +10,7 @@ as "68% of flat pace" in either model.
 
 import math
 from bisect import bisect_left, bisect_right
+from dataclasses import dataclass
 
 from gpx2fit.core.models import Track
 
@@ -46,6 +47,65 @@ _MINETTI_MAX_GRADIENT = 0.45
 # so a future model selector can tune the response per activity.
 MINETTI_UPHILL_EXPONENT = 0.6
 MINETTI_DOWNHILL_EXPONENT = 0.5
+
+
+@dataclass(frozen=True)
+class CurveExponents:
+    """Softening applied to one speed curve: each leg's relative speed ** exponent.
+    1.0 is the raw curve, lower is flatter; flat ground stays exactly 1.0 either way.
+
+    Attributes:
+        uphill: Exponent for legs with a positive gradient.
+        downhill: Exponent for every other leg.
+    """
+    uphill: float
+    downhill: float
+
+
+@dataclass(frozen=True)
+class CurveShape:
+    """The exponents both speed curves are paced with — see blended_speeds_from_gradients."""
+    minetti: CurveExponents
+    tobler: CurveExponents
+
+
+# Softened Minetti and raw Tobler: the shape used when nothing else decides it.
+DEFAULT_CURVE_SHAPE = CurveShape(
+    minetti=CurveExponents(uphill=MINETTI_UPHILL_EXPONENT, downhill=MINETTI_DOWNHILL_EXPONENT),
+    tobler=CurveExponents(uphill=1.0, downhill=1.0),
+)
+
+
+def _soften(
+    raw_speeds: list[float],
+    gradients: list[float],
+    uphill_exponent: float,
+    downhill_exponent: float,
+    curve_name: str,
+) -> list[float]:
+    """Raise each raw relative speed to the uphill or downhill exponent, by its leg's gradient.
+    gradient == 0 takes the downhill branch, but the raw speed there is
+    exactly 1.0 for both curves, so either exponent leaves it at 1.0.
+
+    Args:
+        raw_speeds: Per-leg relative speeds
+        gradients: Per-leg gradients
+        uphill_exponent: Softening applied to legs with a positive gradient.
+        downhill_exponent: Softening applied to every other leg.
+        curve_name: Name of the curve being processed.
+    Returns:
+        A list of softened speeds.
+    Raises:
+        ValueError: If either exponent isn't positive.
+    """
+    if uphill_exponent <= 0 or downhill_exponent <= 0:
+        raise ValueError(
+            f"{curve_name} exponents must be positive, got uphill={uphill_exponent}, downhill={downhill_exponent}."
+        )
+    return [
+        speed ** (uphill_exponent if gradient > 0 else downhill_exponent)
+        for speed, gradient in zip(raw_speeds, gradients)
+    ]
 
 
 def _elevation_at(
@@ -137,7 +197,11 @@ def _tobler_shape(gradient: float) -> float:
 _TOBLER_FLAT_SHAPE = _tobler_shape(0.0)
 
 
-def tobler_speeds_from_gradients(gradients: list[float]) -> list[float]:
+def tobler_speeds_from_gradients(
+    gradients: list[float],
+    uphill_exponent: float = 1.0,
+    downhill_exponent: float = 1.0,
+) -> list[float]:
     """Per-leg Tobler hiking-function speeds for already-calculated gradients.
 
     Implements the shape of Tobler's (1993) hiking function,
@@ -145,19 +209,22 @@ def tobler_speeds_from_gradients(gradients: list[float]) -> list[float]:
     downhill (around -5% grade) and falls off for steeper climbs or descents,
     normalized so flat ground is 1.0 — matching minetti_speeds_from_gradients'
     reference, since combine.py rescales either model to its segment's
-    duration anyway.
+    duration anyway. Softened by the exponents the same way Minetti is;
+    because the curve is an exponential, an exponent is equivalent to scaling
+    its 3.5 slope factor.
 
     Args:
         gradients: Per-leg gradients, e.g. from calculate_gradient.
-
+        uphill_exponent: Softening applied to legs with a positive gradient.
+            1.0 (the default) is Tobler's own curve.
+        downhill_exponent: Softening applied to every other leg.
     Returns:
         One speed per gradient, as a multiple of flat-ground speed.
+    Raises:
+        ValueError: If either exponent isn't positive.
     """
-    def _tobler_relative_speed(gradient: float) -> float:
-        """Tobler's hiking-function speed as a multiple of its own flat-ground speed."""
-        return _tobler_shape(gradient) / _TOBLER_FLAT_SHAPE
-
-    return [_tobler_relative_speed(gradient) for gradient in gradients]
+    raw_speeds = [_tobler_shape(gradient) / _TOBLER_FLAT_SHAPE for gradient in gradients]
+    return _soften(raw_speeds, gradients, uphill_exponent, downhill_exponent, "Tobler")
 
 
 def _minetti_cost(gradient: float) -> float:
@@ -189,7 +256,6 @@ def _raw_minetti_relative_speed(gradient: float) -> float:
 
     Args:
         gradient: Rise/run ratio for one leg, e.g. 0.1 for a 10% grade.
-
     Returns:
         Relative speed, or 0.0 if the cost is somehow non-positive within
         the domain (defensive only; it isn't for any gradient in [-0.45, 0.45]).
@@ -222,27 +288,20 @@ def minetti_speeds_from_gradients(
         gradients: Per-leg gradients, e.g. from calculate_gradient.
         uphill_exponent: Softening applied to legs with a positive gradient.
         downhill_exponent: Softening applied to legs with a negative gradient.
-
     Returns:
         One speed per gradient, as a multiple of flat-ground speed.
-
     Raises:
         ValueError: If either exponent isn't positive.
     """
-    if uphill_exponent <= 0 or downhill_exponent <= 0:
-        raise ValueError(
-            f"Minetti exponents must be positive, got uphill={uphill_exponent}, downhill={downhill_exponent}."
-        )
-    # gradient == 0 takes the downhill branch, but the raw speed there is
-    # exactly 1.0, so either exponent leaves it at 1.0.
-    speeds = []
-    for gradient in gradients:
-        exponent = uphill_exponent if gradient > 0 else downhill_exponent
-        speeds.append(_raw_minetti_relative_speed(gradient) ** exponent)
-    return speeds
+    raw_speeds = [_raw_minetti_relative_speed(gradient) for gradient in gradients]
+    return _soften(raw_speeds, gradients, uphill_exponent, downhill_exponent, "Minetti")
 
 
-def blended_speeds_from_gradients(gradients: list[float], tobler_weight: float) -> list[float]:
+def blended_speeds_from_gradients(
+    gradients: list[float],
+    tobler_weight: float,
+    shape: CurveShape = DEFAULT_CURVE_SHAPE,
+) -> list[float]:
     """Per-leg speeds from a geometric blend of the Minetti and Tobler curves.
 
     Each leg's speed is ``minetti ** (1 - tobler_weight) * tobler ** tobler_weight``,
@@ -251,37 +310,34 @@ def blended_speeds_from_gradients(gradients: list[float], tobler_weight: float) 
     mean of the two curves rather than being dragged toward whichever one
     happens to be larger. Both curves are normalized to flat ground, so every
     blend is exactly 1.0 there too.
-    The weight is resolved once per workout by pacing.curve_selection.resolve_tobler_weight.
+    The weight is resolved once per workout by pacing.curve_selection.resolve_tobler_weight,
+    and the shape by pacing.curve_selection.resolve_curve_shape.
 
     Args:
         gradients: Per-leg gradients, e.g. from calculate_gradient.
         tobler_weight: 0.0 for pure Minetti, 1.0 for pure Tobler, anything in
             between for a blend. Must be within [0.0, 1.0].
+        shape: The exponents each curve is softened with.
     Returns:
         One speed per gradient, as a multiple of flat-ground speed.
     Raises:
-        ValueError: If tobler_weight isn't within [0.0, 1.0].
+        ValueError: If tobler_weight isn't within [0.0, 1.0], or an exponent isn't positive.
     """
     if not 0.0 <= tobler_weight <= 1.0:
         raise ValueError(f"tobler_weight must be within [0.0, 1.0], got {tobler_weight}.")
+
+    def minetti() -> list[float]:
+        return minetti_speeds_from_gradients(gradients, shape.minetti.uphill, shape.minetti.downhill)
+
+    def tobler() -> list[float]:
+        return tobler_speeds_from_gradients(gradients, shape.tobler.uphill, shape.tobler.downhill)
+
     if tobler_weight == 0.0:
-        return minetti_speeds_from_gradients(gradients)
+        return minetti()
     if tobler_weight == 1.0:
-        return tobler_speeds_from_gradients(gradients)
+        return tobler()
 
     return [
         minetti_speed ** (1.0 - tobler_weight) * tobler_speed ** tobler_weight
-        for minetti_speed, tobler_speed in zip(
-            minetti_speeds_from_gradients(gradients), tobler_speeds_from_gradients(gradients)
-        )
+        for minetti_speed, tobler_speed in zip(minetti(), tobler())
     ]
-
-
-# TODO: Tobler has no tuning knob of its own the way Minetti has its
-# exponents. Now that both curves share a flat-ground reference they can be
-# compared directly: across ±30% grade Tobler spans 0.35-1.19 (3.4x) and the
-# softened Minetti 0.39-1.42 (3.6x), so hiking isn't currently the flatter
-# of the two despite being the slower activity. An exponent on Tobler (or a
-# smaller _TOBLER_SLOPE_FACTOR) is the knob to add if that needs fixing.
-
-# keep an eye on Tobler, we might want to tune it to our liking.

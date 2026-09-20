@@ -3,6 +3,8 @@ import pytest
 from gpx2fit.core.models import Track
 from gpx2fit.core.pacing.gradient import (
     GRADIENT_WINDOW_M,
+    CurveExponents,
+    CurveShape,
     blended_speeds_from_gradients,
     calculate_gradient,
     minetti_speeds_from_gradients,
@@ -286,6 +288,20 @@ class TestToblerSpeeds:
         [flat_speed, gentle_downhill_speed] = tobler_speeds_from_gradients([0.0, -0.05])
         assert gentle_downhill_speed > flat_speed
 
+    def test_exponents_soften_each_direction_independently(self):
+        raw_up, raw_down = tobler_speeds_from_gradients([0.2, -0.2])
+        soft_up, soft_down = tobler_speeds_from_gradients([0.2, -0.2], uphill_exponent=0.5, downhill_exponent=0.8)
+        assert soft_up == pytest.approx(raw_up ** 0.5)
+        assert soft_down == pytest.approx(raw_down ** 0.8)
+
+    def test_exponents_leave_flat_ground_at_one(self):
+        assert tobler_speeds_from_gradients([0.0], uphill_exponent=0.3, downhill_exponent=0.3) == pytest.approx([1.0])
+
+    @pytest.mark.parametrize("kwargs", [{"uphill_exponent": 0.0}, {"downhill_exponent": -0.5}])
+    def test_non_positive_exponent_raises(self, kwargs):
+        with pytest.raises(ValueError):
+            tobler_speeds_from_gradients([0.1], **kwargs)
+
 
 class TestBlendedSpeeds:
     GRADIENTS = [-0.25, -0.1, 0.0, 0.1, 0.25]
@@ -326,6 +342,15 @@ class TestBlendedSpeeds:
 
     def test_empty_gradients_give_empty_speeds(self):
         assert blended_speeds_from_gradients([], 0.5) == []
+
+    def test_shape_passes_each_curves_exponents_through(self):
+        shape = CurveShape(minetti=CurveExponents(0.4, 0.3), tobler=CurveExponents(0.7, 0.6))
+        assert blended_speeds_from_gradients(self.GRADIENTS, 0.0, shape) == pytest.approx(
+            minetti_speeds_from_gradients(self.GRADIENTS, 0.4, 0.3)
+        )
+        assert blended_speeds_from_gradients(self.GRADIENTS, 1.0, shape) == pytest.approx(
+            tobler_speeds_from_gradients(self.GRADIENTS, 0.7, 0.6)
+        )
 
     def test_speed_is_symmetric_around_the_peak_offset(self):
         # Gradients equidistant from -0.05 (the peak) should give equal speed.

@@ -2,8 +2,13 @@ import math
 from datetime import datetime
 
 from gpx2fit.core.models import Anchor, SportType, Track, TrackPoint
-from gpx2fit.core.pacing.curve_selection import resolve_tobler_weight
-from gpx2fit.core.pacing.gradient import calculate_gradient
+from gpx2fit.core.pacing.curve_selection import (
+    DEFAULT_SMOOTHNESS,
+    resolve_curve_shape,
+    resolve_max_speed_ratio,
+    resolve_tobler_weight,
+)
+from gpx2fit.core.pacing.gradient import CurveShape, calculate_gradient
 
 START = datetime(2024, 1, 1, 8, 0, 0)
 
@@ -59,6 +64,16 @@ def leg_distances(track: Track) -> list[float]:
 def resolved_weight(track: Track, active_seconds: float, sport: SportType) -> float:
     """The Minetti/Tobler blend combine() resolves for a stop-free workout over this track."""
     return resolve_tobler_weight(calculate_gradient(track), leg_distances(track), active_seconds, sport)
+
+
+def resolved_max_speed_ratio(track: Track, sport: SportType, smoothness: int = DEFAULT_SMOOTHNESS) -> float:
+    """The speed-swing bound combine() resolves for a workout over this track."""
+    return resolve_max_speed_ratio(calculate_gradient(track), leg_distances(track), sport, smoothness=smoothness)
+
+
+def resolved_curve_shape(track: Track, sport: SportType, smoothness: int = DEFAULT_SMOOTHNESS) -> CurveShape:
+    """The curve exponents combine() fits to this workout's speed-swing bound."""
+    return resolve_curve_shape(resolved_max_speed_ratio(track, sport, smoothness))
 
 
 def haversine_m(lat_a: float, lon_a: float, lat_b: float, lon_b: float) -> float:

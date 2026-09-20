@@ -26,6 +26,8 @@ const summaryElevationEl = document.getElementById('summaryElevation');
 const mapEmptyStateEl = document.getElementById('mapEmptyState');
 const sportControlEl = document.getElementById('sportControl');
 const surfaceLookupToggleEl = document.getElementById('surfaceLookupToggle');
+const smoothnessSliderEl = document.getElementById('smoothnessSlider');
+const smoothnessValueEl = document.getElementById('smoothnessValue');
 const deviceInputEl = document.getElementById('deviceInput');
 const startTimeFieldEl = document.getElementById('startTimeField');
 const startTimeToggleContainer = document.getElementById('startTimeToggle');
@@ -161,6 +163,35 @@ surfaceLookupToggleEl.addEventListener('change', () => {
     localStorage.setItem(SURFACE_LOOKUP_STORAGE_KEY, surfaceLookupToggleEl.checked ? 'on' : 'off');
   } catch {
     // Not remembered this time; the checkbox itself still applies.
+  }
+});
+
+/* ---------- pace smoothness slider ---------- */
+
+// Remembered like the surface toggle: someone who prefers a smoother (or
+// rougher) pace likely wants it for every route. The slider's own min/max
+// bound the value, so only a stored value inside them is restored.
+const SMOOTHNESS_STORAGE_KEY = 'smoothness';
+
+try {
+  const stored = Number(localStorage.getItem(SMOOTHNESS_STORAGE_KEY));
+  if (Number.isInteger(stored) && stored >= Number(smoothnessSliderEl.min) && stored <= Number(smoothnessSliderEl.max)) {
+    smoothnessSliderEl.value = String(stored);
+  }
+} catch {
+  // Keep the default.
+}
+smoothnessValueEl.textContent = smoothnessSliderEl.value;
+
+smoothnessSliderEl.addEventListener('input', () => {
+  smoothnessValueEl.textContent = smoothnessSliderEl.value;
+});
+
+smoothnessSliderEl.addEventListener('change', () => {
+  try {
+    localStorage.setItem(SMOOTHNESS_STORAGE_KEY, smoothnessSliderEl.value);
+  } catch {
+    // Not remembered this time; the slider itself still applies.
   }
 });
 
@@ -327,6 +358,7 @@ runButton.addEventListener('click', async () => {
       stops: stopsPayload,
       device: deviceInputEl.value.trim() || undefined,
       surfaceLookup: surfaceLookupToggleEl.checked,
+      smoothness: Number(smoothnessSliderEl.value),
     });
 
     const blob = new Blob([fitBytes], { type: 'application/octet-stream' });

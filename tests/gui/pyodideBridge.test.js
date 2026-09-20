@@ -43,18 +43,27 @@ describe('classifyPyError', () => {
 
 // A stand-in Pyodide runtime: Python never runs, every global read comes back
 // as an empty value, so convert() can be exercised for what it does over the
-// network without a real WASM runtime.
+// network and what it hands to Python, without a real WASM runtime. It records
+// every global set and every script run. pyodideBridge.js caches the runtime
+// after its first load, so all tests share this one instance.
 function fakePyodideRuntime() {
   const globals = new Map();
+  const scripts = [];
   return {
+    globalsSet: globals,
+    scripts,
     loadPackage: async () => {},
-    runPythonAsync: async () => {},
+    runPythonAsync: async (source) => {
+      scripts.push(source);
+    },
     globals: {
       set: (name, value) => globals.set(name, value),
       get: () => ({ toJs: () => [] }),
     },
   };
 }
+
+const fakeRuntime = fakePyodideRuntime();
 
 describe('convert surfaceLookup', () => {
   const VALHALLA_HOST = 'valhalla1.openstreetmap.de';
@@ -70,7 +79,7 @@ describe('convert surfaceLookup', () => {
   beforeEach(() => {
     fetchedUrls = [];
     originalFetch = globalThis.fetch;
-    globalThis.loadPyodide = async () => fakePyodideRuntime();
+    globalThis.loadPyodide = async () => fakeRuntime;
     globalThis.fetch = async (url) => {
       fetchedUrls.push(String(url));
       return { ok: true, text: async () => '', json: async () => ({}) };
@@ -90,5 +99,52 @@ describe('convert surfaceLookup', () => {
   it('sends nothing to Valhalla when surfaceLookup is false', async () => {
     await convert({ ...convertArgs, surfaceLookup: false });
     assert.ok(!fetchedUrls.some((url) => url.includes(VALHALLA_HOST)));
+  });
+});
+
+describe('convert smoothness', () => {
+  const convertArgs = {
+    startIso: '2026-06-01T08:00:00.000Z',
+    durationSeconds: 3600,
+    sportEnumName: 'HIKING',
+    anchors: [],
+    surfaceLookup: false,
+  };
+  let originalFetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    globalThis.loadPyodide = async () => fakeRuntime;
+    globalThis.fetch = async () => ({ ok: true, text: async () => '', json: async () => ({}) });
+    fakeRuntime.globalsSet.clear();
+    fakeRuntime.scripts.length = 0;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    delete globalThis.loadPyodide;
+  });
+
+  // The script that actually paces the track: the one calling combine().
+  function pacingScript() {
+    const script = fakeRuntime.scripts.find((source) => /\bcombine\(/.test(source));
+    assert.ok(script, 'convert() never ran a script calling combine()');
+    return script;
+  }
+
+  it('hands the chosen level to Python', async () => {
+    await convert({ ...convertArgs, smoothness: 8 });
+    assert.equal(fakeRuntime.globalsSet.get('smoothness'), 8);
+  });
+
+  it('defaults to the automatic level when none is given', async () => {
+    await convert(convertArgs);
+    assert.equal(fakeRuntime.globalsSet.get('smoothness'), 5);
+  });
+
+  it('forwards the level into combine() rather than just setting it', async () => {
+    await convert({ ...convertArgs, smoothness: 8 });
+    const [combineCall] = pacingScript().match(/\bcombine\(.*$/m);
+    assert.match(combineCall, /\bsmoothness\s*=\s*int\(smoothness\)/);
   });
 });

@@ -133,9 +133,25 @@
               <span>Adjust pace for trail surface</span>
             </label>
             <p class="control-hint">
-              If disabled no information at all is ever sent to any server to ensure absolute privacy.
+              If disabled, no information is ever sent to any server but pacing is less accurate.
               <a href="about.html#privacy" target="_blank" rel="opener">Details</a>
             </p>
+          </section>
+
+          <section class="control">
+            <div class="control-label-row">
+              <label class="control-label" for="smoothnessSlider">Pace smoothness</label>
+              <output id="smoothnessValue" class="smoothness-value" for="smoothnessSlider">5</output>
+            </div>
+            <input id="smoothnessSlider" class="range-input" type="range" min="1" max="10" step="1" value="5" />
+            <div class="range-captions" aria-hidden="true">
+              <span>Varied</span>
+              <p class="control-hint control-hint--flush">
+              5 = automatic
+              <a href="about.html#smoothness" target="_blank" rel="opener">More</a>
+            </p>
+              <span>Even</span>
+            </div>
           </section>
 
           <section class="control">

@@ -1,14 +1,20 @@
-"""Decide which gradient-speed curve a workout should be paced with.
+"""Decide which gradient-speed curve a workout should be paced with, and how far its speed may swing.
 
-Separate from combine.py on purpose: choosing a curve is a property of the
-whole activity (how slow, how steep), while combine.py's job is fitting an
-already-chosen curve to known anchor timestamps.
+Separate from combine.py on purpose: choosing a curve and its spread is a
+property of the whole activity (how slow, how steep), while combine.py's job
+is fitting an already-chosen curve to known anchor timestamps.
 """
 
+import math
 from dataclasses import dataclass
 
 from gpx2fit.core.models import SportType
-from gpx2fit.core.pacing.gradient import minetti_speeds_from_gradients
+from gpx2fit.core.pacing.gradient import (
+    CurveExponents,
+    CurveShape,
+    minetti_speeds_from_gradients,
+    tobler_speeds_from_gradients,
+)
 
 
 @dataclass(frozen=True)
@@ -38,6 +44,49 @@ FLAT_EQUIVALENT_BAND_MPS = 0.4
 VERTICALITY_BAND = 0.03
 
 
+@dataclass(frozen=True)
+class SpeedRatioBounds:
+    """How far a workout's leg speeds may swing from their typical pace — see resolve_max_speed_ratio.
+    Attributes:
+        flat: Max speed ratio on flat terrain.
+        hilly: Max speed ratio once verticality is past the hilly band.
+    """
+    flat: float
+    hilly: float
+
+
+# Terrain dominates here and sport only nudges it
+MAX_SPEED_RATIO_BOUNDS = {
+    SportType.RUNNING: SpeedRatioBounds(flat=2.0, hilly=2.8),
+    SportType.HIKING: SpeedRatioBounds(flat=1.8, hilly=2.6),
+}
+
+# The ratio ramps from flat to hilly across HILLY_VERTICALITY ± band (0.02 … 0.10).
+HILLY_VERTICALITY = 0.06
+HILLY_VERTICALITY_BAND = 0.04
+
+# The user's pace-smoothness level (the GUI's 1–10 slider), as the power the
+# automatic ratio is raised to. That scales log(max_speed_ratio), and with it
+# (via resolve_curve_shape) every leg's log-speed swing, by the same factor, so
+# the level changes how much the pace varies but not its shape. Relative on
+# purpose: the terrain/sport adaptation above still applies at every level.
+# The default is the automatic ratio itself; the rough end is kept short
+# because the automatic ratio already swings plenty.
+DEFAULT_SMOOTHNESS = 5
+SMOOTHNESS_SCALES = {
+    1: 1.2, 2: 1.15, 3: 1.1, 4: 1.05, 5: 1.0,
+    6: 0.8, 7: 0.62, 8: 0.46, 9: 0.32, 10: 0.2,
+}
+
+# How much of the speed-swing bound each curve may use at CURVE_REFERENCE_GRADE,
+# as a share of log(max_speed_ratio) — see resolve_curve_shape. Kept well under
+# 1.0 so ordinary terrain stays in tanh's near-linear range and only real
+# outliers get squashed. Descents get less because people ease off downhill.
+CURVE_REFERENCE_GRADE = 0.25
+UPHILL_FILL = 0.65
+DOWNHILL_FILL = 0.3
+
+
 def _smoothstep(value: float, center: float, half_width: float) -> float:
     """Ramp smoothly from 0.0 to 1.0 across `center` ± `half_width`.
 
@@ -49,6 +98,14 @@ def _smoothstep(value: float, center: float, half_width: float) -> float:
         raise ValueError(f"half_width must be positive, got {half_width}.")
     position = min(1.0, max(0.0, (value - center) / (2 * half_width) + 0.5))
     return position * position * (3 - 2 * position)
+
+
+def _verticality(gradients: list[float], leg_distances: list[float]) -> float:
+    """Distance-weighted mean |gradient|: total climb and descent per meter traveled.
+     - `total_distance` must be positive; callers guard for that.
+    """
+    total_distance = sum(leg_distances)
+    return sum(abs(gradient) * distance for gradient, distance in zip(gradients, leg_distances)) / total_distance
 
 
 def resolve_tobler_weight(
@@ -104,9 +161,7 @@ def resolve_tobler_weight(
     if total_distance <= 0 or active_seconds <= 0:
         return default_weight
 
-    climb = sum(gradient * distance for gradient, distance in zip(gradients, leg_distances) if gradient > 0)
-    descent = -sum(gradient * distance for gradient, distance in zip(gradients, leg_distances) if gradient < 0)
-    verticality = (climb + descent) / total_distance
+    verticality = _verticality(gradients, leg_distances)
 
     probe_speeds = minetti_speeds_from_gradients(gradients)
     flat_equivalent_distance_m = sum(
@@ -123,9 +178,97 @@ def resolve_tobler_weight(
     return max(slow_weight, steep_weight)
 
 
+def resolve_max_speed_ratio(
+    gradients: list[float],
+    leg_distances: list[float],
+    sport: SportType,
+    smoothness: int = DEFAULT_SMOOTHNESS,
+) -> float:
+    """Decide how far this workout's leg speeds may swing from their typical pace.
+
+    Feeds combine._compress_speed_toward_typical's soft bound. Flat routes get
+    a tighter bound than hilly ones, where real pace legitimately varies more;
+    the sport picks the pair of bounds (see MAX_SPEED_RATIO_BOUNDS), and
+    verticality ramps smoothly between them rather than switching. The user's
+    `smoothness` level then narrows or widens that automatic ratio (see
+    SMOOTHNESS_SCALES).
+
+    Like resolve_tobler_weight, this is resolved once for the whole workout:
+    anchors are where the user knows a time, not where the terrain changes. It
+    reads the same smoothed `gradients`, never raw elevation deltas, so DEM
+    rounding on a flat road doesn't read as hilly.
+
+    Args:
+        gradients: The whole track's per-leg gradients (N-1 values for N points),
+            from pacing.gradient.calculate_gradient.
+        leg_distances: The whole track's per-leg distances, same length and order.
+        sport: Sport type, which picks the flat/hilly bounds.
+        smoothness: The user's level, a key of SMOOTHNESS_SCALES; higher is
+            more even pacing. DEFAULT_SMOOTHNESS leaves the automatic ratio as is.
+    Returns:
+        A ratio greater than 1.0. A track with no distance gets the sport's
+        flat bound (scaled by the level like any other).
+    Raises:
+        ValueError: If `smoothness` isn't one of SMOOTHNESS_SCALES' levels.
+    """
+    if smoothness not in SMOOTHNESS_SCALES or isinstance(smoothness, float):
+        raise ValueError(
+            f"smoothness must be an integer from {min(SMOOTHNESS_SCALES)} to {max(SMOOTHNESS_SCALES)}, "
+            f"got {smoothness!r}."
+        )
+    scale = SMOOTHNESS_SCALES[smoothness]
+
+    bounds = MAX_SPEED_RATIO_BOUNDS[sport]
+    if sum(leg_distances) <= 0:
+        return bounds.flat ** scale
+
+    hilliness = _smoothstep(_verticality(gradients, leg_distances), HILLY_VERTICALITY, HILLY_VERTICALITY_BAND)
+    return (bounds.flat + (bounds.hilly - bounds.flat) * hilliness) ** scale
+
+
+def _fitted_exponents(raw_uphill: float, raw_downhill: float, log_limit: float) -> CurveExponents:
+    """Exponents that land one curve's raw reference-grade speeds on their fill share of `log_limit`."""
+    return CurveExponents(
+        uphill=UPHILL_FILL * log_limit / abs(math.log(raw_uphill)),
+        downhill=DOWNHILL_FILL * log_limit / abs(math.log(raw_downhill)),
+    )
+
+
+def resolve_curve_shape(max_speed_ratio: float) -> CurveShape:
+    """Fit both speed curves' exponents to this workout's speed-swing bound.
+
+    A lower max_speed_ratio alone would just squash a steep curve against the
+    tanh bound in combine._compress_speed_toward_typical, and a long climb or
+    descent then comes out as a flat plateau with a sharp edge into the next
+    one. So the curves themselves are flattened to fit: at ±CURVE_REFERENCE_GRADE
+    each curve's log-speed is exactly UPHILL_FILL / DOWNHILL_FILL of
+    log(max_speed_ratio), which leaves the bound to catch only the steeper
+    outliers. Because exponents scale log-speed linearly, the curve and the
+    bound always widen and narrow together.
+
+    Args:
+        max_speed_ratio: This workout's bound, from resolve_max_speed_ratio. Must be > 1.
+    Returns:
+        The exponents for pacing.gradient.blended_speeds_from_gradients.
+    """
+    log_limit = math.log(max_speed_ratio)
+    reference = [CURVE_REFERENCE_GRADE, -CURVE_REFERENCE_GRADE]
+    minetti_up, minetti_down = minetti_speeds_from_gradients(reference, uphill_exponent=1.0, downhill_exponent=1.0)
+    tobler_up, tobler_down = tobler_speeds_from_gradients(reference, uphill_exponent=1.0, downhill_exponent=1.0)
+    return CurveShape(
+        minetti=_fitted_exponents(minetti_up, minetti_down, log_limit),
+        tobler=_fitted_exponents(tobler_up, tobler_down, log_limit),
+    )
+
+
 # todo:
 # TOBLER_THRESHOLDS, FLAT_EQUIVALENT_BAND_MPS and VERTICALITY_BAND are
 # first-guess constants - the shape of resolve_tobler_weight is the point, the
 # six numbers in it are not calibrated. RUNNING's verticality is the one to
 # watch: at 0.14 a sustained 16% climb resolves to ~0.9 Tobler even at an
 # elite pace, because the two criteria are OR'd.
+
+# MAX_SPEED_RATIO_BOUNDS, the HILLY_VERTICALITY band and the two FILL shares are
+# also first guesses, as is SMOOTHNESS_SCALES. The smoothness slider only moves
+# max_speed_ratio: resolve_curve_shape already moves the exponents with it. The
+# FILLs are the knob for how hard climbs vs. descents push within that bound.

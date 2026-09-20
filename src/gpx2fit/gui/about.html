@@ -63,8 +63,16 @@
             mountains paces like a hike even if you picked "Running".
           </li>
           <li>
-            <strong>Smoothing.</strong> Slope is averaged over a couple of meters instead of point to point, so small
-            bumps in the elevation data don't cause sudden jumps in speed.
+            <strong>Slope averaging.</strong> Slope is averaged over several dozen meters instead of point to point, so
+            small bumps in the elevation data don't cause sudden jumps in speed.
+          </li>
+          <li id="smoothness">
+            <strong>Pace smoothness.</strong> Real people push a bit on climbs and ease off on descents, so their
+            speed changes less than the slope alone would suggest. The tool limits how far your speed can swing
+            from your usual pace. By default (level 5), the limit depends on the route and sport: flat routes and
+            hikes vary less than hilly runs. The slider moves that limit. Higher numbers give a more even pace, and
+            10 is almost constant. Lower numbers follow the terrain more closely. Your start, end and anchor times
+            are still matched exactly at every level.
           </li>
           <li>
             <strong>Surface (optional).</strong> When "Adjust pace for trail surface" is on, the route is matched
@@ -174,7 +182,7 @@
         </ul>
 
         <h3>Stored in your browser</h3>
-        <p>Only two settings: light or dark theme, and whether surface lookup is on.</p>
+        <p>Only three settings: light or dark theme, whether surface lookup is on, and your pace smoothness level.</p>
 
         <h3>Check it yourself</h3>
         <p>

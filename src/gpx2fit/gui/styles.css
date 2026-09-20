@@ -468,6 +468,37 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   color: var(--text-tertiary);
 }
 
+/* A hint under a full-width control, not indented under a checkbox's label. */
+.control-hint--flush {
+  padding-left: 0;
+}
+
+/* ---------- pace smoothness slider ---------- */
+
+.range-input {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.smoothness-value {
+  min-width: 1.5em;
+  font-size: 0.82rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  text-align: right;
+}
+
+.range-captions {
+  display: flex;
+  justify-content: space-between;
+  margin-top: calc(-1 * var(--space-1));
+  font-size: 0.78rem;
+  color: var(--text-tertiary);
+}
+
 .route-summary {
   display: flex;
   gap: var(--space-4);

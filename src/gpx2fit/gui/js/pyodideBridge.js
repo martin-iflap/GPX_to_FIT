@@ -352,12 +352,24 @@ async function fetchSurfaceMultipliers(sportEnumName, runtime) {
  * @param {boolean} [args.surfaceLookup=true] - whether to fetch surface multipliers from
  *   Valhalla; `false` skips the request entirely, so the route's coordinates never
  *   leave the browser (the user-facing privacy opt-out)
+ * @param {number} [args.smoothness=5] - pace-smoothness level, an integer 1–10
+ *   (higher is more even pacing, 5 is the automatic terrain/sport-based swing);
+ *   see `curve_selection.resolve_max_speed_ratio`
  * @returns {Promise<{
  *   fitBytes: Uint8Array,
  *   profile: {distanceFromStart: number, elapsedSeconds: number, speedMps: number, elevation: number|null, lat: number, lon: number, isStop: boolean}[],
  * }>} the encoded FIT file, plus the paced activity's profile samples
  */
-export async function convert({ startIso, durationSeconds, sportEnumName, anchors, stops, device, surfaceLookup = true }) {
+export async function convert({
+  startIso,
+  durationSeconds,
+  sportEnumName,
+  anchors,
+  stops,
+  device,
+  surfaceLookup = true,
+  smoothness = 5,
+}) {
   return enqueue(async () => {
     const runtime = await ensurePyodide();
 
@@ -381,6 +393,7 @@ export async function convert({ startIso, durationSeconds, sportEnumName, anchor
     runtime.globals.set('raw_stops_json', JSON.stringify(stops ?? []));
     runtime.globals.set('device_name', device ?? null);
     runtime.globals.set('surface_multipliers_json', surfaceMultipliers ? JSON.stringify(surfaceMultipliers) : null);
+    runtime.globals.set('smoothness', smoothness);
 
     await runtime.runPythonAsync(`
     import datetime as dt
@@ -448,7 +461,7 @@ export async function convert({ startIso, durationSeconds, sportEnumName, anchor
         else None
     )
 
-    combine(track=working_track, anchors=all_anchors, sport=sport, multipliers=working_multipliers, mode_a_stops=mode_a_stops)
+    combine(track=working_track, anchors=all_anchors, sport=sport, multipliers=working_multipliers, mode_a_stops=mode_a_stops, smoothness=int(smoothness))
     fit_bytes = write_fit(working_track)
 
     from gpx2fit.core.activity_profile import build_activity_profile

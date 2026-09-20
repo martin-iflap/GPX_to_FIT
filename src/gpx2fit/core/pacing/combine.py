@@ -6,20 +6,18 @@ from bisect import bisect_left, bisect_right
 from datetime import timedelta
 
 from gpx2fit.core.models import Anchor, InputError, ModeAStop, SportType, Track, TrackPoint
-from gpx2fit.core.pacing.curve_selection import resolve_tobler_weight
-from gpx2fit.core.pacing.gradient import blended_speeds_from_gradients, calculate_gradient
+from gpx2fit.core.pacing.curve_selection import (
+    DEFAULT_SMOOTHNESS,
+    resolve_curve_shape,
+    resolve_max_speed_ratio,
+    resolve_tobler_weight,
+)
+from gpx2fit.core.pacing.gradient import CurveShape, blended_speeds_from_gradients, calculate_gradient
 
 
 # A surface multiplier can never drag a leg's speed below this fraction of
 # its gradient-modeled speed — see _pace_segment.
 _MIN_SURFACE_MULTIPLIER = 0.05
-
-# A leg's final speed (gradient model * surface multiplier) is
-# pulled toward the segment's own median leg speed, asymptotically bounded
-# to within roughly this factor of it in either direction — see
-# _compress_speed_toward_typical. Real pace doesn't swing within one
-# activity by the 10-30x range the raw gradient curves alone can produce.
-_MAX_SPEED_RATIO = 2.5
 
 # Human-readable label for each Anchor.source, used only to make InputError
 # messages (contradictory anchor/stop times) point at a concrete, recognizable
@@ -75,6 +73,8 @@ def _pace_segment(
     start_anchor: Anchor,
     end_anchor: Anchor,
     tobler_weight: float,
+    max_speed_ratio: float,
+    curve_shape: CurveShape,
     segment_multipliers: list[float] | None = None,
     segment_mode_a_stops: list[ModeAStop] | None = None,
 ) -> None:
@@ -82,7 +82,7 @@ def _pace_segment(
 
     Computes a per-leg relative speed from the workout's blend of the Minetti
     and Tobler curves, compresses each leg's resulting speed toward the segment's
-    own median leg speed (see _MAX_SPEED_RATIO / _compress_speed_toward_typical).
+    own median leg speed (see _compress_speed_toward_typical).
     Then scales the modeled per-leg times so the segment's total *active* time
     (anchor-to-anchor duration minus any Mode A stop durations in this segment)
     matches exactly, and stamps each point's timestamp accordingly. Each Mode A
@@ -103,6 +103,11 @@ def _pace_segment(
         tobler_weight: How far this workout's speed curve sits between Minetti
             (0.0) and Tobler (1.0), resolved once for the whole workout by
             pacing.curve_selection.resolve_tobler_weight.
+        max_speed_ratio: Soft bound on how far a leg's speed may swing from
+            the segment's median, resolved once for the whole workout by
+            pacing.curve_selection.resolve_max_speed_ratio. Must be > 1.
+        curve_shape: Both curves' exponents, fitted to max_speed_ratio by
+            pacing.curve_selection.resolve_curve_shape.
         segment_multipliers: Optional per-leg surface multipliers, one per leg.
         segment_mode_a_stops: This segment's Mode A stops, sorted ascending
             by distance_from_start.
@@ -141,7 +146,7 @@ def _pace_segment(
             "one is wrong."
         )
 
-    speeds = blended_speeds_from_gradients(segment_gradients, tobler_weight)
+    speeds = blended_speeds_from_gradients(segment_gradients, tobler_weight, curve_shape)
     if not speeds:
         return
 
@@ -161,7 +166,7 @@ def _pace_segment(
     if positive_speeds:
         typical_speed = statistics.median(positive_speeds)
         speeds = [
-            _compress_speed_toward_typical(speed, typical_speed, _MAX_SPEED_RATIO) if speed > 0 else speed
+            _compress_speed_toward_typical(speed, typical_speed, max_speed_ratio) if speed > 0 else speed
             for speed in speeds
         ]
 
@@ -273,6 +278,7 @@ def combine(
     sport: SportType,
     multipliers: list[float] | None = None,
     mode_a_stops: list[ModeAStop] | None = None,
+    smoothness: int = DEFAULT_SMOOTHNESS,
 ) -> Track:
     """Stamp every track point with a timestamp, paced to match the given anchors.
 
@@ -310,6 +316,10 @@ def combine(
             pacing.stops.expand_multipliers_with_stops).
         mode_a_stops: Mode A stops (distance + duration only, arrival not
             yet known), sorted ascending by distance_from_start.
+        smoothness: The user's pace-smoothness level (1–10, higher is more
+            even), which narrows or widens the automatic speed-swing bound —
+            see pacing.curve_selection.resolve_max_speed_ratio. It never
+            changes which curve is used.
 
     Returns:
         The same track, with every point that falls inside a valid segment
@@ -343,23 +353,22 @@ def combine(
         for prev, curr in zip(track.points, track.points[1:])
     ]
     tobler_weight = resolve_tobler_weight(gradients, leg_distances, active_seconds, sport)
+    max_speed_ratio = resolve_max_speed_ratio(gradients, leg_distances, sport, smoothness)
+    curve_shape = resolve_curve_shape(max_speed_ratio)
 
     for i in range(len(anchors) - 1):
         segment_points = track.points[anchor_indexes[i]: anchor_indexes[i + 1] + 1]
         segment_gradients = gradients[anchor_indexes[i]: anchor_indexes[i + 1]]
         segment_multipliers = multipliers[anchor_indexes[i]: anchor_indexes[i + 1]] if multipliers is not None else None
         _pace_segment(
-            segment_points, segment_gradients, anchors[i], anchors[i + 1], tobler_weight,
-            segment_multipliers, buckets[i],
+            segment_points, segment_gradients, anchors[i], anchors[i + 1], tobler_weight, max_speed_ratio,
+            curve_shape, segment_multipliers, buckets[i],
         )
 
     return track
 
 
 # todo:
-# _MAX_SPEED_RATIO is a first-guess constant (2.5) - it needs real tuning,
-# and ideally should vary by sport/terrain rather than being one fixed number.
-
 # Possible optimization once the pacing logic settles: the Minetti curve is
 # currently evaluated twice over the whole track - once inside
 # resolve_tobler_weight as its probe, once inside blended_speeds_from_gradients

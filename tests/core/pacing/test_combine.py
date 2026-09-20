@@ -5,7 +5,8 @@ from datetime import timedelta
 import pytest
 
 from gpx2fit.core.models import InputError, ModeAStop, SportType, Track, TrackPoint
-from gpx2fit.core.pacing.combine import _MAX_SPEED_RATIO, combine
+from gpx2fit.core.pacing.combine import combine
+from gpx2fit.core.pacing.curve_selection import DEFAULT_SMOOTHNESS, MAX_SPEED_RATIO_BOUNDS
 from gpx2fit.core.pacing.gradient import (
     GRADIENT_WINDOW_M,
     blended_speeds_from_gradients,
@@ -17,6 +18,8 @@ from tests.core.conftest import (
     anchor,
     flat_track,
     point,
+    resolved_curve_shape,
+    resolved_max_speed_ratio,
     resolved_weight,
     rolling_track,
     timestamp_of,
@@ -223,12 +226,14 @@ class TestCombineBoundsExtremeSpeedRatio:
         raw_speeds = blended_speeds_from_gradients(
             calculate_gradient(Track(points=track.points)),
             resolved_weight(track, (end_time - START).total_seconds(), SportType.RUNNING),
+            resolved_curve_shape(track, SportType.RUNNING),
         )
         typical_raw_speed = statistics.median(s for s in raw_speeds if s > 0)
         raw_ratio = max(raw_speeds) / min(raw_speeds)
+        max_ratio = resolved_max_speed_ratio(track, SportType.RUNNING)
         expected_ratio = (
-            _compress_speed_toward_typical(max(raw_speeds), typical_raw_speed, _MAX_SPEED_RATIO)
-            / _compress_speed_toward_typical(min(raw_speeds), typical_raw_speed, _MAX_SPEED_RATIO)
+            _compress_speed_toward_typical(max(raw_speeds), typical_raw_speed, max_ratio)
+            / _compress_speed_toward_typical(min(raw_speeds), typical_raw_speed, max_ratio)
         )
 
         result = combine(track, anchors, SportType.RUNNING)
@@ -317,9 +322,11 @@ class TestCombineUsesSmoothedWholeTrackGradient:
 
         result = combine(track, anchors, SportType.RUNNING)
 
-        speeds = minetti_speeds_from_gradients(whole_track_gradients)
+        shape = resolved_curve_shape(track, SportType.RUNNING)
+        speeds = minetti_speeds_from_gradients(whole_track_gradients, shape.minetti.uphill, shape.minetti.downhill)
         typical = statistics.median(speeds)
-        compressed = [_compress_speed_toward_typical(s, typical, _MAX_SPEED_RATIO) for s in speeds]
+        max_ratio = resolved_max_speed_ratio(track, SportType.RUNNING)
+        compressed = [_compress_speed_toward_typical(s, typical, max_ratio) for s in speeds]
         modeled = [10.0 / s for s in compressed]
         budget = (end_time - mid_time).total_seconds()
         expected_leg_seconds = [budget * m / sum(modeled) for m in modeled]
@@ -385,13 +392,24 @@ class TestCombineModelSelection:
     def _weight_for(self, track: Track, avg_speed_mps: float) -> float:
         return resolved_weight(track, track.total_distance / avg_speed_mps, SportType.RUNNING)
 
-    def test_a_workout_that_resolves_to_the_same_curve_for_both_sports_paces_identically(self):
+    def test_on_the_same_curve_hiking_swings_no_wider_than_running(self):
         # Well above both sports' speed thresholds and well below both
-        # verticality ones, so the declared sport can't change the answer.
+        # verticality ones, so both resolve to the same curve. The sport
+        # then only changes how far leg speeds may swing (see
+        # resolve_max_speed_ratio), and hiking's bound is the tighter one.
         running = self._run_with_avg_speed(SportType.RUNNING, avg_speed_mps=4.0)
         hiking = self._run_with_avg_speed(SportType.HIKING, avg_speed_mps=4.0)
 
-        assert [p.timestamp for p in running.points] == [p.timestamp for p in hiking.points]
+        def pace_spread(track: Track) -> float:
+            paces = [
+                seconds / (b.distance_from_start - a.distance_from_start)
+                for seconds, a, b in zip(_leg_seconds(track.points), track.points, track.points[1:])
+            ]
+            return max(paces) / min(paces)
+
+        assert resolved_weight(running, 1000.0 / 4.0, SportType.RUNNING) == 0.0
+        assert resolved_weight(hiking, 1000.0 / 4.0, SportType.HIKING) == 0.0
+        assert pace_spread(hiking) <= pace_spread(running)
 
     def test_the_declared_sport_changes_the_pacing_of_a_borderline_workout(self):
         running = self._run_with_avg_speed(SportType.RUNNING, avg_speed_mps=2.0)
@@ -441,6 +459,75 @@ class TestCombineModelSelection:
         # have resolved to Tobler instead and the legs would differ by far
         # more than this.
         assert moving_legs_with == pytest.approx(moving_legs_without, rel=1e-3)
+
+
+class TestCombineSmoothness:
+    """The user's smoothness level, observed through the paced timestamps rather than the ratio itself."""
+
+    DURATION = timedelta(minutes=40)
+
+    def _paced(self, smoothness: int | None = None, climb_per_km: float = 100.0) -> Track:
+        track = rolling_track(distance=5000.0, climb_per_km=climb_per_km)
+        anchors = [anchor(0.0, START), anchor(track.total_distance, START + self.DURATION)]
+        if smoothness is None:
+            return combine(track, anchors, SportType.RUNNING)
+        return combine(track, anchors, SportType.RUNNING, smoothness=smoothness)
+
+    @staticmethod
+    def _log_leg_speeds(track: Track) -> list[float]:
+        return [
+            math.log((b.distance_from_start - a.distance_from_start) / seconds)
+            for seconds, a, b in zip(_leg_seconds(track.points), track.points, track.points[1:])
+        ]
+
+    def _log_spread(self, track: Track) -> float:
+        logs = self._log_leg_speeds(track)
+        return max(logs) - min(logs)
+
+    def test_omitting_smoothness_paces_exactly_like_the_default_level(self):
+        omitted = [p.timestamp for p in self._paced().points]
+        assert omitted == [p.timestamp for p in self._paced(DEFAULT_SMOOTHNESS).points]
+        # The default must really be the middle of the scale, not an alias of
+        # an end level that happens to share the name.
+        assert omitted != [p.timestamp for p in self._paced(1).points]
+        assert omitted != [p.timestamp for p in self._paced(10).points]
+
+    def test_a_smoother_level_narrows_the_speed_swing(self):
+        roughest, default, smoothest = (self._log_spread(self._paced(level)) for level in (1, DEFAULT_SMOOTHNESS, 10))
+        assert roughest > default > smoothest
+        # A real difference, not a rounding one: the smoothest level at least
+        # halves the default swing.
+        assert smoothest < 0.5 * default
+
+    @pytest.mark.parametrize("level", [1, DEFAULT_SMOOTHNESS, 10])
+    def test_the_entered_times_are_still_hit_exactly(self, level):
+        track = self._paced(level)
+        assert track.points[0].timestamp == START
+        assert track.points[-1].timestamp == START + self.DURATION
+
+    @pytest.mark.parametrize("level", [1, 3, 8, 10])
+    def test_the_level_scales_every_legs_deviation_by_the_same_factor(self, level):
+        # The curve exponents and the tanh bound both scale with log(max_ratio),
+        # so moving the slider should multiply every leg's log-speed deviation by
+        # the same factor — the shape of the activity kept, only its amplitude
+        # changed. If the bound moved but the curve didn't follow, a smoother
+        # level would squash the steep legs harder than the gentle ones and
+        # flatten them into plateaus.
+        track = rolling_track(distance=5000.0, climb_per_km=100.0)
+        factor = (
+            math.log(resolved_max_speed_ratio(track, SportType.RUNNING, smoothness=level))
+            / math.log(resolved_max_speed_ratio(track, SportType.RUNNING))
+        )
+
+        def centred(logs: list[float]) -> list[float]:
+            mean = statistics.fmean(logs)
+            return [value - mean for value in logs]
+
+        default = centred(self._log_leg_speeds(self._paced(DEFAULT_SMOOTHNESS)))
+        scaled = centred(self._log_leg_speeds(self._paced(level)))
+        assert max(abs(value) for value in default) > 0.2  # premise: the default really swings
+        for got, reference in zip(scaled, default):
+            assert got == pytest.approx(factor * reference, abs=0.01)
 
 
 class TestCombineInvalidAnchorMappingGuard:
@@ -656,9 +743,10 @@ class TestCombineModeAStops:
 
 
 def _expected_leg_seconds_for_multipliers(multipliers: list[float], budget_seconds: float) -> list[float]:
-    """Independently reproduce combine()'s multiplier -> compressed-speed -> scaled-time math for a flat (equal base speed, equal distance) segment."""
+    """Independently reproduce combine()'s multiplier -> compressed-speed -> scaled-time math for a flat (equal base speed, equal distance) running segment."""
     typical = statistics.median(multipliers)
-    compressed = [_compress_speed_toward_typical(m, typical, _MAX_SPEED_RATIO) for m in multipliers]
+    max_ratio = MAX_SPEED_RATIO_BOUNDS[SportType.RUNNING].flat
+    compressed = [_compress_speed_toward_typical(m, typical, max_ratio) for m in multipliers]
     seconds_ratio = [1.0 / c for c in compressed]
     total_ratio = sum(seconds_ratio)
     return [budget_seconds * r / total_ratio for r in seconds_ratio]
@@ -669,7 +757,7 @@ class TestCombineSurfaceMultipliers:
         # Flat track (gradient 0 on every leg) so every leg's modeled speed
         # is identical before multipliers are applied — any difference in
         # the resulting leg durations comes from the multipliers, after
-        # combine()'s own speed compression (see _MAX_SPEED_RATIO)
+        # combine()'s own speed compression (see resolve_max_speed_ratio)
         # pulls extreme ratios toward the segment's median, the same as it
         # does for extreme gradients — so legs with multipliers 1/2/4 no
         # longer land on *exactly* inverse-proportional (4:2:1) times, only
