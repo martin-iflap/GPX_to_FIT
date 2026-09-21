@@ -1,7 +1,8 @@
 // Hand-rolled SVG chart for the post-conversion activity profile: elevation
 // as a gray filled area in the background, speed (km/h) or pace (min/km,
 // inverted so faster is higher) as a line on top, over either elapsed time
-// or distance. Either series can be hidden. Pure presentation — the samples arrive
+// or distance, with a dotted reference at the average moving speed. Either
+// series can be hidden (hiding speed takes the average line with it). Pure presentation — the samples arrive
 // already downsampled from core/activity_profile.py (see pyodideBridge.js
 // convert()), so everything here is scales, paths, and hover lookup.
 //
@@ -121,6 +122,27 @@ export function stopRuns(samples) {
     }
   }
   return runs;
+}
+
+/**
+ * Average *moving* speed: total distance over elapsed time, with each stop's
+ * own span left out (a stop is two samples, so its span is the one leg whose
+ * both ends are stopped). Matches the figure `fit_writer.py` puts in the FIT
+ * and the one Strava shows, rather than the mean of the plotted values.
+ * @param {{distanceFromStart: number, elapsedSeconds: number, isStop?: boolean}[]} samples
+ * @returns {number|null} meters per second, or null without any moving time
+ */
+export function averageMovingSpeedMps(samples) {
+  let meters = 0;
+  let seconds = 0;
+  for (let i = 1; i < samples.length; i++) {
+    if (samples[i].isStop && samples[i - 1].isStop) {
+      continue;
+    }
+    meters += samples[i].distanceFromStart - samples[i - 1].distanceFromStart;
+    seconds += samples[i].elapsedSeconds - samples[i - 1].elapsedSeconds;
+  }
+  return seconds > 0 ? meters / seconds : null;
 }
 
 /**
@@ -409,6 +431,26 @@ export function createProfileChart(container, { onHover } = {}) {
     // it sits along the bottom (the slow end) instead.
     const stopY = scaleSpeed ? (metric === 'pace' ? plotBottom : scaleSpeed(0)) : null;
     if (scaleSpeed) {
+      // A dotted reference at the average moving speed, under the speed line
+      // so the series still reads on top of it. Off-scale (a capped pace can
+      // push it past the axis) it's simply left out rather than clamped onto
+      // an edge, where it would claim a value it doesn't have.
+      const averageMps = averageMovingSpeedMps(samples);
+      const average = averageMps == null || averageMps <= 0
+        ? null
+        : metric === 'pace' ? 1000 / averageMps : averageMps * 3.6;
+      const averageY = average == null ? null : scaleSpeed(average);
+      if (averageY != null && averageY >= plot.top && averageY <= plotBottom) {
+        svg.append(svgEl(
+          'line',
+          { x1: plot.left, x2: plotRight, y1: averageY.toFixed(1), y2: averageY.toFixed(1) },
+          'profile-average-line',
+        ));
+        const averageLabel = svgEl('text', { x: plotRight - 4, y: (averageY - 5).toFixed(1), 'text-anchor': 'end' }, 'profile-average-label');
+        averageLabel.textContent = `avg ${metric === 'pace' ? formatPaceTick(average) : average.toFixed(1)}`;
+        svg.append(averageLabel);
+      }
+
       const insideStop = (i) => samples[i].isStop && samples[i - 1].isStop;
       svg.append(svgEl('path', { d: linePath(series.xs, series.speeds, scaleX, scaleSpeed, insideStop) }, 'profile-speed-line'));
       const stops = svgEl('g', {}, 'profile-stops');

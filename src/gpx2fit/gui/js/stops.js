@@ -8,7 +8,7 @@ import { formatClock, formatDistanceKm, formatDuration } from './format.js';
 
 /** @typedef {{ id: number, distanceFromStart: number, mode: 'duration'|'startEnd', durationSeconds?: number, arrival?: Date, departure?: Date }} Stop */
 
-// Stops share map.js's single marker id-space with anchors.js; this offset
+// Stops share map.js single marker id-space with anchors.js; this offset
 // keeps stop ids from ever colliding with anchor ids (which start at 1 and
 // grow by ordinary placement counts, never anywhere near this range).
 const ID_OFFSET = 1_000_000;
@@ -67,7 +67,7 @@ export function addStop({ lat, lon, distanceFromStart, mode, durationSeconds, ar
 
 /** Removes the stop with the given id, its map pin, and re-renders the list. */
 export function removeStop(id) {
-  list.remove(id);
+  list.remove(id); // if this function is not needed remove it.
 }
 
 /** Removes every stop and its map pin (e.g. before loading a new route) and re-renders the list. */
@@ -78,4 +78,17 @@ export function resetStops() {
 /** @returns {Stop[]} a defensive copy of the current stops, in insertion order. */
 export function getStops() {
   return list.getAll();
+}
+
+/**
+ * Registers a callback run after any stop is added, removed or cleared.
+ * Stops are placed from `anchorPopovers.js` and deleted from their own row
+ * button. So anything that derives a value from the stop list (the
+ * start-time control's avg-speed mode, which adds the total stopped time on
+ * top of the moving time) has no other way to hear about a change.
+ *
+ * @param {() => void} fn
+ */
+export function setStopsChangeListener(fn) {
+  list.setChangeListener(fn);
 }

@@ -107,4 +107,42 @@ describe('createMarkerList', () => {
     snapshot[0].distanceFromStart = 999;
     assert.equal(list.getAll()[0].distanceFromStart, 10);
   });
+
+  describe('change listener', () => {
+    it('fires on add, remove and reset, and never before it is registered', () => {
+      const { list } = mount();
+      // init() already ran and rendered; a listener registered now must not
+      // have missed anything, which is why the listener isn't fired from
+      // render() — main.js registers it well after initStopList().
+      let calls = 0;
+      list.setChangeListener(() => {
+        calls += 1;
+      });
+      assert.equal(calls, 0);
+
+      const id = list.add({ lat: 1, lon: 1, distanceFromStart: 10 });
+      assert.equal(calls, 1);
+      list.remove(id);
+      assert.equal(calls, 2);
+      list.reset();
+      assert.equal(calls, 3);
+    });
+
+    it('sees the new state, not the old one', () => {
+      const { list } = mount();
+      let seen = null;
+      list.setChangeListener(() => {
+        seen = list.getAll().length;
+      });
+      list.add({ lat: 1, lon: 1, distanceFromStart: 10 });
+      assert.equal(seen, 1);
+    });
+
+    it('is optional — a list without one still works', () => {
+      const { list } = mount();
+      const id = list.add({ lat: 1, lon: 1, distanceFromStart: 10 });
+      list.remove(id);
+      assert.deepEqual(list.getAll(), []);
+    });
+  });
 });

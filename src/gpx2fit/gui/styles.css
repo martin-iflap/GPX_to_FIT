@@ -584,6 +584,81 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   text-align: center;
 }
 
+/* The avg-speed mode: one row of boxes per unit, only the active one
+   rendered. The rows themselves reuse .duration-fields, since they are the
+   same centered box+suffix run. */
+.speed-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* Just the typed boxes — the row also holds the trailing unit suffix and the
+   switch button, and both sit outside this. Positioned because the quick-pick
+   list hangs from it and is centred on it, so every extra thing inside would
+   push the list right of the numbers by half that thing's width. */
+.speed-entry {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* A single box holding "4.5" needs a little more room than one holding "59". */
+.speed-fields-kmh .duration-input {
+  width: 5.5rem;
+}
+
+/* The unit switch, in the entry row rather than on a line of its own. It
+   names the unit it switches *to*, so it is deliberately quieter than the
+   suffix beside it — it's an alternative on offer, not the current state. */
+.speed-unit-button {
+  margin-left: var(--space-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated-2);
+  color: var(--text-tertiary);
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 0.25rem 0.5rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--transition), color var(--transition);
+}
+
+.speed-unit-button:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+/* Reuses .time-field-dropdown / .time-field-option wholesale (see
+   dateTimeField.js) — same list, same interaction, just a different set of
+   values in it. What differs is width: every label here is four characters
+   at most ("10.0", "3:30"), so the list is sized to them and centered under
+   the row rather than stretched across it, with a slightly rounder edge to
+   suit the narrower box.
+
+   `scrollbar-gutter: both-edges` is what keeps the labels visually centered:
+   the list always scrolls (15 km/h entries against a 12rem max-height), and
+   on a box this narrow a scrollbar down one side alone throws the numbers
+   noticeably off-centre. Reserving the same width on both sides costs
+   nothing here, since the width is fixed either way.
+
+   Both classes are in the selector on purpose: .time-field-dropdown is
+   defined *below* this block, so at equal specificity its `left: 0; right: 0`
+   would win on source order and stretch the list across the entry — then
+   translateX(-50%) would drag that full-width box half its own width to the
+   left, off the sidebar entirely. */
+.time-field-dropdown.speed-preset-dropdown {
+  left: 50%;
+  right: auto;
+  transform: translateX(-50%);
+  width: 6rem;
+  border-radius: var(--radius-lg);
+  scrollbar-gutter: stable both-edges;
+}
+
 .input-suffix {
   color: var(--text-tertiary);
   font-size: 0.85rem;
@@ -1269,6 +1344,25 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   stroke-width: 1.75;
   stroke-linejoin: round;
   stroke-linecap: round;
+}
+
+/* The average moving speed: the speed line's own colour, thinner, dotted and
+   faded, so it reads as a reference the series is measured against rather
+   than a second series. */
+.profile-average-line {
+  stroke: var(--accent);
+  stroke-width: 1;
+  stroke-dasharray: 1 4;
+  stroke-linecap: round;
+  opacity: 0.55;
+}
+
+.profile-average-label {
+  fill: var(--accent);
+  font-family: var(--font-family);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
 }
 
 /* Stops: the same weight as the speed line, just amber and a little faded,

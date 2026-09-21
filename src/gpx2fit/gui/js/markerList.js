@@ -1,8 +1,8 @@
 // Shared behavior for a "list of things placed on the route, each with a
 // synced numbered map pin" — anchors.js and stops.js are both exactly this
-// shape (assign id, sort by distanceFromStart, sync map.js's marker
+// shape. (Assign id, sort by distanceFromStart, sync map.js marker
 // id-space, render a sidebar row with a delete button, hover/click <->
-// pin highlight). The only part that actually differs between an anchor
+// pin highlight.) The only part that actually differs between an anchor
 // and a stop is what a row's two text lines say and what marker "kind" it
 // gets, so that's the only thing callers provide.
 
@@ -11,19 +11,25 @@ import * as mapModule from './map.js';
 /**
  * @param {object} opts
  * @param {number} [opts.idOffset] - starting id minus 1; keeps this list's ids
- *   from colliding with another list sharing map.js's marker id-space (e.g.
- *   stops.js offsets by 1_000_000 to stay clear of anchors.js's ids)
+ *   from colliding with another list sharing map.js marker id-space (e.g.
+ *   stops.js offsets by 1_000_000 to stay clear of anchors.js ids)
  * @param {(item: object) => 'anchor'|'stop'|'photo'} opts.markerKind - marker
  *   kind for a given item, passed to mapModule.addMarker
  * @param {string} opts.deleteAriaLabel - aria-label for each row's delete button
  * @param {(item: object) => HTMLElement[]} opts.renderRowText - builds the
- *   row's text content (typically a distance line and a time line) for one item
+ *   row's text content (typically a distance line and a timeline) for one item
  */
 export function createMarkerList({ idOffset = 0, markerKind, deleteAriaLabel, renderRowText }) {
   let items = [];
   let nextId = idOffset + 1;
   let listEl = null;
   let emptyStateEl = null;
+  // Fired on add/remove/reset for callers that derive something from the list
+  // (the start-time control's avg-speed mode needs the total stopped time).
+  // Deliberately not fired from render(), which init() also calls at mount —
+  // a listener registered later would then miss it, and one registered
+  // earlier would run before the caller's own state exists.
+  let changeListener = null;
 
   /** Item ids in route order (nearest-to-start first) — matches the numbering shown on the map pins and sidebar rows. */
   function sortedIds() {
@@ -111,6 +117,7 @@ export function createMarkerList({ idOffset = 0, markerKind, deleteAriaLabel, re
       onClick: (clickedId) => highlightRow(clickedId),
     });
     render();
+    changeListener?.();
     return id;
   }
 
@@ -119,6 +126,7 @@ export function createMarkerList({ idOffset = 0, markerKind, deleteAriaLabel, re
     items = items.filter((i) => i.id !== id);
     mapModule.removeMarker(id);
     render();
+    changeListener?.();
   }
 
   /** Removes every item and its map pin (e.g. before loading a new route) and re-renders the list. */
@@ -126,6 +134,7 @@ export function createMarkerList({ idOffset = 0, markerKind, deleteAriaLabel, re
     items.forEach((i) => mapModule.removeMarker(i.id));
     items = [];
     render();
+    changeListener?.();
   }
 
   /** @returns {object[]} a defensive copy of the current items, in insertion order. */
@@ -133,5 +142,10 @@ export function createMarkerList({ idOffset = 0, markerKind, deleteAriaLabel, re
     return items.map((i) => ({ ...i }));
   }
 
-  return { init, add, remove, reset, getAll };
+  /** Registers the single listener called after every add/remove/reset. */
+  function setChangeListener(fn) {
+    changeListener = fn;
+  }
+
+  return { init, add, remove, reset, getAll, setChangeListener };
 }

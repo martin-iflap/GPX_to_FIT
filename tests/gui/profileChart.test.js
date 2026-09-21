@@ -5,6 +5,7 @@ import { describe, it } from 'node:test';
 
 import {
   areaPath,
+  averageMovingSpeedMps,
   buildSeries,
   createProfileChart,
   linearScale,
@@ -119,6 +120,18 @@ describe('stopRuns', () => {
   });
 });
 
+describe('averageMovingSpeedMps', () => {
+  it('divides the distance by the elapsed time without the stops', () => {
+    // 1000 m in 750 s elapsed, of which 300 s was a stop.
+    assert.equal(averageMovingSpeedMps(SAMPLES), 1000 / 450);
+  });
+
+  it('returns null without any moving time', () => {
+    assert.equal(averageMovingSpeedMps([]), null);
+    assert.equal(averageMovingSpeedMps([sample(0, 0, 0, { isStop: true }), sample(0, 60, 0, { isStop: true })]), null);
+  });
+});
+
 describe('areaPath', () => {
   it('closes the area down to the baseline and bridges nulls', () => {
     assert.equal(areaPath([0, 1, 2], [5, null, 7], identity, identity, 10), 'M0.0,10.0L0.0,5.0L2.0,7.0L2.0,10.0Z');
@@ -207,6 +220,30 @@ describe('createProfileChart', () => {
     for (let i = 1; i < ys.length; i++) {
       assert.ok(ys[i] > ys[i - 1]);
     }
+  });
+
+  it('draws a dotted average line, labelled in the active unit', () => {
+    const container = sizedContainer(600, 200);
+    const chart = createProfileChart(container);
+    chart.setData(SAMPLES);
+    const line = container.querySelector('.profile-average-line');
+    const y = Number(line.getAttribute('y1'));
+    assert.equal(line.getAttribute('y2'), line.getAttribute('y1'));
+    assert.ok(y > 12 && y < 176, `average line at ${y} should sit inside the plot`);
+    // 1000 m in 450 s of moving time is 8 km/h, i.e. a 7:30 /km pace.
+    assert.equal(container.querySelector('.profile-average-label').textContent, 'avg 8.0');
+
+    chart.setOptions({ metric: 'pace' });
+    assert.equal(container.querySelector('.profile-average-label').textContent, 'avg 7:30');
+  });
+
+  it('takes the average line away with the speed series', () => {
+    const container = sizedContainer(600, 200);
+    const chart = createProfileChart(container);
+    chart.setData(SAMPLES);
+    chart.setOptions({ showSpeed: false });
+    assert.equal(container.querySelector('.profile-average-line'), null);
+    assert.equal(container.querySelector('.profile-average-label'), null);
   });
 
   it('reports the hovered sample, and null on leave', () => {

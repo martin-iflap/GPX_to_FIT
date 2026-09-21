@@ -140,6 +140,9 @@ sportControlEl.querySelectorAll('.segmented-option').forEach((btn) => {
       b.setAttribute('aria-selected', String(b === btn));
     });
     sportValue = btn.dataset.value;
+    // The avg-speed mode's default unit follows the sport (min/km for
+    // running, km/h otherwise) until the user picks one themselves.
+    startTimeToggle.refresh();
   });
 });
 
@@ -212,15 +215,37 @@ function getStartTime() {
   return startTimeField.getValue();
 }
 
+/**
+ * Total time the activity spends stopped, across both stop modes. The
+ * avg-speed entry adds this on top of the moving time, so the speed the user
+ * types is a moving speed rather than a stops-included one.
+ */
+function totalStopSeconds() {
+  return stopsModule.getStops().reduce((total, stop) => {
+    const seconds =
+      stop.mode === 'duration' ? stop.durationSeconds : (stop.departure.getTime() - stop.arrival.getTime()) / 1000;
+    return total + (Number.isFinite(seconds) ? seconds : 0);
+  }, 0);
+}
+
 const startTimeToggle = createTimeToggle({
   container: startTimeToggleContainer,
   variant: 'durationOrEnd',
   getReferenceTime: getStartTime,
+  speedMode: {
+    getTotalDistance: () => totalDistance,
+    getStopSeconds: totalStopSeconds,
+    getSport: () => sportValue,
+  },
   onChange: (result) => {
     startTimeResult = result;
     updateConvertAvailability();
   },
 });
+
+// Placing or deleting a stop changes the avg-speed mode's derived duration,
+// and neither happens through this module (see stops.js).
+stopsModule.setStopsChangeListener(() => startTimeToggle.refresh());
 
 startTimeField.setValue(new Date(Date.now() + 60_000));
 startTimeToggle.refresh();
@@ -281,8 +306,12 @@ async function handleFile(file) {
     routeSummaryEl.hidden = false;
     mapEmptyStateEl.hidden = true;
 
+    // The avg-speed mode divides by this route's distance, so it only has an
+    // answer once a GPX has actually parsed.
+    startTimeToggle.refresh();
+
     mapModule.renderRoute(points, anchorPlacer.handleRouteClick);
-    setStatus('Route loaded. Set a start time and duration, or click the route to add anchors.');
+    setStatus('Route loaded. Set a start time and a duration, end time or average speed, or click the route to add anchors.');
   } catch (error) {
     console.error(error);
     const { message, kind } = describeError(error);
@@ -335,6 +364,14 @@ runButton.addEventListener('click', async () => {
 
   try {
     setStatus('Converting…');
+    // Re-resolved here rather than reusing the cached startTimeResult: in
+    // avg-speed mode the duration is derived from the route and the stop
+    // list, so this is the one place guaranteed to be reading them as they
+    // are right now. getResult() is pure — it only re-reads the fields.
+    const resolvedTime = startTimeToggle.getResult();
+    if (!resolvedTime.isValid) {
+      return;
+    }
     const sportEnumName = sportValue === 'running' ? 'RUNNING' : 'HIKING';
     const anchorsPayload = anchorsModule.getAnchors().map((a) => ({
       distanceFromStart: a.distanceFromStart,
@@ -352,7 +389,7 @@ runButton.addEventListener('click', async () => {
     const convertedSport = sportValue;
     const { fitBytes, profile } = await convert({
       startIso: startTimeField.getValue().toISOString(),
-      durationSeconds: startTimeResult.durationSeconds,
+      durationSeconds: resolvedTime.durationSeconds,
       sportEnumName,
       anchors: anchorsPayload,
       stops: stopsPayload,

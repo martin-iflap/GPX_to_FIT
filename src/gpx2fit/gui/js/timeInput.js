@@ -1,11 +1,25 @@
-// Shared dual-mode time input: a segmented Duration/Absolute toggle, one
-// editable field for whichever mode is active, and a live-computed,
-// non-editable preview of the other value underneath. Used both for the
-// main start-time control ("Duration" / "End time") and for each anchor
-// popover ("Duration since start" / "Time of day") — same shape, different
-// mode pair, selected via `variant`.
+// Shared multimode time input: a segmented toggle, one editable field for
+// whichever mode is active, and a live-computed, non-editable preview of the
+// resulting value underneath. Used both for the main start-time control
+// ("Duration" / "End time") and for each anchor popover ("Duration since
+// start" / "Time of day") — same shape, different mode pair, selected via
+// `variant`.
+//
+// The main control gets one extra, opt-in mode: "Avg speed" (see the
+// `speedMode` option), which derives the duration from the route's distance
+// instead of asking for it. Every mode resolves to the same
+// `{ isValid, mode, resolvedDate, durationSeconds }` shape, so nothing
+// downstream — and nothing in `core/` — has to know which one produced it.
 
-import { formatClock, formatDateTime, formatDuration } from './format.js';
+import {
+  formatClock,
+  formatDateTime,
+  formatDistanceKm,
+  formatDuration,
+  formatPace,
+  formatSpeedKmh,
+  pad,
+} from './format.js';
 import { createDateTimeField, createDaySelector, createTimeField, linkSegmentPair } from './dateTimeField.js';
 
 /**
@@ -26,27 +40,93 @@ export function computeDayCount(referenceStart, totalDurationSeconds) {
 }
 
 const MINUTES_MAX = 59;
+const SECONDS_MAX = 59;
+// A tenth of a km/h is the finest anybody can honestly claim to hold.
+const SPEED_STEP_KMH = 0.1;
+
+// The avg-speed quick-picks: the band a person on foot plausibly holds for a
+// whole activity, so the common case is one click instead of typing. Anything
+// outside it (or between two entries) is still typed into the boxes.
+const PACE_PRESET_MIN_SECONDS = 3 * 60 + 30; // 3:30 /km
+const PACE_PRESET_MAX_SECONDS = 7 * 60 + 30; // 7:30 /km
+const PACE_PRESET_STEP_SECONDS = 30;
+const SPEED_PRESET_MIN_KMH = 3;
+const SPEED_PRESET_MAX_KMH = 10;
+const SPEED_PRESET_STEP_KMH = 0.5;
+
+/** The label a unit is written as, both on the switch button and in the preview. */
+function unitLabel(unit) {
+  return unit === 'speed' ? 'km/h' : 'min/km';
+}
+
+/**
+ * The quick-pick list for one speed unit, in ascending label order (3:30 →
+ * 7:30, 3.0 → 10.0) so each list reads the way its numbers do rather than
+ * the way its speeds do — they run opposite ways, and the number is what the
+ * eye scans. Each entry carries its own m/s so a pick can fill the boxes
+ * through the same `writeSpeedMps` the unit switch uses.
+ * @param {'pace'|'speed'} unit
+ * @returns {{label: string, metersPerSecond: number}[]}
+ */
+function unitPresets(unit) {
+  const presets = [];
+  if (unit === 'speed') {
+    // Counted in tenths rather than adding 0.5 repeatedly, which drifts into
+    // values like 7.499999999999999 and then labels them "7.5" anyway.
+    const stepTenths = SPEED_PRESET_STEP_KMH * 10;
+    for (let tenths = SPEED_PRESET_MIN_KMH * 10; tenths <= SPEED_PRESET_MAX_KMH * 10; tenths += stepTenths) {
+      const kmh = tenths / 10;
+      presets.push({ label: kmh.toFixed(1), metersPerSecond: kmh / 3.6 });
+    }
+    return presets;
+  }
+  for (let seconds = PACE_PRESET_MIN_SECONDS; seconds <= PACE_PRESET_MAX_SECONDS; seconds += PACE_PRESET_STEP_SECONDS) {
+    presets.push({ label: `${Math.floor(seconds / 60)}:${pad(seconds % 60)}`, metersPerSecond: 1000 / seconds });
+  }
+  return presets;
+}
+
+/**
+ * Strips everything that isn't a digit or the first decimal point, so a typed
+ * "4.5" survives the filter in `wireNumericBox` but "4.5.2" doesn't.
+ * @param {string} value
+ * @returns {string}
+ */
+function keepDecimalDigits(value) {
+  const filtered = value.replace(/[^0-9.]/g, '');
+  const firstDot = filtered.indexOf('.');
+  if (firstDot === -1) {
+    return filtered;
+  }
+  return filtered.slice(0, firstDot + 1) + filtered.slice(firstDot + 1).replace(/\./g, '');
+}
 
 /**
  * Gives a plain text input the two things the duration boxes actually used
  * `<input type="number">` for: digits-only entry and Up/Down stepping.
  *
  * They can't be number inputs any more because number inputs refuse to report
- * a caret position (`selectionStart` throws), and without one the
+ * a caret position (`selectionStart` throws). And without one the
  * edge-triggered left/right navigation in `linkSegmentPair` has no way to tell
  * an arrow at the end of the hours box from an arrow in the middle of it. The
  * only thing lost is the native spinner, which also leaves the pair looking
  * like the HH:MM boxes it sits beside.
  *
  * @param {HTMLInputElement} input
- * @param {{max?: number|null}} [options] - upper bound for stepping only, as
- *   `max` on a number input was: a typed 90 minutes still resolves as 1h30m.
+ * @param {{max?: number|null, decimal?: boolean, step?: number}} [options] -
+ *   `max` is an upper bound for stepping only, as `max` on a number input was:
+ *   a typed 90 minutes still resolves as 1h30m. `decimal` allows a single
+ *   decimal point through the filter (the km/h box; every other box here is
+ *   whole-number) and rounds each step back to one decimal place, since
+ *   repeated 0.1 steps otherwise drift into 4.300000000000001.
  */
-function wireNumericBox(input, { max = null } = {}) {
+function wireNumericBox(input, { max = null, decimal = false, step = 1 } = {}) {
+  const clean = (value) => (decimal ? keepDecimalDigits(value) : value.replace(/\D/g, ''));
+
   input.addEventListener('input', () => {
-    const digits = input.value.replace(/\D/g, '');
-    if (digits !== input.value) {
-      input.value = digits;
+    const cleaned = clean(input.value);
+    if (cleaned !== input.value) {
+      input.value = cleaned;
     }
   });
 
@@ -56,13 +136,33 @@ function wireNumericBox(input, { max = null } = {}) {
     }
     // Left as-is these would jump the caret to one end of the value instead.
     event.preventDefault();
-    const current = Number(input.value.replace(/\D/g, '')) || 0;
-    const stepped = current + (event.key === 'ArrowUp' ? 1 : -1);
-    input.value = String(Math.min(Math.max(stepped, 0), max ?? Number.MAX_SAFE_INTEGER));
+    const current = Number(clean(input.value)) || 0;
+    const stepped = current + (event.key === 'ArrowUp' ? step : -step);
+    const clamped = Math.min(Math.max(stepped, 0), max ?? Number.MAX_SAFE_INTEGER);
+    input.value = String(decimal ? Math.round(clamped * 10) / 10 : clamped);
     // A native spinner fires 'input' too, so everything downstream (the digit
     // filter above, the preview) stays on one path.
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
+}
+
+/**
+ * Builds one `text` + `inputMode="numeric"` box — every editable number in
+ * this module is exactly this shape (see `wireNumericBox` for why they can't
+ * be `type="number"`).
+ * @param {string} ariaLabel
+ * @param {string} [placeholder] - the duration boxes default to "0" instead,
+ *   so only the speed boxes, which start empty, carry one
+ * @returns {HTMLInputElement}
+ */
+function createNumericInput(ariaLabel, placeholder = '') {
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.inputMode = 'numeric';
+  input.className = 'text-input duration-input';
+  input.placeholder = placeholder;
+  input.setAttribute('aria-label', ariaLabel);
+  return input;
 }
 
 /**
@@ -109,6 +209,21 @@ function wireNumericBox(input, { max = null } = {}) {
  *   departure toggle, which has no reasonable time to pre-fill but should
  *   still open on the same tab as its arrival toggle); ignored if
  *   `initialTimeOfDay` is set, since that already forces the other-key tab
+ * @param {{getTotalDistance: () => number|null, getStopSeconds: () => number,
+ *   getSport: () => string}} [opts.speedMode] - opt-in third tab, "Avg speed",
+ *   honored only by the 'durationOrEnd' variant so the anchor/stop popovers
+ *   keep exactly their own two (or zero) modes. The entered speed is a
+ *   **moving** speed: the duration resolves to
+ *   `getTotalDistance() / speed + getStopSeconds()`, which is both how people
+ *   talk about pace and the reason this mode can never produce a duration too
+ *   short for its own stops (combine.py's stop-budget InputError). The unit
+ *   defaults from `getSport()` (min/km for running, km/h otherwise) until the
+ *   user picks one, mirroring profilePanel.js metric default; the single
+ *   button beside the boxes always names the *other* unit, so it reads as the
+ *   alternative rather than repeating the suffix next to it. Focusing a box
+ *   opens a quick-pick list (see `unitPresets`). All three getters are
+ *   re-read on every resolve, so the derived duration follows the route, the
+ *   sport and the stop list as they change.
  * @returns {{ refresh: () => void, getResult: () => object }} `refresh()`
  *   re-resolves and re-renders the preview against the current reference
  *   time (call this if `getReferenceTime()`'s value changes elsewhere);
@@ -124,10 +239,17 @@ export function createTimeToggle({
   initialDayOffset,
   initialDurationSeconds,
   initialMode,
+  speedMode,
 }) {
   const isDurationOnly = variant === 'durationOnly';
   const state = { mode: 'duration', dayOffset: 0 };
   const otherKey = variant === 'durationOrEnd' ? 'end' : 'timeOfDay';
+  // Scoped deliberately: an anchor or stop popover has no "whole route" to
+  // divide by, so the third tab only exists on the main start-time control.
+  const speedEnabled = variant === 'durationOrEnd' && Boolean(speedMode);
+  // Null until the user clicks a unit themselves; until then the sport picks
+  // it (see currentUnit). Same shape as profilePanel.js `chosenMetric`.
+  let chosenUnit = null;
   // Consumed once, the first time refreshDaySelector runs (see below).
   // After that the day selector's own click handler is the only thing that
   // should move it, so a later, unrelated refresh doesn't keep snapping the
@@ -150,8 +272,17 @@ export function createTimeToggle({
   otherBtn.textContent = variant === 'durationOrEnd' ? 'End time' : 'Time of day';
   otherBtn.setAttribute('role', 'tab');
 
+  const speedBtn = document.createElement('button');
+  speedBtn.type = 'button';
+  speedBtn.className = 'segmented-option';
+  speedBtn.textContent = 'Avg speed';
+  speedBtn.setAttribute('role', 'tab');
+
   if (!isDurationOnly) {
     modesEl.append(durationBtn, otherBtn);
+  }
+  if (speedEnabled) {
+    modesEl.append(speedBtn);
   }
 
   const fieldsEl = document.createElement('div');
@@ -160,34 +291,84 @@ export function createTimeToggle({
   const durationFields = document.createElement('div');
   durationFields.className = 'duration-fields';
 
+  function createSuffix(text) {
+    const el = document.createElement('span');
+    el.className = 'input-suffix';
+    el.textContent = text;
+    return el;
+  }
+
   // type="text" + inputMode="numeric", not type="number" — see wireNumericBox.
-  const hoursInput = document.createElement('input');
-  hoursInput.type = 'text';
-  hoursInput.inputMode = 'numeric';
+  const hoursInput = createNumericInput('Hours');
   hoursInput.value = '0';
-  hoursInput.className = 'text-input duration-input';
-  hoursInput.setAttribute('aria-label', 'Hours');
-
-  const hoursSuffix = document.createElement('span');
-  hoursSuffix.className = 'input-suffix';
-  hoursSuffix.textContent = 'h';
-
-  const minutesInput = document.createElement('input');
-  minutesInput.type = 'text';
-  minutesInput.inputMode = 'numeric';
+  const minutesInput = createNumericInput('Minutes');
   minutesInput.value = '0';
-  minutesInput.className = 'text-input duration-input';
-  minutesInput.setAttribute('aria-label', 'Minutes');
 
-  const minutesSuffix = document.createElement('span');
-  minutesSuffix.className = 'input-suffix';
-  minutesSuffix.textContent = 'm';
-
-  durationFields.append(hoursInput, hoursSuffix, minutesInput, minutesSuffix);
+  durationFields.append(hoursInput, createSuffix('h'), minutesInput, createSuffix('m'));
 
   const otherFields = document.createElement('div');
   otherFields.className = 'other-fields hidden';
   fieldsEl.append(durationFields, otherFields);
+
+  // Both unit shapes are built once and the inactive one is just hidden, so
+  // switching units is a class toggle rather than a rebuild — which keeps the
+  // value each box holds while the user flips back and forth.
+  const speedFields = document.createElement('div');
+  speedFields.className = 'speed-fields hidden';
+
+  // .duration-fields is reused for the row layout: same centered box+suffix
+  // run as the h/m pair, which is exactly what these are. What is new is
+  // .speed-entry, holding the typed boxes *only* — the trailing unit suffix
+  // and the switch button are its siblings in the row. The quick-pick list
+  // hangs from .speed-entry, so drawing the line there is what decides where
+  // the list sits: anything else put inside it drags the list off the
+  // numbers by half that thing's width.
+  const kmhRow = document.createElement('div');
+  kmhRow.className = 'duration-fields speed-fields-row speed-fields-kmh';
+  const kmhEntry = document.createElement('div');
+  kmhEntry.className = 'speed-entry';
+  const kmhInput = createNumericInput('Average speed', '4.5');
+  kmhEntry.append(kmhInput);
+  kmhRow.append(kmhEntry, createSuffix('km/h'));
+
+  const paceRow = document.createElement('div');
+  paceRow.className = 'duration-fields speed-fields-row speed-fields-pace';
+  const paceEntry = document.createElement('div');
+  paceEntry.className = 'speed-entry';
+  const paceMinutesInput = createNumericInput('Pace minutes', '5');
+  const paceSecondsInput = createNumericInput('Pace seconds', '30');
+  // The ':' stays inside: it sits *between* two boxes, so it is part of the
+  // number, not a trailing unit label.
+  paceEntry.append(paceMinutesInput, createSuffix(':'), paceSecondsInput);
+  paceRow.append(paceEntry, createSuffix('/km'));
+
+  const speedInputs = [kmhInput, paceMinutesInput, paceSecondsInput];
+  // Which box a quick-pick should hand focus back to. Tracked rather than
+  // assumed, so picking a pace doesn't yank focus from the seconds box to the
+  // minutes one — and so restoring focus can't re-fire the *other* box's
+  // 'focus' listener and reopen the list we just closed.
+  let lastFocusedSpeedInput = null;
+
+  // One button rather than a two-option segmented control, sitting in the
+  // entry row itself: it is always labeled with the unit it switches *to*,
+  // so it states the alternative instead of restating what the suffix beside
+  // it already says. `applyUnit` moves it into whichever row is visible.
+  const unitButton = document.createElement('button');
+  unitButton.type = 'button';
+  unitButton.className = 'speed-unit-button';
+
+  // Quick-picks, opened by focusing any speed box — the same
+  // focus-to-open/click-to-fill shape as the start time's HH:MM field, and
+  // for the same reason: it costs no permanent room in the row and never
+  // stands between the user and simply typing a number.
+  const presetDropdown = document.createElement('div');
+  presetDropdown.className = 'time-field-dropdown speed-preset-dropdown hidden';
+
+  speedFields.append(kmhRow, paceRow);
+
+  if (speedEnabled) {
+    fieldsEl.append(speedFields);
+  }
 
   // 'end': a full Date from createDateTimeField. 'timeOfDay': just
   // {hours, minutes} from createTimeField (the day is always the reference's).
@@ -264,6 +445,43 @@ export function createTimeToggle({
     return ref instanceof Date && !Number.isNaN(ref.getTime()) ? ref : null;
   }
 
+  /** Which unit the speed boxes are in: the user's pick, else the sport's. */
+  function currentUnit() {
+    if (chosenUnit) {
+      return chosenUnit;
+    }
+    return speedMode?.getSport() === 'running' ? 'pace' : 'speed';
+  }
+
+  /** The route's length in meters, or null before a GPX has been loaded. */
+  function currentTotalDistance() {
+    const distance = speedMode?.getTotalDistance();
+    return Number.isFinite(distance) && distance > 0 ? distance : null;
+  }
+
+  /** Reads the boxes of one specific unit as m/s, or null if blank/zero. */
+  function speedMpsFor(unit) {
+    if (unit === 'speed') {
+      const kmh = Number(kmhInput.value);
+      return Number.isFinite(kmh) && kmh > 0 ? kmh / 3.6 : null;
+    }
+    const minutes = Number(paceMinutesInput.value) || 0;
+    const seconds = Number(paceSecondsInput.value) || 0;
+    const secondsPerKm = minutes * 60 + seconds;
+    return secondsPerKm > 0 ? 1000 / secondsPerKm : null;
+  }
+
+  /** Writes a speed into one unit's boxes, e.g. when the unit is switched. */
+  function writeSpeedMps(metersPerSecond, unit) {
+    if (unit === 'speed') {
+      kmhInput.value = (metersPerSecond * 3.6).toFixed(1);
+      return;
+    }
+    const secondsPerKm = Math.round(1000 / metersPerSecond);
+    paceMinutesInput.value = String(Math.floor(secondsPerKm / 60));
+    paceSecondsInput.value = pad(secondsPerKm % 60);
+  }
+
   function resolve() {
     const reference = currentReference();
     if (!reference) {
@@ -282,6 +500,29 @@ export function createTimeToggle({
       }
       const resolvedDate = new Date(reference.getTime() + durationSeconds * 1000);
       return { isValid: true, mode: 'duration', resolvedDate, durationSeconds };
+    }
+
+    if (state.mode === 'avgSpeed') {
+      const totalDistance = currentTotalDistance();
+      const speedMps = speedMpsFor(currentUnit());
+      if (totalDistance === null || speedMps === null) {
+        return { isValid: false };
+      }
+      // Moving speed, so stopped time is added on top rather than eaten out
+      // of it — see the `speedMode` docs above.
+      const movingSeconds = totalDistance / speedMps;
+      const stopSeconds = Math.max(0, speedMode.getStopSeconds() || 0);
+      const durationSeconds = Math.round(movingSeconds + stopSeconds);
+      const resolvedDate = new Date(reference.getTime() + durationSeconds * 1000);
+      return {
+        isValid: true,
+        mode: 'avgSpeed',
+        resolvedDate,
+        durationSeconds,
+        movingSeconds,
+        stopSeconds,
+        speedMps,
+      };
     }
 
     if (otherKey === 'end') {
@@ -316,9 +557,110 @@ export function createTimeToggle({
     state.dayOffset = daySelector.getDayIndex();
   }
 
+  /**
+   * Shows whichever unit's boxes are current, and moves the switch button and
+   * the quick-picks into that row — they belong to the visible entry, not to
+   * a unit, so there is only ever one of each in the DOM.
+   */
+  function applyUnit(unit) {
+    kmhRow.classList.toggle('hidden', unit !== 'speed');
+    paceRow.classList.toggle('hidden', unit !== 'pace');
+
+    const activeRow = unit === 'speed' ? kmhRow : paceRow;
+    const activeEntry = unit === 'speed' ? kmhEntry : paceEntry;
+    // Guarded because updatePreview re-applies the unit on every keystroke.
+    // Re-appending an element already in place is still a DOM move (which
+    // drops focus from it in some browsers), and the row only changes when
+    // the unit does — which is also the only thing the label depends on.
+    if (unitButton.parentElement === activeRow) {
+      return;
+    }
+    const otherUnit = unit === 'speed' ? 'pace' : 'speed';
+    unitButton.dataset.value = otherUnit;
+    unitButton.textContent = unitLabel(otherUnit);
+    unitButton.setAttribute('aria-label', `Switch to ${unitLabel(otherUnit)}`);
+    unitButton.title = `Switch to ${unitLabel(otherUnit)}`;
+    activeRow.append(unitButton);
+    activeEntry.append(presetDropdown);
+  }
+
+  function closePresets() {
+    presetDropdown.classList.add('hidden');
+  }
+
+  /**
+   * Fills the dropdown with the *current* unit's presets and opens it. Built
+   * on each open rather than once, since the list changes with the unit and a
+   * stale one would silently fill the wrong boxes.
+   */
+  function openPresets() {
+    const unit = currentUnit();
+    const presets = unitPresets(unit);
+    presetDropdown.innerHTML = '';
+    presets.forEach((preset) => {
+      const option = document.createElement('button');
+      option.type = 'button';
+      option.className = 'time-field-option';
+      option.textContent = preset.label;
+      // Selection fires on 'click', but focus-stealing is blocked on
+      // 'mousedown' — otherwise the box would blur (closing this dropdown)
+      // before the click ever registers.
+      option.addEventListener('mousedown', (event) => event.preventDefault());
+      option.addEventListener('click', () => {
+        writeSpeedMps(preset.metersPerSecond, unit);
+        closePresets();
+        lastFocusedSpeedInput?.focus();
+        updatePreview();
+      });
+      presetDropdown.append(option);
+    });
+    presetDropdown.classList.remove('hidden');
+
+    // Open on what's already entered, so a second visit doesn't start the
+    // user back at the top of a 15-row list.
+    const current = speedMpsFor(unit);
+    if (current === null) {
+      return;
+    }
+    let nearest = 0;
+    presets.forEach((preset, index) => {
+      if (Math.abs(preset.metersPerSecond - current) < Math.abs(presets[nearest].metersPerSecond - current)) {
+        nearest = index;
+      }
+    });
+    presetDropdown.scrollTop = presetDropdown.children[nearest].offsetTop;
+  }
+
+  /** What to say when the active mode can't resolve to a duration yet. */
+  function invalidMessage() {
+    if (state.mode === 'avgSpeed') {
+      return currentTotalDistance() === null
+        ? 'Upload a route first — the duration comes from its distance.'
+        : 'Enter an average speed greater than zero.';
+    }
+    return state.mode === 'duration' ? 'Enter a duration greater than zero.' : 'Enter a valid time.';
+  }
+
+  /**
+   * Spells out the whole derivation, because the number the user typed isn't
+   * the one that ends up in the FIT: they see which distance it was divided
+   * by, how much stopped time was added, and where that lands them.
+   */
+  function describeSpeedResult(result) {
+    const speedText = currentUnit() === 'pace' ? formatPace(result.speedMps) : formatSpeedKmh(result.speedMps);
+    const head = `${formatDistanceKm(currentTotalDistance())} at ${speedText} → ${formatDuration(result.movingSeconds)}`;
+    const body = result.stopSeconds > 0 ? `${head} moving + ${formatDuration(result.stopSeconds)} stopped` : head;
+    return `${body} · ends ${formatDateTime(result.resolvedDate)}`;
+  }
+
   function updatePreview() {
     const reference = currentReference();
     refreshDaySelector(reference);
+    // Re-applied every time so the sport's default unit follows a sport
+    // change, right up until the user picks a unit themselves.
+    if (speedEnabled) {
+      applyUnit(currentUnit());
+    }
     if (!reference) {
       previewEl.textContent =
         variant === 'durationOrEnd'
@@ -330,13 +672,14 @@ export function createTimeToggle({
 
     const result = resolve();
     if (!result.isValid) {
-      previewEl.textContent =
-        state.mode === 'duration' ? 'Enter a duration greater than zero.' : 'Enter a valid time.';
+      previewEl.textContent = invalidMessage();
       onChange({ isValid: false });
       return;
     }
 
-    if (state.mode === 'duration') {
+    if (state.mode === 'avgSpeed') {
+      previewEl.textContent = describeSpeedResult(result);
+    } else if (state.mode === 'duration') {
       if (isDurationOnly) {
         previewEl.textContent = `Duration: ${formatDuration(result.durationSeconds)}`;
       } else {
@@ -350,14 +693,29 @@ export function createTimeToggle({
     onChange(result);
   }
 
+  // One entry per tab that actually exists, so setMode stays a single loop
+  // rather than a duration-vs-other binary with a third case bolted on.
+  const modeTabs = [{ mode: 'duration', button: durationBtn, fields: durationFields }];
+  if (!isDurationOnly) {
+    modeTabs.push({ mode: otherKey, button: otherBtn, fields: otherFields });
+  }
+  if (speedEnabled) {
+    modeTabs.push({ mode: 'avgSpeed', button: speedBtn, fields: speedFields });
+  }
+
   function setMode(mode) {
     state.mode = mode;
-    durationBtn.classList.toggle('is-active', mode === 'duration');
-    otherBtn.classList.toggle('is-active', mode !== 'duration');
-    durationBtn.setAttribute('aria-selected', String(mode === 'duration'));
-    otherBtn.setAttribute('aria-selected', String(mode !== 'duration'));
-    durationFields.classList.toggle('hidden', mode !== 'duration');
-    otherFields.classList.toggle('hidden', mode === 'duration');
+    modeTabs.forEach((tab) => {
+      const isActive = tab.mode === mode;
+      tab.button.classList.toggle('is-active', isActive);
+      tab.button.setAttribute('aria-selected', String(isActive));
+      tab.fields.classList.toggle('hidden', !isActive);
+    });
+
+    if (speedEnabled && mode !== 'avgSpeed') {
+      // Otherwise it is still open, unfocused, when the tab comes back.
+      closePresets();
+    }
 
     if (mode === otherKey && endDateTimeField) {
       const reference = currentReference();
@@ -379,6 +737,55 @@ export function createTimeToggle({
   wireNumericBox(minutesInput, { max: MINUTES_MAX });
   [hoursInput, minutesInput].forEach((el) => el.addEventListener('input', updatePreview));
   linkSegmentPair(hoursInput, minutesInput);
+
+  if (speedEnabled) {
+    wireNumericBox(kmhInput, { decimal: true, step: SPEED_STEP_KMH });
+    wireNumericBox(paceMinutesInput);
+    wireNumericBox(paceSecondsInput, { max: SECONDS_MAX });
+    speedInputs.forEach((el) => el.addEventListener('input', updatePreview));
+    // The pace pair gets the same edge-arrow hopping as the h/m pair; the
+    // single km/h box has nowhere to hop to.
+    linkSegmentPair(paceMinutesInput, paceSecondsInput);
+
+    speedInputs.forEach((input) => {
+      input.addEventListener('focus', () => {
+        lastFocusedSpeedInput = input;
+        openPresets();
+      });
+      // Focus moves between the two pace boxes as part of normal typing, so
+      // only close once it has left the speed entry altogether.
+      input.addEventListener('blur', () => {
+        window.setTimeout(() => {
+          if (!speedInputs.includes(document.activeElement)) {
+            closePresets();
+          }
+        }, 0);
+      });
+      input.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+          input.blur();
+        }
+      });
+    });
+
+    unitButton.addEventListener('click', () => {
+      // Read both before switching: `dataset.value` is the unit being moved
+      // to, and the speed has to be read in the *old* unit so it carries
+      // across instead of the number jumping to a different meaning.
+      const unit = unitButton.dataset.value;
+      const carried = speedMpsFor(currentUnit());
+      chosenUnit = unit;
+      // The open list belongs to the unit being left behind.
+      closePresets();
+      applyUnit(unit);
+      if (carried !== null) {
+        writeSpeedMps(carried, unit);
+      }
+      updatePreview();
+    });
+
+    speedBtn.addEventListener('click', () => setMode('avgSpeed'));
+  }
 
   if (typeof initialDurationSeconds === 'number' && initialDurationSeconds > 0) {
     const totalMinutes = Math.round(initialDurationSeconds / 60);

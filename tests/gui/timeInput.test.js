@@ -261,4 +261,294 @@ describe('createTimeToggle', () => {
       assert.equal(result.resolvedDate.getDate(), 2);
     });
   });
+
+  describe('durationOrEnd variant, avg speed mode', () => {
+    const REFERENCE = new Date(2024, 0, 1, 10, 0);
+
+    // `state` is mutable so a test can move the route, the stops or the sport
+    // underneath the toggle, which is exactly what main.js does.
+    function mountSpeed({ totalDistance = 10_000, stopSeconds = 0, sport = 'hiking' } = {}) {
+      const state = { totalDistance, stopSeconds, sport };
+      const mounted = mount({
+        variant: 'durationOrEnd',
+        getReferenceTime: () => REFERENCE,
+        speedMode: {
+          getTotalDistance: () => state.totalDistance,
+          getStopSeconds: () => state.stopSeconds,
+          getSport: () => state.sport,
+        },
+      });
+      const modeButtons = mounted.container.querySelectorAll('.time-toggle-modes .segmented-option');
+      // Re-queried on each call rather than captured: the single unit button
+      // moves between the two entry rows as the unit changes.
+      const unitButton = () => mounted.container.querySelector('.speed-unit-button');
+      const presetLabels = () =>
+        [...mounted.container.querySelectorAll('.speed-preset-dropdown .time-field-option')].map((o) => o.textContent);
+      const pickPreset = (label) => {
+        const option = [...mounted.container.querySelectorAll('.speed-preset-dropdown .time-field-option')].find(
+          (o) => o.textContent === label,
+        );
+        assert.ok(option, `no preset labelled ${label}`);
+        option.click();
+      };
+      return { ...mounted, state, modeButtons, unitButton, presetLabels, pickPreset };
+    }
+
+    function isHidden(container, selector) {
+      return container.querySelector(selector).classList.contains('hidden');
+    }
+
+    it('adds the third tab only when speedMode is supplied', () => {
+      const withSpeed = mountSpeed();
+      assert.equal(withSpeed.modeButtons.length, 3);
+      assert.equal(withSpeed.modeButtons[2].textContent, 'Avg speed');
+
+      const { container } = mount({ variant: 'durationOrEnd', getReferenceTime: () => REFERENCE });
+      assert.equal(container.querySelectorAll('.time-toggle-modes .segmented-option').length, 2);
+    });
+
+    it('leaves the anchor and stop variants with their own modes only', () => {
+      const anchorToggle = mount({
+        variant: 'durationOrTimeOfDay',
+        getReferenceTime: () => REFERENCE,
+        // Ignored for this variant: an anchor popover has no whole route to divide by.
+        speedMode: { getTotalDistance: () => 10_000, getStopSeconds: () => 0, getSport: () => 'hiking' },
+      });
+      assert.equal(anchorToggle.container.querySelectorAll('.segmented-option').length, 2);
+
+      const stopToggle = mount({
+        variant: 'durationOnly',
+        getReferenceTime: () => REFERENCE,
+        speedMode: { getTotalDistance: () => 10_000, getStopSeconds: () => 0, getSport: () => 'hiking' },
+      });
+      assert.equal(stopToggle.container.querySelectorAll('.segmented-option').length, 0);
+    });
+
+    it('derives the duration from the route distance', () => {
+      const { container, toggle, modeButtons } = mountSpeed();
+      modeButtons[2].click();
+      setValueAndDispatchInput(container.querySelector('input[aria-label="Average speed"]'), '5');
+
+      const result = toggle.getResult();
+      assert.equal(result.isValid, true);
+      assert.equal(result.mode, 'avgSpeed');
+      // 10 km at 5 km/h is 2 hours.
+      assert.equal(result.durationSeconds, 2 * 3600);
+      assert.equal(result.resolvedDate.getTime(), REFERENCE.getTime() + 2 * 3600 * 1000);
+    });
+
+    it('adds stopped time on top, so the entered speed is a moving speed', () => {
+      const { container, toggle, modeButtons } = mountSpeed({ stopSeconds: 1800 });
+      modeButtons[2].click();
+      setValueAndDispatchInput(container.querySelector('input[aria-label="Average speed"]'), '5');
+
+      const result = toggle.getResult();
+      assert.equal(result.durationSeconds, 2 * 3600 + 1800);
+      assert.equal(result.movingSeconds, 2 * 3600);
+      assert.equal(result.stopSeconds, 1800);
+    });
+
+    it('follows the stop list as it changes', () => {
+      const { container, toggle, state, modeButtons } = mountSpeed();
+      modeButtons[2].click();
+      setValueAndDispatchInput(container.querySelector('input[aria-label="Average speed"]'), '5');
+      assert.equal(toggle.getResult().durationSeconds, 2 * 3600);
+
+      state.stopSeconds = 600;
+      assert.equal(toggle.getResult().durationSeconds, 2 * 3600 + 600);
+    });
+
+    it('resolves a pace to the same duration as the equivalent speed', () => {
+      const { container, toggle, modeButtons, unitButton } = mountSpeed();
+      modeButtons[2].click();
+      unitButton().click(); // hiking opens on km/h, so this switches to min/km
+      setValueAndDispatchInput(container.querySelector('input[aria-label="Pace minutes"]'), '12');
+      setValueAndDispatchInput(container.querySelector('input[aria-label="Pace seconds"]'), '0');
+
+      // 12:00 /km is 5 km/h, so 10 km is still 2 hours.
+      assert.equal(toggle.getResult().durationSeconds, 2 * 3600);
+    });
+
+    it('is invalid before a route has been loaded', () => {
+      const { container, toggle, modeButtons } = mountSpeed({ totalDistance: null });
+      modeButtons[2].click();
+      setValueAndDispatchInput(container.querySelector('input[aria-label="Average speed"]'), '5');
+
+      assert.equal(toggle.getResult().isValid, false);
+      assert.match(container.querySelector('.time-toggle-preview').textContent, /Upload a route first/);
+    });
+
+    it('is invalid at a blank or zero speed', () => {
+      const { container, toggle, modeButtons } = mountSpeed();
+      modeButtons[2].click();
+      assert.equal(toggle.getResult().isValid, false);
+
+      setValueAndDispatchInput(container.querySelector('input[aria-label="Average speed"]'), '0');
+      assert.equal(toggle.getResult().isValid, false);
+      assert.match(container.querySelector('.time-toggle-preview').textContent, /greater than zero/);
+    });
+
+    it('accepts a decimal speed, which the digit filter would otherwise eat', () => {
+      const { container, toggle, modeButtons } = mountSpeed({ totalDistance: 9000 });
+      modeButtons[2].click();
+      const speedInput = container.querySelector('input[aria-label="Average speed"]');
+      setValueAndDispatchInput(speedInput, '4.5');
+
+      assert.equal(speedInput.value, '4.5');
+      // 9 km at 4.5 km/h is 2 hours.
+      assert.equal(toggle.getResult().durationSeconds, 2 * 3600);
+    });
+
+    it('defaults the unit to the sport, until the user picks one', () => {
+      const running = mountSpeed({ sport: 'running' });
+      assert.equal(isHidden(running.container, '.speed-fields-pace'), false);
+      assert.equal(isHidden(running.container, '.speed-fields-kmh'), true);
+
+      const hiking = mountSpeed({ sport: 'hiking' });
+      assert.equal(isHidden(hiking.container, '.speed-fields-kmh'), false);
+
+      // Still unchosen, so a sport change moves it.
+      hiking.state.sport = 'running';
+      hiking.toggle.refresh();
+      assert.equal(isHidden(hiking.container, '.speed-fields-pace'), false);
+    });
+
+    it('keeps an explicitly picked unit when the sport changes', () => {
+      const { container, toggle, state, unitButton } = mountSpeed({ sport: 'hiking' });
+      unitButton().click(); // to min/km
+
+      state.sport = 'running';
+      toggle.refresh();
+      assert.equal(isHidden(container, '.speed-fields-pace'), false);
+
+      unitButton().click(); // back to km/h
+      state.sport = 'hiking';
+      toggle.refresh();
+      assert.equal(isHidden(container, '.speed-fields-kmh'), false);
+    });
+
+    it('offers one unit button, always naming the unit it switches to', () => {
+      const { container, unitButton } = mountSpeed({ sport: 'hiking' });
+      assert.equal(container.querySelectorAll('.speed-unit-button').length, 1);
+
+      // Hiking opens on km/h, so the button offers the alternative.
+      assert.equal(unitButton().textContent, 'min/km');
+      assert.equal(unitButton().closest('.speed-fields-row').classList.contains('speed-fields-kmh'), true);
+
+      unitButton().click();
+      assert.equal(container.querySelectorAll('.speed-unit-button').length, 1);
+      assert.equal(unitButton().textContent, 'km/h');
+      assert.equal(unitButton().closest('.speed-fields-row').classList.contains('speed-fields-pace'), true);
+    });
+
+    it('carries the value across a unit switch', () => {
+      const { container, unitButton } = mountSpeed({ sport: 'hiking' });
+      setValueAndDispatchInput(container.querySelector('input[aria-label="Average speed"]'), '4');
+
+      unitButton().click(); // to min/km
+      // 4 km/h is 15:00 /km.
+      assert.equal(container.querySelector('input[aria-label="Pace minutes"]').value, '15');
+      assert.equal(container.querySelector('input[aria-label="Pace seconds"]').value, '00');
+
+      unitButton().click(); // back to km/h
+      assert.equal(container.querySelector('input[aria-label="Average speed"]').value, '4.0');
+    });
+
+    it('spells out the derivation in the preview', () => {
+      const { container, modeButtons } = mountSpeed({ stopSeconds: 1800 });
+      modeButtons[2].click();
+      setValueAndDispatchInput(container.querySelector('input[aria-label="Average speed"]'), '5');
+
+      const preview = container.querySelector('.time-toggle-preview').textContent;
+      assert.match(preview, /10\.00 km at 5\.0 km\/h/);
+      assert.match(preview, /2h 00m moving \+ 0h 30m stopped/);
+    });
+
+    describe('quick-picks', () => {
+      function isDropdownOpen(container) {
+        return !container.querySelector('.speed-preset-dropdown').classList.contains('hidden');
+      }
+
+      it('stays closed until a speed box is focused', () => {
+        const { container, modeButtons } = mountSpeed();
+        modeButtons[2].click();
+        assert.equal(isDropdownOpen(container), false);
+
+        container.querySelector('input[aria-label="Average speed"]').focus();
+        assert.equal(isDropdownOpen(container), true);
+      });
+
+      it('lists 3.0 to 10.0 km/h in half-steps', () => {
+        const { container, modeButtons, presetLabels } = mountSpeed({ sport: 'hiking' });
+        modeButtons[2].click();
+        container.querySelector('input[aria-label="Average speed"]').focus();
+
+        const labels = presetLabels();
+        assert.equal(labels.length, 15);
+        assert.equal(labels[0], '3.0');
+        assert.equal(labels[1], '3.5');
+        assert.equal(labels.at(-1), '10.0');
+      });
+
+      it('lists 3:30 to 7:30 /km in half-minute steps', () => {
+        const { container, modeButtons, presetLabels } = mountSpeed({ sport: 'running' });
+        modeButtons[2].click();
+        container.querySelector('input[aria-label="Pace minutes"]').focus();
+
+        const labels = presetLabels();
+        assert.equal(labels.length, 9);
+        assert.deepEqual(labels, ['3:30', '4:00', '4:30', '5:00', '5:30', '6:00', '6:30', '7:00', '7:30']);
+      });
+
+      it('fills the boxes from a picked speed and closes', () => {
+        const { container, toggle, modeButtons, pickPreset } = mountSpeed({ sport: 'hiking' });
+        modeButtons[2].click();
+        container.querySelector('input[aria-label="Average speed"]').focus();
+        pickPreset('5.0');
+
+        assert.equal(container.querySelector('input[aria-label="Average speed"]').value, '5.0');
+        assert.equal(isDropdownOpen(container), false);
+        // 10 km at 5 km/h is 2 hours — the pick has to reach the result, not
+        // just the box, which means it went through updatePreview.
+        assert.equal(toggle.getResult().durationSeconds, 2 * 3600);
+      });
+
+      it('fills both boxes from a picked pace', () => {
+        const { container, toggle, modeButtons, pickPreset } = mountSpeed({ sport: 'running' });
+        modeButtons[2].click();
+        container.querySelector('input[aria-label="Pace seconds"]').focus();
+        pickPreset('4:30');
+
+        assert.equal(container.querySelector('input[aria-label="Pace minutes"]').value, '4');
+        assert.equal(container.querySelector('input[aria-label="Pace seconds"]').value, '30');
+        // 4:30 /km over 10 km is 45 minutes.
+        assert.equal(toggle.getResult().durationSeconds, 45 * 60);
+      });
+
+      it('rebuilds the list for the unit in use', () => {
+        const { container, modeButtons, unitButton, presetLabels } = mountSpeed({ sport: 'hiking' });
+        modeButtons[2].click();
+        container.querySelector('input[aria-label="Average speed"]').focus();
+        assert.equal(presetLabels()[0], '3.0');
+
+        unitButton().click(); // to min/km
+        container.querySelector('input[aria-label="Pace minutes"]').focus();
+        assert.equal(presetLabels()[0], '3:30');
+      });
+    });
+
+    it('leaves the duration tab untouched when switching away and back', () => {
+      const { container, toggle, modeButtons } = mountSpeed();
+      const hoursInput = container.querySelector('input[aria-label="Hours"]');
+      setValueAndDispatchInput(hoursInput, '3');
+
+      modeButtons[2].click();
+      modeButtons[0].click();
+
+      assert.equal(hoursInput.value, '3');
+      const result = toggle.getResult();
+      assert.equal(result.mode, 'duration');
+      assert.equal(result.durationSeconds, 3 * 3600);
+    });
+  });
 });
