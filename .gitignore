@@ -3,3 +3,10 @@
 src/gpx2fit/gui/js/config.js
 node_modules/
 .coverage
+__pycache__/
+.pytest_cache/
+
+# ignore corpus and tuning output
+corpus/
+tuning_out/
+*.fit
