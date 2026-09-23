@@ -5,11 +5,29 @@ conventions: timestamps are Unix epoch milliseconds, positions are already in
 degrees by the time fit-tool hands them over, and a timer STOP/START pair marks
 a real pause. Decoding a FIT file re-emits enum fields as plain ints, so every
 comparison here is against `SomeEnum.MEMBER.value` rather than the member.
+
+Reading is deliberately split in two:
+
+- `decode_fit_bytes` is the `fit_tool` walk, and it is by far the most
+  expensive thing the harness does — fit-tool builds a field object per field
+  per record, which is tens of millions of objects for a corpus. It extracts
+  raw numbers and nothing else, so `tuning/cache.py` can keep its result on
+  disk and never pay for the same file twice.
+- `read_decoded_activity` is every judgment call made about those numbers —
+  which points to drop, which sport to pace as, what to report as suspect.
+  None of it is cached, so changing a rule takes effect on the next run
+  without anyone having to remember to clear a cache.
+
+`read_reference_activity` is the two of them together, which is what a caller
+with no cache (and every test) wants.
 """
 
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 
+import numpy as np
 from fit_tool.fit_file import FitFile
 from fit_tool.profile.messages.event_message import EventMessage
 from fit_tool.profile.messages.record_message import RecordMessage
@@ -55,6 +73,13 @@ _MAX_NONMONOTONIC_SHARE = 0.01
 _TELEPORT_MPS = 50.0
 _MAX_TELEPORT_SHARE = 0.01
 
+# Some writers (seen from phone apps) stamp a whole batch of records with one
+# second — up to a dozen records and a few hundred metres sharing a timestamp,
+# then time catches up. The positions are real but the timing between them is
+# gone, so speed over that ground is unmeasurable. Clean recordings put under
+# 2.5% of their distance into zero-time legs; the batched ones put 66-88%.
+_MAX_UNTIMED_DISTANCE_SHARE = 0.05
+
 # Any of these ends a timer run; devices differ in which they emit.
 _TIMER_STOP_EVENT_TYPES = frozenset({
     EventType.STOP.value,
@@ -62,6 +87,54 @@ _TIMER_STOP_EVENT_TYPES = frozenset({
     EventType.STOP_DISABLE.value,
     EventType.STOP_DISABLE_ALL.value,
 })
+
+# Columns of DecodedFit.records and DecodedFit.events, named so the arrays can
+# be read without counting.
+_TIMESTAMP, _LAT, _LON, _ELEVATION, _DISTANCE = range(5)
+# The same, for modules that patch the records before they're read (elevation.py).
+RECORD_COLUMNS = {"timestamp": _TIMESTAMP, "lat": _LAT, "lon": _LON, "elevation": _ELEVATION, "distance": _DISTANCE}
+_EVENT_TIMESTAMP, _EVENT, _EVENT_TYPE = range(3)
+
+
+@dataclass(frozen=True)
+class DecodedFit:
+    """The raw numbers one FIT file carried, with no interpretation applied.
+
+    Deliberately plain arrays rather than objects: this is what gets cached, so
+    it has to survive a round trip through a file and stay meaningful if the
+    rules elsewhere in this module change. A missing field is NaN — the "no
+    elevation" sentinel and the rest of the reading rules live in
+    `read_decoded_activity`, on the uncached side.
+
+    Attributes:
+        records: One row per positioned record, in file order, with columns
+            (timestamp_ms, lat, lon, elevation, distance).
+        events: One row per timestamped event, in file order, with columns
+            (timestamp_ms, event, event_type).
+        sport_value: The raw FIT sport, from the SportMessage where there is
+            one and the SessionMessage otherwise.
+        elapsed_seconds: SessionMessage.total_elapsed_time, if present.
+        timer_seconds: SessionMessage.total_timer_time, if present.
+        distance_m: SessionMessage.total_distance, if present.
+        ascent_m: SessionMessage.total_ascent, if present.
+    """
+    records: np.ndarray
+    events: np.ndarray
+    sport_value: int | None
+    elapsed_seconds: float | None
+    timer_seconds: float | None
+    distance_m: float | None
+    ascent_m: float | None
+
+    @property
+    def totals(self) -> "ActivityTotals":
+        """The device's own summary, as the rest of the harness reads it."""
+        return ActivityTotals(
+            elapsed_seconds=self.elapsed_seconds,
+            timer_seconds=self.timer_seconds,
+            distance_m=self.distance_m,
+            ascent_m=self.ascent_m,
+        )
 
 
 @dataclass(frozen=True)
@@ -132,16 +205,19 @@ def _to_datetime(fit_timestamp: int | float) -> datetime:
     return datetime.fromtimestamp(fit_timestamp / 1000, tz=timezone.utc)
 
 
-def _sport_value(sport: Sport | int | None) -> int | None:
-    """Normalize a message's sport field to a plain int.
+def _enum_value(field: object) -> int:
+    """Normalize a message field to a plain int.
 
     Decoding re-emits enum fields as ints, but fit-tool's setters accept and
     store the enum member, so a message can hold either depending on where it
     came from.
     """
-    if sport is None:
-        return None
-    return sport.value if isinstance(sport, Sport) else sport
+    return int(field.value) if isinstance(field, Enum) else int(field)  # pyrefly: ignore
+
+
+def _sport_value(sport: Sport | int | None) -> int | None:
+    """A message's sport field as a plain int — see `_enum_value`."""
+    return None if sport is None else _enum_value(sport)
 
 
 def _resolve_sport(name: str, sport_value: int | None) -> SportType:
@@ -162,7 +238,7 @@ def _resolve_sport(name: str, sport_value: int | None) -> SportType:
     return _FIT_SPORT_TO_SPORT_TYPE[sport_value]
 
 
-def _extract_pauses(events: list[EventMessage]) -> list[tuple[datetime, datetime]]:
+def _extract_pauses(events: np.ndarray) -> list[tuple[datetime, datetime]]:
     """Pair up timer stop/start events into (stop, resume) pause intervals.
 
     Only Event.TIMER events are considered, in file order. A stop with no
@@ -173,16 +249,17 @@ def _extract_pauses(events: list[EventMessage]) -> list[tuple[datetime, datetime
     pauses: list[tuple[datetime, datetime]] = []
     stopped_at: datetime | None = None
 
-    for event in events:
-        if event.event != Event.TIMER.value or event.timestamp is None:
+    for row in events.tolist():
+        event, event_type = row[_EVENT], row[_EVENT_TYPE]
+        if event != Event.TIMER.value:
             continue
-        timestamp = _to_datetime(event.timestamp)
-        if event.event_type in _TIMER_STOP_EVENT_TYPES:
+        timestamp = _to_datetime(row[_EVENT_TIMESTAMP])
+        if event_type in _TIMER_STOP_EVENT_TYPES:
             # A second stop without an intervening start keeps the earlier one:
             # the pause began at the first.
             if stopped_at is None:
                 stopped_at = timestamp
-        elif event.event_type == EventType.START.value:
+        elif event_type == EventType.START.value:
             if stopped_at is not None and timestamp > stopped_at:
                 pauses.append((stopped_at, timestamp))
             stopped_at = None
@@ -190,14 +267,13 @@ def _extract_pauses(events: list[EventMessage]) -> list[tuple[datetime, datetime
     return pauses
 
 
-def _point_from_record(record: RecordMessage) -> TrackPoint | None:
-    """Build a TrackPoint from one RecordMessage, or None if it can't anchor a position in time.
+def _record_row(record: RecordMessage) -> list[float] | None:
+    """One record's raw numbers, or None if it can't anchor a position in time.
 
     A record without a position or without a timestamp is not an error — a
-    watch emits some before it has a GPS fix — so those are skipped rather
-    than raised on. Elevation falls back to 0.0, which is this project's
-    sentinel for "no elevation data" (see gpx_reader.parse_gpx_bytes);
-    prepare.py's quality gates reject a track that is mostly sentinel.
+    watch emits some before it has a GPS — and it can't be used by any
+    downstream rule either. So it is dropped here rather than cached as a row
+    of holes. Everything else that is absent stays absent, as NaN.
     """
     if record.timestamp is None or record.position_lat is None or record.position_long is None:
         return None
@@ -205,20 +281,38 @@ def _point_from_record(record: RecordMessage) -> TrackPoint | None:
     elevation = record.enhanced_altitude
     if elevation is None:
         elevation = record.altitude
-    if elevation is None:
-        elevation = 0.0
 
-    return TrackPoint(
-        lat=record.position_lat,
-        lon=record.position_long,
-        elevation=elevation,
-        # Provisional: the device's own cumulative distance where it has one.
-        # prepare.py recomputes this with the project's own haversine after
-        # resampling, so the model sees the same distance basis a parsed GPX
-        # would give it. Kept here so `totals` can be cross-checked as read.
-        distance_from_start=record.distance if record.distance is not None else 0.0,
-        timestamp=_to_datetime(record.timestamp),
-    )
+    return [
+        float(record.timestamp),
+        float(record.position_lat),
+        float(record.position_long),
+        math.nan if elevation is None else float(elevation),
+        math.nan if record.distance is None else float(record.distance),
+    ]
+
+
+def _points_from_records(records: np.ndarray) -> list[TrackPoint]:
+    """Build the TrackPoints for a decoded activity.
+
+    Elevation falls back to 0.0, which is this project's sentinel for "no
+    elevation data" (see gpx_reader.parse_gpx_bytes); prepare.py's quality
+    gates reject a track that is mostly sentinel.
+    """
+    return [
+        TrackPoint(
+            lat=row[_LAT],
+            lon=row[_LON],
+            elevation=0.0 if math.isnan(row[_ELEVATION]) else row[_ELEVATION],
+            # Provisional: the device's own cumulative distance where it has
+            # one. prepare.py recomputes this with the project's own haversine
+            # after resampling, so the model sees the same distance basis a
+            # parsed GPX would give it. Kept here so `totals` can be
+            # cross-checked as read.
+            distance_from_start=0.0 if math.isnan(row[_DISTANCE]) else row[_DISTANCE],
+            timestamp=_to_datetime(row[_TIMESTAMP]),
+        )
+        for row in records.tolist()
+    ]
 
 
 def _drop_nonmonotonic(points: list[TrackPoint]) -> tuple[list[TrackPoint], int]:
@@ -268,6 +362,22 @@ def _drop_teleports(points: list[TrackPoint]) -> tuple[list[TrackPoint], int]:
     return kept, len(points) - len(kept)
 
 
+def _untimed_distance(points: list[TrackPoint]) -> tuple[float, float]:
+    """Metres covered between records sharing a timestamp, and metres in total.
+
+    Haversine rather than the device's distance field, which the writers that
+    batch timestamps tend to leave empty. Run it after `_drop_teleports`, so a
+    null-island record can't inflate either figure.
+    """
+    untimed = total = 0.0
+    for previous, point in zip(points, points[1:]):
+        metres = distance_meters(previous.lat, previous.lon, point.lat, point.lon)
+        total += metres
+        if point.timestamp == previous.timestamp:
+            untimed += metres
+    return untimed, total
+
+
 def _fill_missing_distances(points: list[TrackPoint]) -> None:
     """Replace a run of device distances with cumulative haversine, if the device gave none.
 
@@ -285,17 +395,80 @@ def _fill_missing_distances(points: list[TrackPoint]) -> None:
         current.distance_from_start = cumulative
 
 
-def read_reference_activity(
-    fit_bytes: bytes, name: str, sport_override: SportType | None = None
-) -> ReferenceActivity:
-    """Decode a real FIT activity into a ReferenceActivity.
+def decode_fit_bytes(fit_bytes: bytes, name: str) -> DecodedFit:
+    """Walk a FIT file once and pull out the raw numbers, with no interpretation.
 
-    Walks the decoded records once, collecting position/elevation/time from
-    every RecordMessage, timer pauses from the EventMessages, and the sport and
-    summary totals from the SportMessage/SessionMessage.
+    This is the expensive half of reading an activity — fit-tool rebuilds a
+    field object per field per record — and the only half whose result depends
+    on nothing but the file's own bytes. That is what makes it cacheable; see
+    `tuning/cache.py`.
 
     Args:
         fit_bytes: The complete .fit file contents.
+        name: Identifier used in the error message if it can't be decoded.
+
+    Returns:
+        The file's records, events, declared sport and summary totals.
+    Raises:
+        UnreadableActivity: If fit-tool can't decode the file at all.
+    """
+    try:
+        decoded = FitFile.from_bytes(fit_bytes, allow_trailing_bytes=True)
+    except Exception as error:  # fit-tool raises several unrelated types here.
+        raise UnreadableActivity(f"{name}: could not decode the FIT file ({error}).") from error
+
+    record_rows: list[list[float]] = []
+    event_rows: list[list[float]] = []
+    session: SessionMessage | None = None
+    sport_value: int | None = None
+
+    for record in decoded.records:
+        message = record.message
+        if isinstance(message, RecordMessage):
+            row = _record_row(message)
+            if row is not None:
+                record_rows.append(row)
+        elif isinstance(message, EventMessage):
+            if message.timestamp is not None and message.event is not None and message.event_type is not None:
+                event_rows.append([
+                    float(message.timestamp),
+                    float(_enum_value(message.event)),
+                    float(_enum_value(message.event_type)),
+                ])
+        elif isinstance(message, SportMessage):
+            if message.sport is not None:
+                sport_value = _sport_value(message.sport)
+        elif isinstance(message, SessionMessage):
+            session = message
+            # Only a fallback: a SportMessage, when present, is the file's
+            # own declaration and wins.
+            if sport_value is None and message.sport is not None:
+                sport_value = _sport_value(message.sport)
+
+    ascent = session.total_ascent if session is not None else None
+    return DecodedFit(
+        records=np.array(record_rows, dtype=float).reshape(len(record_rows), 5),
+        events=np.array(event_rows, dtype=float).reshape(len(event_rows), 3),
+        sport_value=sport_value,
+        elapsed_seconds=session.total_elapsed_time if session is not None else None,
+        timer_seconds=session.total_timer_time if session is not None else None,
+        distance_m=session.total_distance if session is not None else None,
+        ascent_m=float(ascent) if ascent is not None else None,
+    )
+
+
+def read_decoded_activity(
+    decoded: DecodedFit, name: str, sport_override: SportType | None = None
+) -> ReferenceActivity:
+    """Turn one file's raw numbers into a ReferenceActivity, applying every reading rule.
+
+    Split from `decode_fit_bytes` so that all of this — which points to drop,
+    which sport to pace as, what counts as untrustworthy — runs on every read,
+    including a cached one. A rule changed here takes effect immediately; no
+    cache has to be cleared for it.
+
+    Args:
+        decoded: The file's raw numbers, from `decode_fit_bytes`.
         name: Identifier used in reports and error messages, normally the
             source file's stem.
         sport_override: Pace as this sport whatever the file declares. Exports
@@ -309,38 +482,14 @@ def read_reference_activity(
     Returns:
         The activity, with its points carrying their real recorded timestamps.
     Raises:
-        UnreadableActivity: If the file can't be decoded, declares a sport the
-            pacing model has no gait for (and none was supplied), carries fewer
-            than two positioned records, has mostly backward timestamps, or
-            is mostly positions no gait could have reached.
+        UnreadableActivity: If the file declares a sport the pacing model has
+            no gait for (and none was supplied), carries fewer than two
+            positioned records, has mostly backward timestamps, covers much of
+            its distance between records sharing one timestamp, or is mostly
+            positions no gait could have reached.
     """
-    try:
-        decoded = FitFile.from_bytes(fit_bytes, allow_trailing_bytes=True)
-    except Exception as error:  # fit-tool raises several unrelated types here.
-        raise UnreadableActivity(f"{name}: could not decode the FIT file ({error}).") from error
-
-    points: list[TrackPoint] = []
-    events: list[EventMessage] = []
-    session: SessionMessage | None = None
-    sport_value: int | None = None
-
-    for record in decoded.records:
-        message = record.message
-        if isinstance(message, RecordMessage):
-            point = _point_from_record(message)
-            if point is not None:
-                points.append(point)
-        elif isinstance(message, EventMessage):
-            events.append(message)
-        elif isinstance(message, SportMessage):
-            if message.sport is not None:
-                sport_value = _sport_value(message.sport)
-        elif isinstance(message, SessionMessage):
-            session = message
-            # Only a fallback: a SportMessage, when present, is the file's
-            # own declaration and wins.
-            if sport_value is None and message.sport is not None:
-                sport_value = _sport_value(message.sport)
+    points = _points_from_records(decoded.records)
+    sport_value = decoded.sport_value
 
     if len(points) < 2:
         raise UnreadableActivity(
@@ -360,6 +509,16 @@ def read_reference_activity(
         )
 
     points, teleports = _drop_teleports(points)
+    # Checked before the teleport share: with the one-second floor in
+    # `_drop_teleports`, ordinary GPS scatter inside a batch of shared
+    # timestamps reads as 50+ m/s, and would be reported as teleports.
+    untimed, total = _untimed_distance(points)
+    if untimed > _MAX_UNTIMED_DISTANCE_SHARE * total:
+        raise UnreadableActivity(
+            f"{name}: {untimed / total:.0%} of the distance ({untimed / 1000:.1f} of "
+            f"{total / 1000:.1f} km) was recorded between records sharing a timestamp, "
+            "so the recorded timing can't be trusted."
+        )
     if teleports > _MAX_TELEPORT_SHARE * (len(points) + teleports):
         raise UnreadableActivity(
             f"{name}: {teleports} of {len(points) + teleports} records are nowhere near the "
@@ -373,21 +532,26 @@ def read_reference_activity(
     _fill_missing_distances(points)
 
     sport = sport_override if sport_override is not None else _resolve_sport(name, sport_value)
-    totals = ActivityTotals(
-        elapsed_seconds=session.total_elapsed_time if session is not None else None,
-        timer_seconds=session.total_timer_time if session is not None else None,
-        distance_m=session.total_distance if session is not None else None,
-        ascent_m=float(session.total_ascent) if session is not None and session.total_ascent is not None else None,
-    )
 
     return ReferenceActivity(
         name=name,
         sport=sport,
         track=Track(points=points, sport=sport, activity_name=name),
-        pauses=_extract_pauses(events),
-        totals=totals,
+        pauses=_extract_pauses(decoded.events),
+        totals=decoded.totals,
         fit_sport=sport_value if sport_value is not None else -1,
         nonmonotonic_dropped=dropped,
         teleports_dropped=teleports,
         sport_overridden=sport_override is not None,
     )
+
+
+def read_reference_activity(
+    fit_bytes: bytes, name: str, sport_override: SportType | None = None
+) -> ReferenceActivity:
+    """Decode a real FIT activity into a ReferenceActivity, in one step.
+
+    `decode_fit_bytes` followed by `read_decoded_activity` — what a caller with
+    no decode cache wants. See those two for the arguments and what is raised.
+    """
+    return read_decoded_activity(decode_fit_bytes(fit_bytes, name), name, sport_override)

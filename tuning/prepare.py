@@ -22,8 +22,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from xml.sax.saxutils import escape
 
+import numpy as np
+
 from gpx2fit.core.gpx_reader import parse_gpx_bytes
 from gpx2fit.core.models import SportType, Track, TrackPoint
+from tuning.elevation import NOISY_ELEVATION_RATIO, elevation_noise
 from tuning.fit_reader import ReferenceActivity, UnreadableActivity
 
 
@@ -269,14 +272,27 @@ def _check_quality(
         )
 
     # Elevation: 0.0 is this project's "no data" sentinel (see gpx_reader).
+    # Both failures are fixable by `--dem-elevation` (tuning/elevation.py),
+    # which swaps in DEM heights before this gate ever sees the file.
+    hint = " Pass --dem-elevation to take it from a DEM instead."
     sentinel = sum(1 for point in points if point.elevation == 0.0)
     if sentinel > _MAX_SENTINEL_ELEVATION_SHARE * len(points):
         raise UnreadableActivity(
-            f"{name}: {sentinel}/{len(points)} points have no elevation, so gradients can't be computed."
+            f"{name}: {sentinel}/{len(points)} points have no elevation, so gradients can't be computed.{hint}"
         )
     elevations = {round(point.elevation) for point in points}
     if len(elevations) < 2:
-        raise UnreadableActivity(f"{name}: elevation never changes, so there is no gradient to model.")
+        raise UnreadableActivity(f"{name}: elevation never changes, so there is no gradient to model.{hint}")
+    noise = elevation_noise(
+        np.array([point.lat for point in points]),
+        np.array([point.lon for point in points]),
+        np.array([point.elevation for point in points]),
+    )
+    if noise > NOISY_ELEVATION_RATIO:
+        raise UnreadableActivity(
+            f"{name}: elevation changes {noise:.1f} m per metre travelled (median), which is GPS"
+            f" altitude noise rather than terrain.{hint}"
+        )
 
     # Dropouts: a long gap in *moving* time, i.e. one the timer didn't explain.
     threshold = _dropout_threshold(elapsed, max_gap_seconds)

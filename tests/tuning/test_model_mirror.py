@@ -25,6 +25,7 @@ from gpx2fit.core.pacing.curve_selection import (
 from tests.core.conftest import START, anchor, flat_track, leg_distances, rolling_track, timestamp_of
 from tuning.model import (
     PacingParams,
+    TrackModel,
     curve_shape_for,
     max_speed_ratio_for,
     predict_elapsed,
@@ -75,12 +76,13 @@ class TestMirrorMatchesCombine:
         gradients = calculate_gradient(track)
         distances = leg_distances(track)
         params = PacingParams()
+        model = TrackModel.from_legs(gradients, distances)
 
-        assert tobler_weight_for(gradients, distances, active_seconds, sport, params) == pytest.approx(
+        assert tobler_weight_for(model, active_seconds, sport, params) == pytest.approx(
             resolve_tobler_weight(gradients, distances, active_seconds, sport)
         )
         core_ratio = resolve_max_speed_ratio(gradients, distances, sport)
-        assert max_speed_ratio_for(gradients, distances, sport, params) == pytest.approx(core_ratio)
+        assert max_speed_ratio_for(model, sport, params) == pytest.approx(core_ratio)
 
         mine = curve_shape_for(core_ratio, params)
         theirs = resolve_curve_shape(core_ratio)
@@ -122,9 +124,11 @@ class TestPredictElapsedShape:
         assert spread(1.3) < spread(2.5)
 
     def test_verticality_is_higher_on_steeper_terrain(self):
-        gentle = resolve(rolling_track(3000.0, 30.0), SportType.HIKING, 3000.0, PacingParams())
-        steep = resolve(rolling_track(3000.0, 300.0), SportType.HIKING, 3000.0, PacingParams())
-        assert steep.verticality > gentle.verticality
+        def settings_for(climb_per_km: float):
+            track = rolling_track(3000.0, climb_per_km)
+            return resolve(TrackModel.build(track), SportType.HIKING, 3000.0, PacingParams())
+
+        assert settings_for(300.0).verticality > settings_for(30.0).verticality
 
     def test_rejects_a_track_too_short_to_pace(self):
         with pytest.raises(ValueError):

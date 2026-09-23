@@ -249,19 +249,26 @@ class ProfileSample:
 
 
 # TODO:
-# 1. Tune curve_selection.resolve_tobler_weight's six constants against real activities - the shape is in, the numbers are guesses.
+# 1. Finish building the tuning harness and actually tune the constants.
 # 2. Fine tune surface + max speed capping speed adjustments. Check out the todos.
-# 3. Improve the overall page, we also want to add support and privacy pages and a few other things.
-# 4. Add a smoothness slider to the frontend to allow the user to adjust the smoothness/variance of the pacing model.
-# 5. Make sure the app works also for phones.
+#    Max speed capping is round one of the tuning harness. Surface weights are the last phase - they need a
+#    Valhalla trace_attributes fetch per corpus activity, which the harness doesn't do yet.
+# 4. Add support page and polish the site.
+# 5. Check the app on different devices and screen sizes.
+# Check the code, test, efficiency everything.
+# PUBLISH V-1.0.0 on cloudflare pages (we don't even need custom domain for this).
+# create a new branch.
 # 6. Add cycling sport type. It will require separate speed computing logic and all.
 # 7. Make the default map display pre-gpx-loaded an image to save requests (or just try to save the map somehow).
 # 8. It would be absolutely crazy if the users could drag and adjust speed in the graph and it would recalculate based on their changes.
 # 9. Would it make sense to convert some of the code to Cython or Numpy?
-# 10. Perhaps in the future take a real activity and use it as model for fine tuning the pacing model. Basically just give it to Claude and ask
-#     it to fine tune the model so its getting closer and closer to reality. I could do something myself but i am kinda lazy so will see.
 
+# Make sure the tests are good and are actually testing the code not just passing.
+# check whether we want to convert some of the logic from JS to Python.
 
-# take a look at the PyCharm MCP for Claude
 # (Get-ChildItem -Recurse -File | Get-Content | Measure-Object).Count
 # rm ~/.claude/projects/YOUR_PROJECT_FOLDER/SESSION_ID.jsonl - delete session history if not needed anymore
+
+# Solve the Strava device name issue. for v1 perhaps just update the about page.
+# don't forget fit writer is set up as forerunner 240!
+# test without serial number and with random name.

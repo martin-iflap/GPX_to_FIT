@@ -137,7 +137,8 @@ class TestFitConstants:
         result = fit_constants(_corpus(), rounds=1, holdout=0.0)
         params = result.params_for(SportType.HIKING)
         assert params.ratio_flat == result.sport_params[SportType.HIKING]["ratio_flat"]
-        assert params.uphill_fill == result.global_params.uphill_fill
+        assert params.uphill_fill == result.sport_params[SportType.HIKING]["uphill_fill"]
+        assert params.hilly_verticality == result.global_params.hilly_verticality
 
     def test_fitted_globals_stay_inside_their_search_ranges(self):
         result = fit_constants(_corpus(), rounds=1, holdout=0.0)

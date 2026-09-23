@@ -18,14 +18,29 @@ and the smoothness scale are all log-linear), and because it makes "12% too
 fast" symmetric with "12% too slow". Both speeds are over the same distance
 with the same total time, so absolute fitness has already canceled — which is
 exactly the part of an athlete that shouldn't generalize anyway.
+
+Recorded elevation can't be fully trusted, so two parts of the scoring are
+robust on purpose. Buckets steeper than `MAX_SCORED_GRADIENT` are left out of
+the objective. A residual past `HUBER_DELTA` counts linearly rather than
+squared, so no single stretch can dominate.
+
+**Two ways in, one calculation.** `compare` answers "how did this activity do?"
+and builds the whole report. `objective_of` answers only "what is the single
+number?", for the thousands of evaluations a sweep or a fit makes. Both go
+through `_evaluate`, so the number a fit minimizes is by construction the
+number a report prints. What makes the second cheap is `ActivityContext`: the
+bucket layout, the real seconds per bucket and the `TrackModel` behind them
+depend on the activity and the gradient window, never on the constants being
+searched, so they are computed once and reused.
 """
 
 import math
 from dataclasses import dataclass
 
+import numpy as np
+
 from gpx2fit.core.models import SportType
-from gpx2fit.core.pacing.gradient import GRADIENT_WINDOW_M, calculate_gradient
-from tuning.model import PacingParams, ResolvedSettings, leg_distances_of, predict_elapsed
+from tuning.model import PacingParams, ResolvedSettings, TrackModel, elapsed_from_model
 from tuning.prepare import PreparedActivity
 
 # Residual buckets are at least this long. Anything shorter is inside the
@@ -35,8 +50,25 @@ DEFAULT_BUCKET_M = 100.0
 
 # Upper edges of the gradient bands the residuals are grouped into. Narrow
 # around flat (where most distance falls and small errors matter) and wide at
-# the extremes (where there is rarely enough distance to say much).
-GRADIENT_BAND_EDGES = (-0.25, -0.18, -0.12, -0.08, -0.04, -0.015, 0.015, 0.04, 0.08, 0.12, 0.18, 0.25)
+# the extremes (where there is rarely enough distance to say much). The outer
+# +/-40% edges match MAX_SCORED_GRADIENT, so unscored buckets get their own rows.
+GRADIENT_BAND_EDGES = (
+    -0.40, -0.25, -0.18, -0.12, -0.08, -0.04, -0.015, 0.015, 0.04, 0.08, 0.12, 0.18, 0.25, 0.40,
+)
+
+# Buckets steeper than this either way are paced but not scored. On the real
+# corpus (2026-09-23), running buckets above +40% made up 3% of running distance
+# and were covered at 4.2x the activity's mean speed. Those are elevation jumps,
+# not running. Between 25% and 40% speeds still fall with steepness the way real
+# climbing does, so the cut sits where the data breaks, not at the last band.
+MAX_SCORED_GRADIENT = 0.40
+
+# Residuals beyond this (in log space, about +/-35%) count linearly instead of
+# squared. Squaring let a few bad buckets outweigh everything else: before the cut
+# above, the broken running buckets alone were about half of running's squared
+# error. Inside the threshold the loss is exactly the squared residual, so a
+# clean activity scores the same as it did under plain RMS.
+HUBER_DELTA = 0.3
 
 
 @dataclass(frozen=True)
@@ -53,6 +85,8 @@ class Bucket:
         real_relative_speed: Real speed as a multiple of the activity's mean.
         log_residual: log(model_speed / real_speed). Positive means the model
             ran this stretch faster than the athlete did.
+        scored: Whether this bucket counts toward the objective. False past
+            MAX_SCORED_GRADIENT, where the elevation data can't be trusted.
     """
     start_m: float
     distance_m: float
@@ -62,6 +96,7 @@ class Bucket:
     model_relative_speed: float
     real_relative_speed: float
     log_residual: float
+    scored: bool = True
 
 
 @dataclass(frozen=True)
@@ -106,8 +141,11 @@ class ActivityReport:
         moving_seconds: Moving time, which the model matched exactly.
         settings: What the model resolved for this workout, and the features
             behind it — the regressors stage two fits against.
-        objective: Distance-weighted RMS of the bucketed log residual. The
-            single number a sweep minimizes.
+        objective: Distance-weighted root-mean Huber loss of the scored
+            buckets' log residuals. It equals their RMS whenever no residual
+            exceeds HUBER_DELTA. The single number a sweep minimizes.
+        unscored_distance_m: Distance in buckets past MAX_SCORED_GRADIENT,
+            which are paced and listed but left out of the objective.
         mean_log_residual: Distance-weighted mean log residual. Near zero by
             construction and *not* a finding: the model matched the activity's
             total time exactly, so running too fast in one band forces running
@@ -128,6 +166,7 @@ class ActivityReport:
     moving_seconds: float
     settings: ResolvedSettings
     objective: float
+    unscored_distance_m: float
     mean_log_residual: float
     max_time_error_seconds: float
     max_time_error_at_m: float
@@ -142,7 +181,7 @@ class ActivityReport:
         return abs(self.max_time_error_seconds) / self.moving_seconds if self.moving_seconds > 0 else 0.0
 
 
-def _bucket_boundaries(distances: list[float], bucket_m: float) -> list[int]:
+def _bucket_boundaries(distances: np.ndarray, bucket_m: float) -> list[int]:
     """Point indexes splitting the track into buckets of at least `bucket_m`.
 
     Always starts at 0 and ends at the last point. A short final bucket is
@@ -151,7 +190,7 @@ def _bucket_boundaries(distances: list[float], bucket_m: float) -> list[int]:
     """
     boundaries = [0]
     accumulated = 0.0
-    for index, leg in enumerate(distances, start=1):
+    for index, leg in enumerate(distances.tolist(), start=1):
         accumulated += leg
         if accumulated >= bucket_m:
             boundaries.append(index)
@@ -163,6 +202,241 @@ def _bucket_boundaries(distances: list[float], bucket_m: float) -> list[int]:
         else:
             boundaries.append(last)
     return boundaries
+
+
+@dataclass(frozen=True)
+class ActivityContext:
+    """One activity laid out for comparison, with everything parameter-free precomputed.
+
+    A sweep scores the same activity hundreds of times and a fit thousands,
+    always over the same buckets against the same recording. Only the model's
+    own seconds change between evaluations, so everything else — the bucket
+    layout, each bucket's distance, mean gradient and real time, and the
+    `TrackModel` carrying the curves — is computed once, here.
+
+    The one thing that *would* invalidate it is a different
+    `gradient_window_m`, since that changes both the gradients and the minimum
+    bucket length. `_evaluate` checks for that rather than trusting a caller to
+    remember it.
+
+    Attributes:
+        prepared: The activity this was built from.
+        model: Its TrackModel, holding the gradients, leg distances and curves.
+        bucket_m: The bucket length actually used, after the window floor.
+        multipliers: Optional per-leg surface multipliers, for the surface phase.
+        lo: First point index of each bucket.
+        hi: Last point index of each bucket.
+        start_m: Where each bucket begins, in metres from the start.
+        bucket_distance: Each bucket's length.
+        bucket_gradient: Each bucket's distance-weighted mean gradient.
+        real_seconds: What the athlete took over each bucket.
+        mean_speed: The activity's overall mean speed, which the reported
+            relative speeds are expressed against.
+        scored: Per bucket, whether it counts toward the objective.
+        huber_delta: Where the loss turns from squared to linear; None for
+            plain RMS.
+    """
+    prepared: PreparedActivity
+    model: TrackModel
+    bucket_m: float
+    multipliers: np.ndarray | None
+    lo: np.ndarray
+    hi: np.ndarray
+    start_m: np.ndarray
+    bucket_distance: np.ndarray
+    bucket_gradient: np.ndarray
+    real_seconds: np.ndarray
+    mean_speed: float
+    scored: np.ndarray
+    huber_delta: float | None
+
+    @classmethod
+    def build(
+        cls,
+        prepared: PreparedActivity,
+        params: PacingParams | None = None,
+        bucket_m: float = DEFAULT_BUCKET_M,
+        multipliers: list[float] | None = None,
+        gradients: list[float] | None = None,
+        max_gradient: float | None = MAX_SCORED_GRADIENT,
+        huber_delta: float | None = HUBER_DELTA,
+    ) -> "ActivityContext":
+        """Lay an activity out for scoring.
+
+        Args:
+            prepared: The activity, from `prepare.prepare_reference`.
+            params: The constants this context will be scored at. Only
+                `gradient_window_m` is read — it fixes the gradients and the
+                bucket floor, and every later evaluation must agree with it.
+            bucket_m: Residual bucket length. Values below the gradient window
+                are raised to it: finer than the gradient smoothing there is
+                nothing for the model to be right or wrong about.
+            multipliers: Optional per-leg surface multipliers.
+            gradients: Already-computed gradients for this track and window.
+            max_gradient: Buckets steeper than this either way are left out of
+                the objective. None scores every bucket.
+            huber_delta: See HUBER_DELTA. None scores with plain RMS.
+
+        Raises:
+            ValueError: If the activity has no distance, no moving time, or no
+                bucket that carries pace information.
+        """
+        params = params or PacingParams()
+        track = prepared.track
+        if track.total_distance <= 0 or prepared.moving_seconds <= 0:
+            raise ValueError(f"{prepared.name}: needs positive distance and moving time to compare.")
+
+        model = TrackModel.build(track, params, gradients)
+        bucket_m = max(bucket_m, params.gradient_window_m)
+
+        boundaries = np.asarray(_bucket_boundaries(model.leg_distances, bucket_m))
+        lo, hi = boundaries[:-1], boundaries[1:]
+
+        point_distance = np.asarray([point.distance_from_start for point in track.points], dtype=float)
+        reference = np.asarray(prepared.reference_elapsed, dtype=float)
+        bucket_distance = point_distance[hi] - point_distance[lo]
+        real_seconds = reference[hi] - reference[lo]
+
+        # A zero-distance or zero-time bucket carries no pace information.
+        # prepare() already removed stops, so this is rare and not an error.
+        keep = (bucket_distance > 0) & (real_seconds > 0)
+        lo, hi = lo[keep], hi[keep]
+        bucket_distance, real_seconds = bucket_distance[keep], real_seconds[keep]
+        if len(lo) == 0:
+            raise ValueError(f"{prepared.name}: no usable residual buckets.")
+
+        # Distance-weighted mean gradient per bucket, from running totals so
+        # each bucket costs a subtraction rather than a pass over its legs.
+        weighted = np.concatenate(([0.0], np.cumsum(model.gradients * model.leg_distances)))
+        spanned = np.concatenate(([0.0], np.cumsum(model.leg_distances)))
+        span = spanned[hi] - spanned[lo]
+        bucket_gradient = np.where(span > 0, (weighted[hi] - weighted[lo]) / np.where(span > 0, span, 1.0), 0.0)
+
+        scored = (
+            np.ones(len(lo), dtype=bool) if max_gradient is None
+            else np.abs(bucket_gradient) <= max_gradient
+        )
+        if not scored.any():
+            raise ValueError(f"{prepared.name}: every bucket is steeper than {max_gradient:.0%}; nothing to score.")
+
+        return cls(
+            prepared=prepared,
+            model=model,
+            bucket_m=bucket_m,
+            multipliers=None if multipliers is None else np.asarray(multipliers, dtype=float),
+            lo=lo,
+            hi=hi,
+            start_m=point_distance[lo],
+            bucket_distance=bucket_distance,
+            bucket_gradient=bucket_gradient,
+            real_seconds=real_seconds,
+            mean_speed=track.total_distance / prepared.moving_seconds,
+            scored=scored,
+            huber_delta=huber_delta,
+        )
+
+
+@dataclass(frozen=True)
+class _Evaluation:
+    """One activity scored at one set of parameters — everything both callers need."""
+    settings: ResolvedSettings
+    predicted: np.ndarray
+    keep: np.ndarray
+    scored: np.ndarray
+    model_seconds: np.ndarray
+    model_speed: np.ndarray
+    real_speed: np.ndarray
+    log_residual: np.ndarray
+    objective: float
+    unscored_distance_m: float
+    mean_log_residual: float
+
+
+def _root_mean_loss(residual: np.ndarray, weight: np.ndarray, huber_delta: float | None) -> float:
+    """Weighted root-mean Huber loss, scaled so it reads as an RMS.
+
+    Squared inside `huber_delta` and linear outside it. The linear part is
+    written as 2·delta·|r| - delta², which joins the squared part smoothly at
+    the threshold. So with no residual past the threshold this is exactly the
+    weighted RMS, and numbers stay comparable with runs from before the
+    change.
+    """
+    magnitude = np.abs(residual)
+    if huber_delta is None:
+        loss = magnitude ** 2
+    else:
+        loss = np.where(magnitude <= huber_delta, magnitude ** 2, 2 * huber_delta * magnitude - huber_delta ** 2)
+    return float(math.sqrt((loss * weight).sum() / weight.sum()))
+
+
+def _evaluate(context: ActivityContext, params: PacingParams) -> _Evaluation:
+    """Pace the activity at these parameters and reduce it to bucketed residuals.
+
+    The single place the objective is defined, so a fit and a report can never
+    disagree about what they are measuring.
+
+    Unscored buckets are still paced, since the app would pace them too, but
+    the model's time is re-matched over the scored buckets alone. Without
+    that, the time the model gives an unscored bucket would push every scored
+    bucket's residual by the same amount. That shift depends on the
+    parameters, so the fit would chase it, which is how bad elevation
+    data steered the constants before. With nothing unscored the factor is
+    1.0 and nothing changes.
+
+    Raises:
+        ValueError: If `params` uses a different gradient window than the
+            context was laid out for, or if no bucket survives.
+    """
+    if params.gradient_window_m != context.model.gradient_window_m:
+        raise ValueError(
+            f"{context.prepared.name}: this context was built for a "
+            f"{context.model.gradient_window_m:.0f} m gradient window but was scored at "
+            f"{params.gradient_window_m:.0f} m. Build a new context for that window."
+        )
+
+    prepared = context.prepared
+    predicted, settings = elapsed_from_model(
+        context.model, prepared.sport, prepared.moving_seconds, params, context.multipliers
+    )
+
+    model_seconds = predicted[context.hi] - predicted[context.lo]
+    keep = model_seconds > 0
+    scored = context.scored[keep]
+    if not scored.any():
+        raise ValueError(f"{prepared.name}: no usable residual buckets.")
+
+    real_seconds = context.real_seconds[keep]
+    model_seconds = model_seconds[keep]
+    model_seconds = model_seconds * (real_seconds[scored].sum() / model_seconds[scored].sum())
+    distance = context.bucket_distance[keep]
+
+    model_speed = distance / model_seconds
+    real_speed = distance / real_seconds
+    log_residual = np.log(model_speed / real_speed)
+
+    scored_distance = distance[scored]
+    return _Evaluation(
+        settings=settings,
+        predicted=predicted,
+        keep=keep,
+        scored=scored,
+        model_seconds=model_seconds,
+        model_speed=model_speed,
+        real_speed=real_speed,
+        log_residual=log_residual,
+        objective=_root_mean_loss(log_residual[scored], scored_distance, context.huber_delta),
+        unscored_distance_m=float(distance[~scored].sum()),
+        mean_log_residual=float((log_residual[scored] * scored_distance).sum() / scored_distance.sum()),
+    )
+
+
+def objective_of(context: ActivityContext, params: PacingParams) -> float:
+    """The activity's objective alone — the fast path a sweep or a fit runs.
+
+    Identical to `compare(...).objective`, without building the report.
+    See `_evaluate` for what is raised.
+    """
+    return _evaluate(context, params).objective
 
 
 def _band_index(gradient: float) -> int:
@@ -211,6 +485,63 @@ def _pool_into_bands(buckets: list[Bucket], mean_log_residual: float) -> list[Gr
     return bands
 
 
+def report_of(context: ActivityContext, params: PacingParams | None = None) -> ActivityReport:
+    """The full report for an already-laid-out activity.
+
+    What `compare` does once it has a context; call this directly when the same
+    activity is also being scored repeatedly, so the layout is shared.
+    """
+    params = params or PacingParams()
+    prepared = context.prepared
+    evaluation = _evaluate(context, params)
+    keep = evaluation.keep
+
+    buckets = [
+        Bucket(
+            start_m=start,
+            distance_m=distance,
+            gradient=gradient,
+            model_seconds=model_seconds,
+            real_seconds=real_seconds,
+            model_relative_speed=model_speed / context.mean_speed,
+            real_relative_speed=real_speed / context.mean_speed,
+            log_residual=residual,
+            scored=scored,
+        )
+        for start, distance, gradient, model_seconds, real_seconds, model_speed, real_speed, residual, scored in zip(
+            context.start_m[keep].tolist(),
+            context.bucket_distance[keep].tolist(),
+            context.bucket_gradient[keep].tolist(),
+            evaluation.model_seconds.tolist(),
+            context.real_seconds[keep].tolist(),
+            evaluation.model_speed.tolist(),
+            evaluation.real_speed.tolist(),
+            evaluation.log_residual.tolist(),
+            evaluation.scored.tolist(),
+        )
+    ]
+
+    errors = evaluation.predicted - np.asarray(prepared.reference_elapsed, dtype=float)
+    worst = int(np.argmax(np.abs(errors)))
+
+    return ActivityReport(
+        name=prepared.name,
+        sport=prepared.sport,
+        distance_m=prepared.track.total_distance,
+        moving_seconds=prepared.moving_seconds,
+        settings=evaluation.settings,
+        objective=evaluation.objective,
+        unscored_distance_m=evaluation.unscored_distance_m,
+        mean_log_residual=evaluation.mean_log_residual,
+        max_time_error_seconds=float(errors[worst]),
+        max_time_error_at_m=prepared.track.points[worst].distance_from_start,
+        rms_time_error_seconds=float(math.sqrt((errors ** 2).sum() / len(errors))),
+        buckets=buckets,
+        bands=_pool_into_bands(buckets, evaluation.mean_log_residual),
+        notes=list(prepared.notes),
+    )
+
+
 def compare(
     prepared: PreparedActivity,
     params: PacingParams | None = None,
@@ -223,93 +554,18 @@ def compare(
     Args:
         prepared: The activity, from `prepare.prepare_reference`.
         params: The constants to run with. Defaults to today's shipped values.
-        bucket_m: Residual bucket length. Values below `GRADIENT_WINDOW_M` are
+        bucket_m: Residual bucket length. Values below the gradient window are
             raised to it — finer than the gradient smoothing there is nothing
             for the model to be right or wrong about.
         multipliers: Optional per-leg surface multipliers, for the surface phase.
         gradients: Already-computed gradients for this track and
-            `params.gradient_window_m`. A sweep holds the window fixed and
-            varies everything else, so recomputing them per evaluation is pure
-            waste — see `model.resolve`.
+            `params.gradient_window_m`.
 
     Returns:
         The report.
     Raises:
-        ValueError: If the prepared activity has no distance or no moving time.
+        ValueError: If the prepared activity has no distance, no moving time,
+            or no bucket that carries pace information.
     """
     params = params or PacingParams()
-    bucket_m = max(bucket_m, GRADIENT_WINDOW_M)
-
-    track = prepared.track
-    reference = prepared.reference_elapsed
-    moving_seconds = prepared.moving_seconds
-    total_distance = track.total_distance
-    if total_distance <= 0 or moving_seconds <= 0:
-        raise ValueError(f"{prepared.name}: needs positive distance and moving time to compare.")
-
-    if gradients is None:
-        gradients = calculate_gradient(track, params.gradient_window_m)
-    predicted, settings = predict_elapsed(
-        track, prepared.sport, moving_seconds, params, multipliers, gradients
-    )
-    distances = leg_distances_of(track)
-    mean_speed = total_distance / moving_seconds
-
-    boundaries = _bucket_boundaries(distances, bucket_m)
-    buckets: list[Bucket] = []
-    for lo, hi in zip(boundaries, boundaries[1:]):
-        bucket_distance = track.points[hi].distance_from_start - track.points[lo].distance_from_start
-        model_seconds = predicted[hi] - predicted[lo]
-        real_seconds = reference[hi] - reference[lo]
-        if bucket_distance <= 0 or model_seconds <= 0 or real_seconds <= 0:
-            # A zero-distance or zero-time bucket carries no pace information.
-            # prepare() already removed stops, so this is rare and not an error.
-            continue
-
-        model_speed = bucket_distance / model_seconds
-        real_speed = bucket_distance / real_seconds
-        legs = list(zip(gradients[lo:hi], distances[lo:hi]))
-        span = sum(leg for _, leg in legs)
-        gradient = sum(g * leg for g, leg in legs) / span if span > 0 else 0.0
-
-        buckets.append(Bucket(
-            start_m=track.points[lo].distance_from_start,
-            distance_m=bucket_distance,
-            gradient=gradient,
-            model_seconds=model_seconds,
-            real_seconds=real_seconds,
-            model_relative_speed=model_speed / mean_speed,
-            real_relative_speed=real_speed / mean_speed,
-            log_residual=math.log(model_speed / real_speed),
-        ))
-
-    if not buckets:
-        raise ValueError(f"{prepared.name}: no usable residual buckets.")
-
-    bucket_distance_total = sum(bucket.distance_m for bucket in buckets)
-    objective = math.sqrt(
-        sum(bucket.log_residual ** 2 * bucket.distance_m for bucket in buckets) / bucket_distance_total
-    )
-    mean_log_residual = (
-        sum(bucket.log_residual * bucket.distance_m for bucket in buckets) / bucket_distance_total
-    )
-
-    errors = [model - real for model, real in zip(predicted, reference)]
-    worst = max(range(len(errors)), key=lambda index: abs(errors[index]))
-    rms_error = math.sqrt(sum(error ** 2 for error in errors) / len(errors))
-
-    return ActivityReport(
-        name=prepared.name,
-        sport=prepared.sport,
-        distance_m=total_distance,
-        moving_seconds=moving_seconds,
-        settings=settings,
-        objective=objective,
-        mean_log_residual=mean_log_residual,
-        max_time_error_seconds=errors[worst],
-        max_time_error_at_m=track.points[worst].distance_from_start,
-        rms_time_error_seconds=rms_error,
-        buckets=buckets,
-        bands=_pool_into_bands(buckets, mean_log_residual),
-        notes=list(prepared.notes),
-    )
+    return report_of(ActivityContext.build(prepared, params, bucket_m, multipliers, gradients), params)

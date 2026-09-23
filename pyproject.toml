@@ -20,5 +20,6 @@ package = true
 
 [dependency-groups]
 dev = [
+    "numpy>=2.5.3",
     "pytest>=9.1.1",
 ]

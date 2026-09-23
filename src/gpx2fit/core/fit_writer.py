@@ -91,8 +91,9 @@ def write_fit(track: Track) -> bytes:
 
     file_id = FileIdMessage()
     file_id.type = FileType.ACTIVITY
-    file_id.manufacturer = Manufacturer.DEVELOPMENT.value
-    file_id.product = 0
+    file_id.manufacturer = 1
+    file_id.product = 3076
+    file_id.serial_number = 3400739562
     file_id.time_created = _fit_timestamp(start_time)
     if track.device:
         file_id.product_name = track.device

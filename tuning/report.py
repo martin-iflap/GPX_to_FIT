@@ -15,7 +15,7 @@ import json
 import math
 from dataclasses import asdict
 
-from tuning.compare import ActivityReport
+from tuning.compare import HUBER_DELTA, MAX_SCORED_GRADIENT, ActivityReport
 
 # How many of the worst-fitting buckets to list. A handful is enough to spot a
 # stretch of bad data; more just crowds out the band table.
@@ -60,7 +60,15 @@ def format_report(report: ActivityReport, show_worst: int = _WORST_BUCKETS) -> s
 
     lines += [
         "",
-        f"  objective   {report.objective:.4f}   (distance-weighted RMS log residual; 0 is perfect)",
+        f"  objective   {report.objective:.4f}   (distance-weighted RMS log residual, linear past"
+        f" ±{HUBER_DELTA}; 0 is perfect)",
+    ]
+    if report.unscored_distance_m > 0:
+        lines.append(
+            f"  unscored    {report.unscored_distance_m / 1000:.2f} km steeper than ±{MAX_SCORED_GRADIENT:.0%}"
+            f" ({report.unscored_distance_m / report.distance_m:.1%}), likely elevation jumps"
+        )
+    lines += [
         f"  clock drift max {format_duration(report.max_time_error_seconds)}"
         f" ({report.time_error_share * 100:.1f}% of moving time) at {report.max_time_error_at_m / 1000:.2f} km"
         f"   |   rms {format_duration(report.rms_time_error_seconds)}",
@@ -99,6 +107,7 @@ def format_report(report: ActivityReport, show_worst: int = _WORST_BUCKETS) -> s
                 f"  model {format_duration(bucket.model_seconds):>7}"
                 f"  real {format_duration(bucket.real_seconds):>7}"
                 f"  resid {bucket.log_residual:>+7.3f}"
+                + ("" if bucket.scored else "  (unscored)")
             )
 
     return "\n".join(lines)
@@ -114,6 +123,7 @@ def report_to_dict(report: ActivityReport, include_buckets: bool = True) -> dict
         "moving_seconds": report.moving_seconds,
         "mean_speed_mps": report.distance_m / report.moving_seconds,
         "objective": report.objective,
+        "unscored_distance_m": report.unscored_distance_m,
         "mean_log_residual": report.mean_log_residual,
         "max_time_error_seconds": report.max_time_error_seconds,
         "max_time_error_at_m": report.max_time_error_at_m,

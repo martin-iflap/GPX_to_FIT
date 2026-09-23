@@ -18,9 +18,12 @@ from pathlib import Path
 
 from gpx2fit.core.models import SportType
 from gpx2fit.core.pacing.curve_selection import MAX_SPEED_RATIO_BOUNDS
+from tuning.cache import DEFAULT_CACHE_DIR, content_key, decoded_activity, warm_cache
 from tuning.compare import DEFAULT_BUCKET_M, compare
+from tuning.elevation import DEFAULT_CACHE_DIR as DEM_CACHE_DIR
+from tuning.elevation import with_dem_elevation
 from tuning.fit import ActivityOptimum, fit_constants, sweep_activity
-from tuning.fit_reader import UnreadableActivity, read_reference_activity
+from tuning.fit_reader import UnreadableActivity, read_decoded_activity
 from tuning.model import PacingParams
 from tuning.prepare import DEFAULT_SPACING_M, PreparedActivity, prepare_reference
 from tuning.report import format_report, report_to_dict, write_json
@@ -40,6 +43,30 @@ def _fit_paths(paths: list[str]) -> list[Path]:
         else:
             print(f"  ! {path}: no such file or directory", file=sys.stderr)
     return found
+
+
+def _drop_duplicates(paths: list[Path]) -> list[Path]:
+    """Keep the first of any files with identical contents, reporting the rest.
+
+    The same activity exported twice under two names would count double in a
+    fit, and could land one copy in train and the other in held-out, making the
+    held-out score look better than it is. Unreadable files are passed through
+    so they're reported where every other failure is.
+    """
+    seen: dict[str, Path] = {}
+    kept: list[Path] = []
+    for path in paths:
+        try:
+            key = content_key(path.read_bytes())
+        except OSError:
+            kept.append(path)
+            continue
+        if key in seen:
+            print(f"  ! skipped  {path}: same contents as {seen[key]}", file=sys.stderr)
+            continue
+        seen[key] = path
+        kept.append(path)
+    return kept
 
 
 def _unique_names(paths: list[Path]) -> dict[Path, str]:
@@ -109,30 +136,71 @@ def _load_activities(
     spacing_m: float | None = None,
     sport: SportType | None = None,
     sports: dict[str, SportType] | None = None,
+    cache_dir: Path | None = DEFAULT_CACHE_DIR,
+    workers: int | None = None,
+    dem_elevation: bool = False,
 ) -> list[PreparedActivity]:
-    """Read and prepare every activity, reporting each rejection with its reason."""
-    found = _fit_paths(paths)
+    """Read and prepare every activity, reporting each rejection with its reason.
+
+    Decoding is the expensive part by an order of magnitude, so anything not
+    already in the decode cache is decoded across a process pool first; the
+    loop below then reads every activity from the cache. See tuning/cache.py.
+
+    With `dem_elevation`, a file whose recorded elevation is missing or noisy
+    gets DEM heights instead, before any reading rule runs (see
+    tuning/elevation.py). Without it, those files fail prepare.py's elevation
+    gate as before.
+    """
+    found = _drop_duplicates(_fit_paths(paths))
     names = _unique_names(found)
+
+    decoded_count = warm_cache(found, cache_dir, workers)
+    if decoded_count:
+        print(f"  decoded {decoded_count} new file(s) into the cache", file=sys.stderr)
 
     prepared: list[PreparedActivity] = []
     for path in found:
         name = names[path]
         try:
-            activity = read_reference_activity(
-                path.read_bytes(), name, sport_override=_sport_for(path, sport, sports or {})
+            decoded = decoded_activity(path, cache_dir)
+            elevation_problem = None
+            if dem_elevation:
+                decoded, elevation_problem = with_dem_elevation(decoded, content_key(path.read_bytes()), name)
+            activity = read_decoded_activity(
+                decoded, name,
+                sport_override=_sport_for(path, sport, sports or {}),
             )
-            prepared.append(prepare_reference(
+            activity_prepared = prepare_reference(
                 activity,
                 spacing_m=spacing_m if spacing_m is not None else DEFAULT_SPACING_M,
                 # A trims file written before a name needed qualifying still
                 # applies, so the bare stem is accepted as a fallback key.
                 trim_km=trims.get(name, trims.get(path.stem)),
-            ))
+            )
+            if elevation_problem is not None:
+                activity_prepared.notes.insert(
+                    0, f"elevation from the DEM (the recorded elevation was {elevation_problem})"
+                )
+            prepared.append(activity_prepared)
         except UnreadableActivity as error:
             print(f"  ! skipped  {error}", file=sys.stderr)
         except Exception as error:  # A corpus file shouldn't be able to kill the run.
             print(f"  ! skipped  {name}: unexpected {type(error).__name__}: {error}", file=sys.stderr)
     return prepared
+
+
+def _activities_from(args: argparse.Namespace) -> list[PreparedActivity]:
+    """Every usable activity named on the command line, prepared and ready to score."""
+    return _load_activities(
+        args.paths,
+        _load_trims(args.trims),
+        args.spacing,
+        args.sport,
+        _load_sports(args.sports),
+        cache_dir=None if args.no_cache else Path(args.cache_dir),
+        workers=args.workers,
+        dem_elevation=args.dem_elevation,
+    )
 
 
 def _params_from(path: str | None) -> PacingParams:
@@ -145,8 +213,7 @@ def _params_from(path: str | None) -> PacingParams:
 
 def command_compare(args: argparse.Namespace) -> int:
     """Print one report per activity, and optionally dump the JSON and the synthesized GPX."""
-    trims = _load_trims(args.trims)
-    activities = _load_activities(args.paths, trims, args.spacing, args.sport, _load_sports(args.sports))
+    activities = _activities_from(args)
     if not activities:
         print("No usable activities.", file=sys.stderr)
         return 1
@@ -201,8 +268,7 @@ def _print_optima(optima: list[ActivityOptimum]) -> None:
 
 def command_sweep(args: argparse.Namespace) -> int:
     """Stage one across the corpus: each activity's empirical optimum."""
-    trims = _load_trims(args.trims)
-    activities = _load_activities(args.paths, trims, args.spacing, args.sport, _load_sports(args.sports))
+    activities = _activities_from(args)
     if not activities:
         print("No usable activities.", file=sys.stderr)
         return 1
@@ -238,8 +304,7 @@ def command_sweep(args: argparse.Namespace) -> int:
 
 def command_fit(args: argparse.Namespace) -> int:
     """Stage two: fit the constants, and report how they hold up on held-out activities."""
-    trims = _load_trims(args.trims)
-    activities = _load_activities(args.paths, trims, args.spacing, args.sport, _load_sports(args.sports))
+    activities = _activities_from(args)
     if not activities:
         print("No usable activities.", file=sys.stderr)
         return 1
@@ -261,6 +326,25 @@ def command_fit(args: argparse.Namespace) -> int:
             print("  ! the held-out set improved far less than training — this fit is memorising.")
     else:
         print("  held out    (none; every activity was trained on, so these numbers are optimistic)")
+    if result.route_groups:
+        held_out = set(result.test_names)
+        print()
+        print("  same-route groups (similar distance and verticality, kept on one side of the split):")
+        for group in result.route_groups:
+            side = "held out" if group[0] in held_out else "train"
+            print(f"    {side:<9} {', '.join(group)}")
+
+    # The trace comes first: if a block still moves in the last round, the
+    # numbers below it aren't settled, whatever the objective says.
+    print()
+    print("  round  stage             sport       train    values")
+    print("  " + "-" * 72)
+    for step in result.history:
+        values = "  ".join(f"{name} {value:.3f}" for name, value in step.values.items())
+        sport = step.sport.value if step.sport is not None else "all"
+        print(f"  {step.round:>5}  {step.stage:<16}  {sport:<9}  {step.train_objective:.4f}"
+              f"  {'*' if step.changed else ' '} {values}")
+    print("  (* = the block moved in that step)")
 
     print()
     print("  global constant            before     after")
@@ -274,12 +358,15 @@ def command_fit(args: argparse.Namespace) -> int:
         bounds = MAX_SPEED_RATIO_BOUNDS[sport]
         shipped = {"ratio_flat": bounds.flat, "ratio_hilly": bounds.hilly}
         print()
-        print(f"  {sport.value:<12} bound         before     after")
+        print(f"  {sport.value:<12} constant      before     after")
         print("  " + "-" * 44)
         for name, after in sorted(values.items()):
             before = getattr(base, name)
             before = before if before is not None else shipped[name]
             print(f"  {name:<24}{before:>9.4f}{after:>10.4f}")
+    print()
+    print("  The fills are fitted per sport, but core/ has one UPHILL_FILL and one")
+    print("  DOWNHILL_FILL. If the sports disagree, shipping both needs a per-sport table there.")
 
     hits = result.boundary_hits()
     if hits:
@@ -293,12 +380,24 @@ def command_fit(args: argparse.Namespace) -> int:
     write_json(out, {
         "global": {name: getattr(result.global_params, name) for name in vars(result.global_params)},
         "per_sport": {sport.value: values for sport, values in result.sport_params.items()},
+        "history": [
+            {
+                "round": step.round,
+                "stage": step.stage,
+                "sport": step.sport.value if step.sport is not None else None,
+                "values": step.values,
+                "changed": step.changed,
+                "train_objective": step.train_objective,
+            }
+            for step in result.history
+        ],
         "train_before": result.train_before,
         "train_after": result.train_after,
         "test_before": result.test_before,
         "test_after": result.test_after,
         "train": result.train_names,
         "test": result.test_names,
+        "route_groups": result.route_groups,
     })
     print(f"\nWrote {out}")
     print("These are proposals, not a patch. Check them against the per-activity notes before applying.")
@@ -307,8 +406,7 @@ def command_fit(args: argparse.Namespace) -> int:
 
 def command_check(args: argparse.Namespace) -> int:
     """Compare the corpus objective against a pinned baseline, so a refactor can't quietly regress pacing."""
-    trims = _load_trims(args.trims)
-    activities = _load_activities(args.paths, trims, args.spacing, args.sport, _load_sports(args.sports))
+    activities = _activities_from(args)
     if not activities:
         print("No usable activities.", file=sys.stderr)
         return 1
@@ -359,6 +457,16 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
                              "(exports mislabel runs from bike computers as cycling, and hikes as generic)")
     parser.add_argument("--sports", help="JSON of {activity-or-folder-name: sport} overrides, for a "
                                          "mixed corpus; takes precedence over --sport")
+    parser.add_argument("--cache-dir", default=str(DEFAULT_CACHE_DIR),
+                        help=f"where decoded .fit files are kept (default {DEFAULT_CACHE_DIR})")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="decode every file again instead of using the cache")
+    parser.add_argument("--workers", type=int,
+                        help="processes used to decode uncached files (default: one per core)")
+    parser.add_argument("--dem-elevation", action="store_true",
+                        help="for recordings whose elevation is missing or noisy, fetch DEM heights from "
+                             "Valhalla's public /height service. Sends those recordings' positions to a "
+                             f"third party; fetched once per file, then cached under {DEM_CACHE_DIR}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -388,7 +496,8 @@ def main(argv: list[str] | None = None) -> int:
 
     fit_parser = subparsers.add_parser("fit", help="fit the constants to the corpus")
     _add_common(fit_parser)
-    fit_parser.add_argument("--rounds", type=int, default=3, help="global/per-sport alternations")
+    fit_parser.add_argument("--rounds", type=int, default=3,
+                            help="the most passes through the staged blocks (stops early once nothing moves)")
     fit_parser.add_argument("--holdout", type=float, default=0.3, help="fraction held out (0 to use all)")
     fit_parser.add_argument("--seed", type=int, default=20260920, help="fixes the train/test split")
     fit_parser.set_defaults(func=command_fit)
