@@ -12,9 +12,9 @@ import pytest
 
 from gpx2fit.core.fit_writer import write_fit
 from gpx2fit.core.models import SportType
-from tuning.compare import DEFAULT_BUCKET_M, compare
+from tuning.compare import DEFAULT_BUCKET_M, _in_band_table, compare
 from tuning.fit_reader import read_reference_activity
-from tuning.model import PacingParams, predict_elapsed
+from tuning.model import PacingParams, TrackModel, elapsed_from_model
 from tuning.prepare import prepare_reference
 from tests.tuning.conftest import synthetic_activity
 
@@ -27,8 +27,10 @@ def _prepared(**kwargs):
 def _self_consistent(prepared, params=None):
     """Replace the reference timing with the model's own, so the truth is the model."""
     params = params or PacingParams()
-    predicted, _ = predict_elapsed(prepared.track, prepared.sport, prepared.moving_seconds, params)
-    prepared.reference_elapsed = predicted
+    predicted, _ = elapsed_from_model(
+        TrackModel.build(prepared.track), prepared.sport, prepared.moving_seconds, params
+    )
+    prepared.reference_elapsed = predicted.tolist()
     return prepared
 
 
@@ -66,7 +68,9 @@ class TestRecoversAPlantedResponse:
     def test_the_residual_shape_is_monotonic_in_gradient(self):
         report = compare(_prepared(uphill_factor=5.0, downhill_factor=0.5, amplitude=120))
         shapes = [band.shape_residual for band in report.bands]
-        assert shapes == sorted(shapes)
+        # Near flat, this athlete's response is almost level, so adjacent
+        # bands can tie to within rounding noise.
+        assert all(later >= earlier - 1e-3 for earlier, later in zip(shapes, shapes[1:]))
 
     def test_a_flatter_athlete_produces_a_smaller_objective(self):
         gentle = compare(_prepared(uphill_factor=2.6, amplitude=40)).objective
@@ -111,14 +115,15 @@ class TestBucketing:
             compare(prepared, bucket_m=DEFAULT_BUCKET_M).buckets
         )
 
-    def test_every_bucket_lands_in_exactly_one_band(self):
+    def test_every_banded_bucket_lands_in_exactly_one_band(self):
         report = compare(_prepared())
-        assert sum(band.bucket_count for band in report.bands) == len(report.buckets)
+        banded = [bucket for bucket in report.buckets if _in_band_table(bucket)]
+        assert sum(band.bucket_count for band in report.bands) == len(banded)
 
-    def test_band_distances_sum_to_the_bucketed_distance(self):
+    def test_band_distances_sum_to_the_banded_distance(self):
         report = compare(_prepared())
         assert sum(band.distance_m for band in report.bands) == pytest.approx(
-            sum(bucket.distance_m for bucket in report.buckets)
+            sum(bucket.distance_m for bucket in report.buckets if _in_band_table(bucket))
         )
 
     def test_bands_come_back_in_ascending_gradient_order(self):

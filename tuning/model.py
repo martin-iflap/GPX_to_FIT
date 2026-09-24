@@ -3,31 +3,31 @@
 `core/`'s tunable constants are module-level names with no injection point, and
 `gradient.py` snapshots `_TOBLER_FLAT_SHAPE` / `_MINETTI_FLAT_COST` at import —
 so monkeypatching them is both invasive and subtly wrong (a patched slope factor
-would never reach the snapshot). Instead, this module restates the same
-arithmetic with every constant as a parameter, calling `core/`'s public curve
-functions to do the actual work. `core/` is never modified or reached into.
+would never reach the snapshot). `core/` is never modified to suit the harness.
 
-The obvious risk is that this drifts from `combine()` after a later refactor and
-the harness starts tuning a model the app doesn't run.
-`tests/tuning/test_model_mirror.py` is the guard: it asserts `predict_elapsed`
-at default `PacingParams` reproduces `combine()`'s timestamps exactly.
+What this module restates is exactly what can't be borrowed:
 
-**Why this is numpy and `core/` is not.** A fit evaluates this model thousands
-of times over the same handful of tracks, where `core/` runs it once per
-conversion — and `core/` has to stay pure Python because it runs inside Pyodide
-(see CLAUDE.md). The split is therefore deliberate, and it is drawn so that
-nothing about the *curves* is restated: `TrackModel` calls `core/`'s own
+- **The three per-workout decisions** (`tobler_weight_for`,
+  `max_speed_ratio_for`, `curve_shape_for`). Their constants *are* the knobs
+  being fitted, and core reads them as globals, so a core call would always
+  answer with the shipped values. The helpers underneath them — `_smoothstep`,
+  `_verticality`, the curve functions — are core's own, imported.
+- **The per-leg arithmetic** (softening, blending, compression, scaling), in
+  numpy. A fit evaluates these thousands of times over the same tracks, where
+  `core/` runs it once per conversion and has to stay pure Python for Pyodide.
+
+Nothing about the *curves* is restated: `TrackModel` calls `core/`'s own
 `minetti_speeds_from_gradients` / `tobler_speeds_from_gradients` once per
 track, at exponent 1.0, and every later evaluation only softens, blends and
 scales those raw curves. Softening is `raw ** exponent`, which is exactly what
 `gradient._soften` does, so a change to the Minetti polynomial or Tobler's
 slope factor still reaches the harness without anything here being touched.
 
-`TrackModel` is also where the fit's speedup comes from: everything it holds
-depends on the track and the gradient window alone, so a sweep computes it once
-and reuses it for every trial. That includes the two features the resolvers
-read — verticality and flat-equivalent speed — which the un-cached version
-recomputed (Minetti probe and all) on every single evaluation.
+The obvious risk is that the restated parts drift from `combine()` after a
+later refactor and the harness starts tuning a model the app doesn't run.
+`tests/tuning/test_model_mirror.py` is the guard: it asserts
+`elapsed_from_model` at default `PacingParams` reproduces `combine()`'s
+timestamps exactly.
 """
 
 import math
@@ -36,6 +36,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from gpx2fit.core.models import SportType, Track
+from gpx2fit.core.pacing.combine import _MIN_SURFACE_MULTIPLIER
 from gpx2fit.core.pacing.curve_selection import (
     CURVE_REFERENCE_GRADE,
     DOWNHILL_FILL,
@@ -46,6 +47,8 @@ from gpx2fit.core.pacing.curve_selection import (
     TOBLER_THRESHOLDS,
     UPHILL_FILL,
     VERTICALITY_BAND,
+    _smoothstep,
+    _verticality,
 )
 from gpx2fit.core.pacing.gradient import (
     GRADIENT_WINDOW_M,
@@ -55,11 +58,6 @@ from gpx2fit.core.pacing.gradient import (
     minetti_speeds_from_gradients,
     tobler_speeds_from_gradients,
 )
-
-# combine._MIN_SURFACE_MULTIPLIER, restated so a surface multiplier can never
-# zero out a leg. Unused until the surface phase, but the arithmetic has to
-# match now or predict_elapsed would silently diverge once multipliers arrive.
-_MIN_SURFACE_MULTIPLIER = 0.05
 
 
 @dataclass(frozen=True)
@@ -154,10 +152,10 @@ class TrackModel:
         raw_minetti: Per-leg Minetti speed at exponent 1.0, relative to flat.
         raw_tobler: The same for Tobler.
         total_distance_m: Sum of `leg_distances`.
-        verticality: curve_selection._verticality — the distance-weighted mean
-            |gradient|. 0.0 for a track with no distance, where core's version
-            would divide by zero; every caller guards that case anyway, but a
-            feature printed in every table shouldn't be able to raise.
+        verticality: curve_selection._verticality. 0.0 for a track with no
+            distance, where core's version would divide by zero; every caller
+            guards that case anyway, but a feature printed in every table
+            shouldn't be able to raise.
         flat_equivalent_distance_m: Σ leg_distance / probe_speed, the numerator
             of `resolve_tobler_weight`'s first criterion. The probe is Minetti
             at its own default exponents, exactly as core does: it is only a
@@ -175,75 +173,46 @@ class TrackModel:
     flat_equivalent_distance_m: float
 
     @classmethod
-    def from_legs(
-        cls, gradients: list[float] | np.ndarray, leg_distances: list[float] | np.ndarray,
-        gradient_window_m: float = GRADIENT_WINDOW_M,
-    ) -> "TrackModel":
-        """Build from already-computed per-leg gradients and distances."""
-        grades = np.asarray(gradients, dtype=float)
-        distances = np.asarray(leg_distances, dtype=float)
-        if len(grades) != len(distances):
-            raise ValueError(f"Got {len(grades)} gradients for {len(distances)} legs.")
-
-        as_list = grades.tolist()
-        raw_minetti = np.asarray(minetti_speeds_from_gradients(as_list, 1.0, 1.0), dtype=float)
-        raw_tobler = np.asarray(tobler_speeds_from_gradients(as_list, 1.0, 1.0), dtype=float)
-        probe = np.asarray(minetti_speeds_from_gradients(as_list), dtype=float)
-
-        total_distance = float(distances.sum())
-        usable = (distances > 0) & (probe > 0)
-        return cls(
-            gradient_window_m=gradient_window_m,
-            gradients=grades,
-            leg_distances=distances,
-            uphill=grades > 0,
-            raw_minetti=raw_minetti,
-            raw_tobler=raw_tobler,
-            total_distance_m=total_distance,
-            verticality=(
-                float((np.abs(grades) * distances).sum() / total_distance) if total_distance > 0 else 0.0
-            ),
-            flat_equivalent_distance_m=float((distances[usable] / probe[usable]).sum()),
-        )
-
-    @classmethod
-    def build(
-        cls, track: Track, params: PacingParams | None = None, gradients: list[float] | None = None
-    ) -> "TrackModel":
-        """Build for a whole track, computing its gradients unless they're supplied.
+    def build(cls, track: Track, gradient_window_m: float = GRADIENT_WINDOW_M) -> "TrackModel":
+        """Build for a whole track.
 
         Args:
             track: A track with `distance_from_start` and elevation set.
-            params: Supplies `gradient_window_m`. Defaults to today's values.
-            gradients: Already-computed gradients for this track *and window*,
-                if the caller has them.
+            gradient_window_m: The window to smooth the gradients over.
         """
-        params = params or PacingParams()
-        if gradients is None:
-            gradients = calculate_gradient(track, params.gradient_window_m)
+        gradients = calculate_gradient(track, gradient_window_m)
         distances = [
             later.distance_from_start - earlier.distance_from_start
             for earlier, later in zip(track.points, track.points[1:])
         ]
-        return cls.from_legs(gradients, distances, params.gradient_window_m)
+        total_distance = sum(distances)
+        probe = minetti_speeds_from_gradients(gradients)
+
+        return cls(
+            gradient_window_m=gradient_window_m,
+            gradients=np.asarray(gradients, dtype=float),
+            leg_distances=np.asarray(distances, dtype=float),
+            uphill=np.asarray(gradients, dtype=float) > 0,
+            raw_minetti=np.asarray(minetti_speeds_from_gradients(gradients, 1.0, 1.0), dtype=float),
+            raw_tobler=np.asarray(tobler_speeds_from_gradients(gradients, 1.0, 1.0), dtype=float),
+            total_distance_m=total_distance,
+            verticality=_verticality(gradients, distances) if total_distance > 0 else 0.0,
+            flat_equivalent_distance_m=sum(
+                distance / speed for distance, speed in zip(distances, probe) if distance > 0 and speed > 0
+            ),
+        )
 
     def flat_equivalent_mps(self, active_seconds: float) -> float:
         """The flat-ground speed that would have produced this moving time over this terrain.
 
         `resolve_tobler_weight`'s first criterion, exposed so it can be
         reported as a feature. Dividing each leg's distance by its relative
-        Minetti speed gives a flat-equivalent distance — the curve is
-        dimensionless, so the sum is metres, not seconds — and dividing that by
+        Minetti speed gives a flat-equivalent distance. The curve is
+        dimensionless, so the sum is metres, not seconds and dividing that by
         the moving time answers "how fast was this really, with the terrain
         divided out?".
         """
         return self.flat_equivalent_distance_m / active_seconds if active_seconds > 0 else 0.0
-
-
-def _smoothstep(value: float, center: float, half_width: float) -> float:
-    """curve_selection._smoothstep: ramp 0.0 to 1.0 across `center` +/- `half_width`."""
-    position = min(1.0, max(0.0, (value - center) / (2 * half_width) + 0.5))
-    return position * position * (3 - 2 * position)
 
 
 def tobler_weight_for(
@@ -262,14 +231,10 @@ def tobler_weight_for(
     steep_threshold = (
         params.tobler_verticality if params.tobler_verticality is not None else thresholds.verticality
     )
-    default_weight = 1.0 if sport == SportType.HIKING else 0.0
-
-    if model.total_distance_m <= 0 or active_seconds <= 0:
-        return default_weight
 
     equivalent = model.flat_equivalent_mps(active_seconds)
     if equivalent <= 0:
-        return default_weight
+        return 1.0 if sport == SportType.HIKING else 0.0
 
     slow_weight = 1.0 - _smoothstep(equivalent, flat_threshold, params.flat_equivalent_band_mps)
     steep_weight = _smoothstep(model.verticality, steep_threshold, params.verticality_band)
@@ -328,44 +293,30 @@ def resolve(
     )
 
 
-def _softened(raw_speeds: np.ndarray, uphill: np.ndarray, exponents: CurveExponents) -> np.ndarray:
-    """gradient._soften: each raw speed to the uphill or downhill exponent, by its leg's gradient.
-
-    gradient == 0 takes the downhill branch, but the raw speed there is exactly
-    1.0 for both curves, so either exponent leaves it at 1.0.
-
-    Raises:
-        ValueError: If either exponent isn't positive, as core's does.
-    """
-    if exponents.uphill <= 0 or exponents.downhill <= 0:
-        raise ValueError(
-            f"Curve exponents must be positive, got uphill={exponents.uphill}, "
-            f"downhill={exponents.downhill}."
-        )
-    return raw_speeds ** np.where(uphill, exponents.uphill, exponents.downhill)
-
-
 def _blended(model: TrackModel, tobler_weight: float, shape: CurveShape) -> np.ndarray:
-    """gradient.blended_speeds_from_gradients: the geometric blend of both softened curves.
+    """gradient.blended_speeds_from_gradients over the precomputed raw curves.
 
-    Keeps core's two exact endpoints rather than letting a weight of 0.0 or 1.0
-    fall through the general formula, so a sweep that lands on pure Minetti or
-    pure Tobler gets the same numbers the app would.
+    Each curve is softened as `gradient._soften` does (gradient == 0 takes the
+    downhill branch, where both raw curves are exactly 1.0 anyway), then the
+    two are blended geometrically. The general formula is already exact at a
+    weight of 0.0 or 1.0 (`x ** 0.0` is 1.0, `x ** 1.0` is x); the shortcuts
+    are only there to skip the unused curve, since resolved weights often land
+    exactly on either end and this runs thousands of times per fit.
     """
-    if not 0.0 <= tobler_weight <= 1.0:
-        raise ValueError(f"tobler_weight must be within [0.0, 1.0], got {tobler_weight}.")
-    if tobler_weight == 0.0:
-        return _softened(model.raw_minetti, model.uphill, shape.minetti)
-    if tobler_weight == 1.0:
-        return _softened(model.raw_tobler, model.uphill, shape.tobler)
+    def softened(raw_speeds: np.ndarray, exponents: CurveExponents) -> np.ndarray:
+        return raw_speeds ** np.where(model.uphill, exponents.uphill, exponents.downhill)
 
-    minetti = _softened(model.raw_minetti, model.uphill, shape.minetti)
-    tobler = _softened(model.raw_tobler, model.uphill, shape.tobler)
+    if tobler_weight == 0.0:
+        return softened(model.raw_minetti, shape.minetti)
+    if tobler_weight == 1.0:
+        return softened(model.raw_tobler, shape.tobler)
+    minetti = softened(model.raw_minetti, shape.minetti)
+    tobler = softened(model.raw_tobler, shape.tobler)
     return minetti ** (1.0 - tobler_weight) * tobler ** tobler_weight
 
 
 def _compressed(speeds: np.ndarray, max_ratio: float) -> np.ndarray:
-    """combine's median-and-tanh step: soft-bound every leg within `max_ratio` of typical.
+    """combine._compress_speed_toward_typical over every leg, around the median positive speed.
 
     Raises:
         ValueError: If `max_ratio` isn't above 1.0, where the bound has no room
@@ -387,49 +338,23 @@ def _compressed(speeds: np.ndarray, max_ratio: float) -> np.ndarray:
     return bounded
 
 
-def leg_speeds(
-    model: TrackModel,
-    sport: SportType,
-    active_seconds: float,
-    params: PacingParams,
-    multipliers: list[float] | np.ndarray | None = None,
-) -> tuple[np.ndarray, ResolvedSettings]:
-    """The model's per-leg relative speeds, after blending, surface and compression.
-
-    This is `_pace_segment` steps 4-6 for the single-segment case the harness
-    uses (start and end are the only anchors, which is what the converter gets
-    when the user gives just a start time and a duration). Relative, not m/s:
-    the absolute scale comes from `active_seconds` in `predict_elapsed`.
-    """
-    settings = resolve(model, sport, active_seconds, params)
-    speeds = _blended(model, settings.tobler_weight, settings.curve_shape)
-
-    if multipliers is not None:
-        multipliers = np.asarray(multipliers, dtype=float)
-        if len(multipliers) != len(speeds):
-            raise ValueError(f"Expected {len(speeds)} multipliers, got {len(multipliers)}.")
-        speeds = speeds * np.maximum(multipliers, _MIN_SURFACE_MULTIPLIER)
-
-    return _compressed(speeds, settings.max_speed_ratio), settings
-
-
 def elapsed_from_model(
     model: TrackModel,
     sport: SportType,
     active_seconds: float,
     params: PacingParams,
-    multipliers: list[float] | np.ndarray | None = None,
+    multipliers: np.ndarray | None = None,
 ) -> tuple[np.ndarray, ResolvedSettings]:
     """Predicted elapsed seconds at every track point, starting at 0.0.
 
-    `_pace_segment` steps 4-9 for a single segment: model each leg's time from
-    its relative speed, then scale all of them by one factor so the total comes
-    to `active_seconds` exactly. That single rescale is why only the *shape* of
+    `_pace_segment` for the single-segment case the harness uses (start and
+    end are the only anchors, which is what the converter gets when the user
+    gives just a start time and a duration): blend the curves, apply any
+    surface multipliers, compress toward the median, model each leg's time,
+    then scale all of them by one factor so the total comes to
+    `active_seconds` exactly. That single rescale is why only the *shape* of
     this curve is a prediction — the total is matched by construction, and no
     parameter can change it.
-
-    This is the form the search uses, taking a prepared TrackModel and giving
-    back an array; `predict_elapsed` is the same thing from a Track.
 
     Args:
         model: The prepared track, from `TrackModel.build`.
@@ -441,7 +366,6 @@ def elapsed_from_model(
     Returns:
         The cumulative seconds per point (one more than there are legs), and
         the settings the model resolved for this workout.
-
     Raises:
         ValueError: If the track has fewer than two points, `active_seconds`
             isn't positive, or the multipliers don't match the leg count.
@@ -451,7 +375,14 @@ def elapsed_from_model(
     if active_seconds <= 0:
         raise ValueError(f"active_seconds must be positive, got {active_seconds}.")
 
-    speeds, settings = leg_speeds(model, sport, active_seconds, params, multipliers)
+    settings = resolve(model, sport, active_seconds, params)
+    speeds = _blended(model, settings.tobler_weight, settings.curve_shape)
+    if multipliers is not None:
+        if len(multipliers) != len(speeds):
+            raise ValueError(f"Expected {len(speeds)} multipliers, got {len(multipliers)}.")
+        speeds = speeds * np.maximum(multipliers, _MIN_SURFACE_MULTIPLIER)
+    speeds = _compressed(speeds, settings.max_speed_ratio)
+
     moving = speeds > 0
     modeled = np.zeros(len(speeds))
     modeled[moving] = model.leg_distances[moving] / speeds[moving]
@@ -464,35 +395,3 @@ def elapsed_from_model(
     elapsed[0] = 0.0
     np.cumsum(modeled * (active_seconds / modeled_total), out=elapsed[1:])
     return elapsed, settings
-
-
-def predict_elapsed(
-    track: Track,
-    sport: SportType,
-    active_seconds: float,
-    params: PacingParams,
-    multipliers: list[float] | None = None,
-    gradients: list[float] | None = None,
-) -> tuple[list[float], ResolvedSettings]:
-    """Predicted elapsed seconds at every point of a track — see `elapsed_from_model`.
-
-    The entry point the drift guard uses, and the one to reach for when there
-    is a Track rather than a prepared TrackModel in hand. A search should build
-    the TrackModel once and call `elapsed_from_model` instead, since this
-    rebuilds it (curves and all) on every call.
-
-    Args:
-        track: A track with `distance_from_start` set on every point.
-        sport: Picks the per-sport constants.
-        active_seconds: The activity's moving time, which the result sums to.
-        params: The constants to run with.
-        multipliers: Optional per-leg surface multipliers, one per leg.
-        gradients: Already-computed gradients for this track and
-            `params.gradient_window_m`, if the caller has them.
-    """
-    if len(track.points) < 2:
-        raise ValueError(f"Need at least 2 points to pace, got {len(track.points)}.")
-
-    model = TrackModel.build(track, params, gradients)
-    elapsed, settings = elapsed_from_model(model, sport, active_seconds, params, multipliers)
-    return elapsed.tolist(), settings

@@ -139,6 +139,7 @@ def _load_activities(
     cache_dir: Path | None = DEFAULT_CACHE_DIR,
     workers: int | None = None,
     dem_elevation: bool = False,
+    trim_ends_m: float = 0.0,
 ) -> list[PreparedActivity]:
     """Read and prepare every activity, reporting each rejection with its reason.
 
@@ -176,6 +177,7 @@ def _load_activities(
                 # A trims file written before a name needed qualifying still
                 # applies, so the bare stem is accepted as a fallback key.
                 trim_km=trims.get(name, trims.get(path.stem)),
+                trim_ends_m=trim_ends_m,
             )
             if elevation_problem is not None:
                 activity_prepared.notes.insert(
@@ -200,6 +202,7 @@ def _activities_from(args: argparse.Namespace) -> list[PreparedActivity]:
         cache_dir=None if args.no_cache else Path(args.cache_dir),
         workers=args.workers,
         dem_elevation=args.dem_elevation,
+        trim_ends_m=args.trim_ends,
     )
 
 
@@ -223,7 +226,6 @@ def command_compare(args: argparse.Namespace) -> int:
 
     for activity in activities:
         report = compare(activity, params, args.bucket)
-        print()
         print(format_report(report))
         if args.json:
             write_json(out_dir / "activities" / f"{activity.name}.json", report_to_dict(report))
@@ -445,6 +447,9 @@ def command_check(args: argparse.Namespace) -> int:
 def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("paths", nargs="+", help=".fit files, or directories to search recursively")
     parser.add_argument("--trims", help="JSON of {activity-name: [start_km, end_km]} usable ranges")
+    parser.add_argument("--trim-ends", type=float, default=0.0, metavar="METRES",
+                        help="cut this many metres from the start and end of every activity, e.g. 400 "
+                             "to drop a run's walk-in and walk-out (combines with --trims as their overlap)")
     parser.add_argument("--params", help="JSON of constants to run with (default: the shipped ones)")
     parser.add_argument("--bucket", type=float, default=DEFAULT_BUCKET_M,
                         help=f"residual bucket length in metres (default {DEFAULT_BUCKET_M:.0f})")

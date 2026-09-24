@@ -375,6 +375,7 @@ def prepare_reference(
     spacing_m: float = DEFAULT_SPACING_M,
     elevation_step_m: float = DEFAULT_ELEVATION_STEP_M,
     trim_km: tuple[float, float] | None = None,
+    trim_ends_m: float = 0.0,
     standing_speed_mps: float = DEFAULT_STANDING_SPEED_MPS,
     standing_min_seconds: float = DEFAULT_STANDING_MIN_SECONDS,
     max_gap_seconds: float = DEFAULT_MAX_GAP_SECONDS,
@@ -390,6 +391,10 @@ def prepare_reference(
         trim_km: Optional (start, end) distance range in kilometres, so only
             the usable part of an activity is kept — an interval session's
             steady portion, or a route before the athlete got lost.
+        trim_ends_m: Metres cut from both ends of the recorded route, for
+            every activity alike — a run's warm-up and cool-down walk would
+            otherwise read as the model pacing flat ground too fast. Combines
+            with `trim_km` as the overlap of the two.
         standing_speed_mps: Legs slower than this are candidates for stop removal.
         standing_min_seconds: How long a slow run must last to count as a stop.
         max_gap_seconds: Gaps longer than this count as recording dropouts.
@@ -398,8 +403,8 @@ def prepare_reference(
     Returns:
         The prepared activity.
     Raises:
-        UnreadableActivity: If a quality gate rejects it, if `trim_km` selects
-            too little of the route, or if the surviving reference timing
+        UnreadableActivity: If a quality gate rejects it, if `trim_km` and
+            `trim_ends_m` select too little of the route, or if the surviving reference timing
             doesn't strictly increase.
     """
     points = activity.track.points
@@ -414,16 +419,23 @@ def prepare_reference(
         notes.insert(0, f"sport forced to {activity.sport.value} (the file declared {activity.fit_sport})")
 
     lo, hi = 0, len(points) - 1
-    if trim_km is not None:
-        start_m, end_m = trim_km[0] * 1000, trim_km[1] * 1000
+    if trim_km is not None or trim_ends_m > 0:
+        # Both limits are measured on the recorded route, so a per-activity
+        # range and the blanket end trim combine as their overlap.
+        route_start_m, route_end_m = points[0].distance_from_start, points[-1].distance_from_start
+        start_m, end_m = route_start_m, route_end_m
+        if trim_km is not None:
+            start_m, end_m = trim_km[0] * 1000, trim_km[1] * 1000
+        start_m = max(start_m, route_start_m + trim_ends_m)
+        end_m = min(end_m, route_end_m - trim_ends_m)
         inside = [i for i, point in enumerate(points) if start_m <= point.distance_from_start <= end_m]
         if len(inside) < _MIN_POINTS:
             raise UnreadableActivity(
-                f"{activity.name}: --trim {trim_km[0]}:{trim_km[1]} keeps only {len(inside)} points, "
-                f"need at least {_MIN_POINTS}."
+                f"{activity.name}: trimming to {start_m / 1000:.2f}-{end_m / 1000:.2f} km "
+                f"(--trims / --trim-ends) keeps only {len(inside)} points, need at least {_MIN_POINTS}."
             )
         lo, hi = inside[0], inside[-1]
-        notes.append(f"trimmed to {trim_km[0]:.2f}-{trim_km[1]:.2f} km of the recorded route")
+        notes.append(f"trimmed to {start_m / 1000:.2f}-{end_m / 1000:.2f} km of the recorded route")
 
     kept = _resample_indexes(points, spacing_m, lo, hi)
     kept_points = [points[index] for index in kept]

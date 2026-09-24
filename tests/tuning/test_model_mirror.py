@@ -6,7 +6,7 @@ is only trustworthy while it stays in step with the real thing — if combine()
 changes and this doesn't, the harness quietly starts tuning a model the app
 doesn't run, and nothing else would notice.
 
-So: at default PacingParams, predict_elapsed must reproduce combine()'s
+So: at default PacingParams, elapsed_from_model must reproduce combine()'s
 timestamps exactly, for both sports and across flat, rolling and mountainous
 terrain.
 """
@@ -22,17 +22,18 @@ from gpx2fit.core.pacing.curve_selection import (
     resolve_max_speed_ratio,
     resolve_tobler_weight,
 )
+from gpx2fit.core.pacing.gradient import calculate_gradient
 from tests.core.conftest import START, anchor, flat_track, leg_distances, rolling_track, timestamp_of
 from tuning.model import (
     PacingParams,
+    ResolvedSettings,
     TrackModel,
     curve_shape_for,
+    elapsed_from_model,
     max_speed_ratio_for,
-    predict_elapsed,
     resolve,
     tobler_weight_for,
 )
-from gpx2fit.core.pacing.gradient import calculate_gradient
 
 SPORTS = [SportType.RUNNING, SportType.HIKING]
 
@@ -47,6 +48,14 @@ TERRAINS = {
 
 # Fast enough to stay on Minetti, and slow enough to tip to Tobler.
 DURATIONS = [1200.0, 5400.0]
+
+
+def predict_elapsed(
+    track: Track, sport: SportType, active_seconds: float, params: PacingParams
+) -> tuple[list[float], ResolvedSettings]:
+    """The harness's seconds at each point, straight from a Track."""
+    elapsed, settings = elapsed_from_model(TrackModel.build(track), sport, active_seconds, params)
+    return elapsed.tolist(), settings
 
 
 def _combine_elapsed(track: Track, sport: SportType, active_seconds: float) -> list[float]:
@@ -76,7 +85,7 @@ class TestMirrorMatchesCombine:
         gradients = calculate_gradient(track)
         distances = leg_distances(track)
         params = PacingParams()
-        model = TrackModel.from_legs(gradients, distances)
+        model = TrackModel.build(track)
 
         assert tobler_weight_for(model, active_seconds, sport, params) == pytest.approx(
             resolve_tobler_weight(gradients, distances, active_seconds, sport)

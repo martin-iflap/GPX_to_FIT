@@ -15,7 +15,13 @@ import json
 import math
 from dataclasses import asdict
 
-from tuning.compare import HUBER_DELTA, MAX_SCORED_GRADIENT, ActivityReport
+from tuning.compare import (
+    DAWDLE_SPEED_SHARE,
+    HUBER_DELTA,
+    MAX_BAND_GRADIENT_SPREAD,
+    MAX_SCORED_GRADIENT,
+    ActivityReport,
+)
 
 # How many of the worst-fitting buckets to list. A handful is enough to spot a
 # stretch of bad data; more just crowds out the band table.
@@ -60,14 +66,21 @@ def format_report(report: ActivityReport, show_worst: int = _WORST_BUCKETS) -> s
 
     lines += [
         "",
-        f"  objective   {report.objective:.4f}   (distance-weighted RMS log residual, linear past"
+        f"  objective   {report.objective:.4f}   (distance-weighted RMS shape residual, linear past"
         f" ±{HUBER_DELTA}; 0 is perfect)",
     ]
-    if report.unscored_distance_m > 0:
-        lines.append(
-            f"  unscored    {report.unscored_distance_m / 1000:.2f} km steeper than ±{MAX_SCORED_GRADIENT:.0%}"
-            f" ({report.unscored_distance_m / report.distance_m:.1%}), likely elevation jumps"
-        )
+    for label, distance_m, reason in (
+        ("unscored", report.steep_distance_m,
+         f"steeper than ±{MAX_SCORED_GRADIENT:.0%}, likely elevation jumps"),
+        ("unscored", report.dawdle_distance_m,
+         f"flat but under {DAWDLE_SPEED_SHARE:.0%} of the median flat speed, likely dawdling"),
+        ("not banded", report.mixed_distance_m,
+         f"mixed terrain, slope changes direction by over {MAX_BAND_GRADIENT_SPREAD:.0%}"),
+    ):
+        if distance_m > 0:
+            lines.append(
+                f"  {label:<11} {distance_m / 1000:.2f} km ({distance_m / report.distance_m:.1%}) {reason}"
+            )
     lines += [
         f"  clock drift max {format_duration(report.max_time_error_seconds)}"
         f" ({report.time_error_share * 100:.1f}% of moving time) at {report.max_time_error_at_m / 1000:.2f} km"
@@ -98,7 +111,7 @@ def format_report(report: ActivityReport, show_worst: int = _WORST_BUCKETS) -> s
     ]
 
     if show_worst:
-        worst = sorted(report.buckets, key=lambda b: -abs(b.log_residual))[:show_worst]
+        worst = sorted(report.buckets, key=lambda b: -abs(b.log_residual - report.mean_log_residual))[:show_worst]
         lines += ["", f"  worst {len(worst)} buckets (check these for bad data before believing them):"]
         for bucket in worst:
             lines.append(
@@ -107,7 +120,7 @@ def format_report(report: ActivityReport, show_worst: int = _WORST_BUCKETS) -> s
                 f"  model {format_duration(bucket.model_seconds):>7}"
                 f"  real {format_duration(bucket.real_seconds):>7}"
                 f"  resid {bucket.log_residual:>+7.3f}"
-                + ("" if bucket.scored else "  (unscored)")
+                + (f"  (unscored: {bucket.excluded})" if bucket.excluded else "")
             )
 
     return "\n".join(lines)
@@ -116,14 +129,16 @@ def format_report(report: ActivityReport, show_worst: int = _WORST_BUCKETS) -> s
 def report_to_dict(report: ActivityReport, include_buckets: bool = True) -> dict:
     """An ActivityReport as plain JSON-serializable data."""
     settings = report.settings
-    data = {
+    data: dict[str, object] = {
         "name": report.name,
         "sport": report.sport.value,
         "distance_m": report.distance_m,
         "moving_seconds": report.moving_seconds,
         "mean_speed_mps": report.distance_m / report.moving_seconds,
         "objective": report.objective,
-        "unscored_distance_m": report.unscored_distance_m,
+        "steep_distance_m": report.steep_distance_m,
+        "dawdle_distance_m": report.dawdle_distance_m,
+        "mixed_distance_m": report.mixed_distance_m,
         "mean_log_residual": report.mean_log_residual,
         "max_time_error_seconds": report.max_time_error_seconds,
         "max_time_error_at_m": report.max_time_error_at_m,

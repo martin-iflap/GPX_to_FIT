@@ -206,7 +206,7 @@ def warm_cache(
     if not missing:
         return 0
 
-    pool_size = workers if workers is not None else (os.cpu_count() - 1 or 1)
+    pool_size = workers if workers is not None else (os.cpu_count() or 1)
     pool_size = max(1, min(pool_size, len(missing)))
     arguments = [(str(path), str(cache_dir)) for path in missing]
 
