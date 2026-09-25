@@ -27,6 +27,22 @@ _TOBLER_SLOPE_OFFSET = 0.05  # shifts peak speed to a gentle ~5% downhill grade
 # finer than ~30 m anyway, so shorter features aren't real terrain.
 GRADIENT_WINDOW_M = 70.0
 
+# A window that straddles a hilltop or valley floor averages the climb
+# against the descent and reads the crest as flat — always biased toward 0%,
+# never away from it. So the route is split into climbs and descents at its
+# turning points, and near one a leg's window shrinks, still centred on the
+# leg, until it ends at the turning point.
+
+# A turning point only counts once the route has moved this far up or down from it.
+# This is a hysteresis to ignore small wiggles in the elevation data.
+TURNING_POINT_MIN_RISE_M = 5.0
+
+# The shrinking stops here, about the resolution of the DEM data behind most
+# GPX elevation: 1 m of rounding over a shorter window is a bigger error than
+# the crest bias it would remove. Within half of this of a turning point the
+# window keeps this length and slides back from the crest instead.
+TURNING_POINT_MIN_WINDOW_M = 30.0
+
 # Minetti's polynomial is only calibrated within roughly this gradient
 # range; beyond it the un-clamped quintic turns back upward instead of
 # decreasing. Rather than clamp the gradient itself (which would pin every
@@ -138,16 +154,70 @@ def _elevation_at(
     return elevations[before] + fraction * (elevations[index] - elevations[before])
 
 
+def _turning_points(elevations: list[float], min_rise: float) -> list[int]:
+    """Indexes of the route's hilltops and valley floors, in order.
+
+    A zigzag with hysteresis: the lowest (or highest) point seen since the
+    last turning point becomes one only once the route has climbed (or
+    descended) at least `min_rise` back from it, so wiggles smaller than
+    that never split a run. Consecutive turning points therefore alternate
+    between peak and valley, each at least `min_rise` from the last. The
+    track's own first and last points are never returned.
+
+    Where the extreme is a flat top (several points at the same elevation,
+    common with whole-metre DEM data), the middle of them is used, so the
+    flat is shared between the climb and the descent either side of it.
+
+    Args:
+        elevations: Elevation per point, in route order.
+        min_rise: Metres the route must move back from an extreme to confirm it.
+    Returns:
+        Point indexes, strictly increasing.
+    """
+    turns = []
+    direction = 0  # +1 climbing, -1 descending, 0 not yet known
+    # First and last index of the lowest/highest elevation since the last turning point.
+    low_first = low_last = high_first = high_last = 0
+    for index in range(1, len(elevations)):
+        elevation = elevations[index]
+        if elevation > elevations[high_first]:
+            high_first = high_last = index
+        elif elevation == elevations[high_first]:
+            high_last = index
+        if elevation < elevations[low_first]:
+            low_first = low_last = index
+        elif elevation == elevations[low_first]:
+            low_last = index
+
+        if direction <= 0 and elevation - elevations[low_first] >= min_rise:
+            if direction < 0:
+                turns.append((low_first + low_last) // 2)
+            direction = 1
+            high_first = high_last = index
+        elif direction >= 0 and elevations[high_first] - elevation >= min_rise:
+            if direction > 0:
+                turns.append((high_first + high_last) // 2)
+            direction = -1
+            low_first = low_last = index
+    return turns
+
+
 def calculate_gradient(track: Track, window_m: float = GRADIENT_WINDOW_M) -> list[float]:
-    """Calculate each leg's gradient, averaged over a distance window centred on the leg.
+    """Calculate each leg's gradient, averaged over a distance window around the leg.
+
+    The window is centred on the leg, but never crosses a turning point
+    (see TURNING_POINT_MIN_RISE_M) or the track's ends. Near a turning point
+    it shrinks symmetrically to end there, down to TURNING_POINT_MIN_WINDOW_M;
+    past that floor, and at the track's ends, it keeps its length and slides
+    back inside the leg's own climb or descent. It is only shorter than that
+    where the whole run is.
 
     Args:
         track: Track whose points already have elevation and distance_from_start
             set, with distance_from_start non-decreasing.
         window_m: Route distance, in meters, the gradient is averaged over (see
             GRADIENT_WINDOW_M). The window is widened to cover the leg itself
-            if the leg is longer, and truncated at the track's ends rather
-            than padded. 0 gives plain point-to-point rise/run.
+            if the leg is longer. 0 gives plain point-to-point rise/run.
 
     Returns:
         One gradient per leg (N-1 values for N points), as a dimensionless
@@ -163,17 +233,37 @@ def calculate_gradient(track: Track, window_m: float = GRADIENT_WINDOW_M) -> lis
 
     distances = [p.distance_from_start for p in track.points]
     elevations = [p.elevation for p in track.points]
-    half_window = window_m / 2
+    # Point indexes where each climb or descent ends; every leg lies inside exactly one run.
+    run_ends = _turning_points(elevations, TURNING_POINT_MIN_RISE_M) + [len(distances) - 1]
+    run = 0
+    run_low = distances[0] if distances else 0.0
 
     gradients = []
-    for leg_start, leg_end in zip(distances, distances[1:]):
+    for leg_index, (leg_start, leg_end) in enumerate(zip(distances, distances[1:])):
+        if leg_index == run_ends[run]:
+            run_low = distances[leg_index]
+            run += 1
+        run_high = distances[run_ends[run]]
         if leg_end <= leg_start:
             gradients.append(0.0)
             continue
         middle = (leg_start + leg_end) / 2
-        # Widened to cover the leg itself, then clamped to the track's extent.
-        window_low = max(distances[0], min(leg_start, middle - half_window))
-        window_high = min(distances[-1], max(leg_end, middle + half_window))
+        full_half = max(window_m, leg_end - leg_start) / 2
+        # Room on each side before a turning point; the track's own ends aren't one.
+        # The leg lies inside its run, so this never shrinks below the leg itself.
+        room_low = middle - run_low if run > 0 else math.inf
+        room_high = run_high - middle if run < len(run_ends) - 1 else math.inf
+        half_window = min(full_half, max(min(room_low, room_high), TURNING_POINT_MIN_WINDOW_M / 2))
+        # Then slid back inside the run rather than cut short at its edge.
+        window_low = middle - half_window
+        window_high = middle + half_window
+        # can happen within TURNING_POINT_MIN_WINDOW_M / 2 of a turning point, or at the track's start
+        if window_low < run_low:
+            window_high = min(run_high, window_high + (run_low - window_low))
+            window_low = run_low
+        elif window_high > run_high:
+            window_low = max(run_low, window_low - (window_high - run_high))
+            window_high = run_high
         rise = (
             _elevation_at(distances, elevations, window_high, last_at_distance=False)
             - _elevation_at(distances, elevations, window_low, last_at_distance=True)

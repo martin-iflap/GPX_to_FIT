@@ -303,9 +303,9 @@ class TestCombineUsesSmoothedWholeTrackGradient:
     def test_gradient_window_reaches_across_mid_route_anchors(self):
         # A mid-route anchor is a known time, not a break in the terrain:
         # legs right after it must be smoothed with the terrain before it
-        # too, not with a window truncated at the anchor.
+        # too, not with a window cut off at the anchor.
         track = Track(points=[
-            point(elevation=0.0 if d <= 200 else 1.0, distance_from_start=float(d)) for d in range(0, 410, 10)
+            point(elevation=0.0 if d <= 190 else 1.0, distance_from_start=float(d)) for d in range(0, 410, 10)
         ])
         anchor_index = 20  # the point at 200 m
         mid_time = START + timedelta(minutes=1)
@@ -314,8 +314,8 @@ class TestCombineUsesSmoothedWholeTrackGradient:
 
         whole_track_gradients = calculate_gradient(Track(points=track.points))[anchor_index:]
         segment_only_gradients = calculate_gradient(Track(points=track.points[anchor_index:]))
-        # premise: truncating the window at the anchor would read a steeper step
-        assert segment_only_gradients[0] > whole_track_gradients[0] * 1.5
+        # premise: a window cut off at the anchor would miss the step just before it
+        assert whole_track_gradients[0] > 0.0 == segment_only_gradients[0]
         # premise: this is a brisk, near-flat workout, so it paces on pure
         # Minetti — which keeps the expected speeds below a single curve.
         assert resolved_weight(track, (end_time - START).total_seconds(), SportType.RUNNING) == 0.0
@@ -525,7 +525,7 @@ class TestCombineSmoothness:
 
         default = centred(self._log_leg_speeds(self._paced(DEFAULT_SMOOTHNESS)))
         scaled = centred(self._log_leg_speeds(self._paced(level)))
-        assert max(abs(value) for value in default) > 0.2  # premise: the default really swings
+        assert max(abs(value) for value in default) > 0.15  # premise: the default really swings
         for got, reference in zip(scaled, default):
             assert got == pytest.approx(factor * reference, abs=0.01)
 

@@ -3,8 +3,11 @@ import pytest
 from gpx2fit.core.models import Track
 from gpx2fit.core.pacing.gradient import (
     GRADIENT_WINDOW_M,
+    TURNING_POINT_MIN_WINDOW_M,
     CurveExponents,
     CurveShape,
+    TURNING_POINT_MIN_RISE_M,
+    _turning_points,
     blended_speeds_from_gradients,
     calculate_gradient,
     minetti_speeds_from_gradients,
@@ -134,7 +137,7 @@ class TestGradientSmoothing:
         gradients = calculate_gradient(track)
         assert gradients[0] == pytest.approx(0.02)
 
-    def test_window_is_truncated_at_the_track_ends_not_padded(self):
+    def test_window_is_kept_inside_the_track_ends_not_padded(self):
         # A uniform 5% slope: the first and last legs have less than half a
         # window of route on one side, and must still read 5%, not be
         # diluted by some imaginary flat ground beyond the route.
@@ -142,6 +145,113 @@ class TestGradientSmoothing:
         gradients = calculate_gradient(track)
         assert gradients[0] == pytest.approx(0.05)
         assert gradients[-1] == pytest.approx(0.05)
+
+    def test_window_slides_rather_than_shrinks_at_the_track_ends(self):
+        # Whole-metre steps every 20 m on a 5% slope. A window cut short at
+        # the start would see only the first step or two; slid inward, it
+        # still averages a full window's worth of them.
+        track = _track([(float(round(0.05 * d)), float(d)) for d in range(0, 405, 5)])
+        first_leg = calculate_gradient(track)[0]
+        assert abs(first_leg - 0.05) <= 1.0 / GRADIENT_WINDOW_M + 1e-9
+
+
+class TestTurningPoints:
+    """The window never averages a climb against the descent on the other side of its crest."""
+
+    @staticmethod
+    def _crest(peak_at: float, slope: float, length: float, step: float = 5.0) -> Track:
+        """Climb at `slope` to a peak at `peak_at`, then descend at the same slope."""
+        return _track([
+            (slope * (peak_at - abs(d - peak_at)), d)
+            for d in (i * step for i in range(int(length / step) + 1))
+        ])
+
+    def test_legs_next_to_a_hilltop_keep_their_full_gradient(self):
+        # A 10% climb to a sharp crest and a 10% descent. A centred window
+        # would read the legs either side of the top as nearly flat.
+        track = self._crest(peak_at=300.0, slope=0.1, length=600.0)
+        gradients = calculate_gradient(track)
+        for g, a in zip(gradients, track.points):
+            assert g == pytest.approx(0.1 if a.distance_from_start < 300.0 else -0.1)
+
+    def test_legs_next_to_a_valley_floor_keep_their_full_gradient(self):
+        track = _track([(0.08 * abs(d - 200.0), float(d)) for d in range(0, 405, 5)])
+        gradients = calculate_gradient(track)
+        for g, a in zip(gradients, track.points):
+            assert g == pytest.approx(-0.08 if a.distance_from_start < 200.0 else 0.08)
+
+    def test_a_hill_shorter_than_the_window_is_not_flattened_at_its_top(self):
+        # 6 m up over 40 m and back down, on flat ground. A centred 70 m
+        # window reads the legs at the crest as almost flat (~1%).
+        track = _track(
+            [(0.0, 0.0), (0.0, 100.0)]
+            + [(0.15 * d, 100.0 + d) for d in range(5, 45, 5)]
+            + [(6.0 - 0.15 * d, 140.0 + d) for d in range(5, 45, 5)]
+            + [(0.0, 280.0)]
+        )
+        gradients = calculate_gradient(track)
+        crest = next(i for i, p in enumerate(track.points) if p.distance_from_start == 140.0)
+        assert gradients[crest - 1] == pytest.approx(0.15)
+        assert gradients[crest] == pytest.approx(-0.15)
+
+    def test_a_rounded_crest_reads_its_true_slope_not_the_slope_further_down(self):
+        # A parabolic hilltop: the slope really does ease to 0% at the top.
+        # A window shrunk symmetrically onto the leg is a central difference,
+        # exact on a parabola; one slid to a side would read the steeper
+        # slope further down the hill.
+        curvature = 0.0005  # slope changes by 0.1 per 100 m
+        track = _track([(-curvature / 2 * (d - 300.0) ** 2, float(d)) for d in range(0, 605, 5)])
+        gradients = calculate_gradient(track)
+        min_half = TURNING_POINT_MIN_WINDOW_M / 2
+        for g, a, b in zip(gradients, track.points, track.points[1:]):
+            middle = (a.distance_from_start + b.distance_from_start) / 2
+            if abs(middle - 300.0) >= min_half and GRADIENT_WINDOW_M / 2 <= middle <= 600.0 - GRADIENT_WINDOW_M / 2:
+                assert g == pytest.approx(-curvature * (middle - 300.0))
+
+    def test_a_track_without_turning_points_keeps_the_full_centred_window(self):
+        # A 4 m bump on flat ground is below TURNING_POINT_MIN_RISE_M, so the
+        # track is one run and the crest leg (135-140 m) gets the plain
+        # 70 m window centred on it: 102.5 m (0.25 m up) to 172.5 m (0.75 m).
+        assert TURNING_POINT_MIN_RISE_M > 4.0  # premise
+        track = _track(
+            [(0.0, 0.0), (0.0, 100.0)]
+            + [(0.1 * d, 100.0 + d) for d in range(5, 45, 5)]
+            + [(4.0 - 0.1 * d, 140.0 + d) for d in range(5, 45, 5)]
+            + [(0.0, 280.0)]
+        )
+        assert _turning_points([p.elevation for p in track.points], TURNING_POINT_MIN_RISE_M) == []
+        gradients = calculate_gradient(track)
+        assert len(gradients) == len(track.points) - 1
+        crest = next(i for i, p in enumerate(track.points) if p.distance_from_start == 140.0)
+        assert gradients[crest - 1] == pytest.approx(0.5 / GRADIENT_WINDOW_M)
+
+    def test_wiggles_below_the_threshold_do_not_split_the_window(self):
+        # Whole-metre rounding on a gentle slope flips the point-to-point
+        # sign constantly; none of that may count as a crest, or the window
+        # would shrink back onto single quantization steps.
+        track = _track([(float(round(0.03 * d + (0.6 if (d // 5) % 2 else 0.0))), float(d)) for d in range(0, 605, 5)])
+        smoothed = calculate_gradient(track)
+        assert all(abs(g - 0.03) <= 2.0 / GRADIENT_WINDOW_M for g in smoothed)
+
+    def test_a_flat_top_is_shared_between_the_climb_and_the_descent(self):
+        # Climb to 100 m, 40 m flat at the top, then descend. The crest is
+        # taken at the middle of the flat, so neither side's window reaches
+        # over it into the other slope.
+        track = _track(
+            [(0.1 * d, float(d)) for d in range(0, 1005, 5)]
+            + [(100.0, 1000.0 + d) for d in range(5, 45, 5)]
+            + [(100.0 - 0.1 * d, 1040.0 + d) for d in range(5, 1005, 5)]
+        )
+        gradients = calculate_gradient(track)
+        for g, a in zip(gradients, track.points):
+            if a.distance_from_start < 1000.0 - GRADIENT_WINDOW_M:
+                assert g == pytest.approx(0.1)
+            elif a.distance_from_start >= 1040.0 + GRADIENT_WINDOW_M:
+                assert g == pytest.approx(-0.1)
+            else:
+                assert -0.1 - 1e-9 <= g <= 0.1 + 1e-9
+        top = [g for g, a in zip(gradients, track.points) if 1000.0 <= a.distance_from_start < 1040.0]
+        assert top[0] > 0 > top[-1]
 
     def test_duplicated_stop_point_does_not_distort_neighbouring_gradients(self):
         # pacing.stops duplicates a point (same distance and elevation) to
