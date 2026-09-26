@@ -348,7 +348,10 @@ async function fetchSurfaceMultipliers(sportEnumName, runtime) {
  * @param {{distanceFromStart: number, durationSeconds?: number, startIso?: string, endIso?: string}[]} [args.stops] -
  *   mid-route stops: exactly one of durationSeconds (Mode A) or
  *   startIso+endIso (Mode B) per entry
- * @param {string} [args.device] - device name to embed in the FIT file, applied to `_track.device`
+ * @param {{name?: string, manufacturer?: number, product?: number, serialNumber?: number}} [args.device] -
+ *   the FIT device identity: `manufacturer` + `product` are what Strava matches to show a
+ *   device, `name` is written as `product_name` (falling back to the GPX's creator), and
+ *   no `manufacturer` means a neutral "development" ID (see `fit_writer.write_fit`)
  * @param {boolean} [args.surfaceLookup=true] - whether to fetch surface multipliers from
  *   Valhalla; `false` skips the request entirely, so the route's coordinates never
  *   leave the browser (the user-facing privacy opt-out)
@@ -391,7 +394,10 @@ export async function convert({
     runtime.globals.set('sport_enum_name', sportEnumName);
     runtime.globals.set('raw_anchors_json', JSON.stringify(anchors));
     runtime.globals.set('raw_stops_json', JSON.stringify(stops ?? []));
-    runtime.globals.set('device_name', device ?? null);
+    runtime.globals.set('device_name', device?.name ?? null);
+    runtime.globals.set('device_manufacturer', device?.manufacturer ?? null);
+    runtime.globals.set('device_product', device?.product ?? null);
+    runtime.globals.set('device_serial', device?.serialNumber ?? null);
     runtime.globals.set('surface_multipliers_json', surfaceMultipliers ? JSON.stringify(surfaceMultipliers) : null);
     runtime.globals.set('smoothness', smoothness);
 
@@ -404,11 +410,8 @@ export async function convert({
     from gpx2fit.core.pacing.combine import combine
     from gpx2fit.core.pacing.stops import expand_multipliers_with_stops, expand_track_with_stops, resolve_stops
     from gpx2fit.core.fit_writer import write_fit
-    
-    if device_name:
-        _track.device = device_name
-    
-    start = dt.datetime.fromisoformat(start_iso)
+
+    start =dt.datetime.fromisoformat(start_iso)
     boundary = add_start_end_anchors(
         track=_track,
         start_time=start,
@@ -452,7 +455,18 @@ export async function convert({
 
     all_stops = [*resolved_mode_b, *mode_a_stops]
     working_points = expand_track_with_stops(_track.points, all_stops)
-    working_track = Track(points=working_points, sport=sport, device=_track.device, activity_name=_track.activity_name)
+    
+    # Set per conversion, never on _track, so clearing the device between two
+    # conversions of the same route actually clears it.
+    working_track = Track(
+        points=working_points,
+        sport=sport,
+        device=device_name or _track.device,
+        device_manufacturer=None if device_manufacturer is None else int(device_manufacturer),
+        device_product=None if device_product is None else int(device_product),
+        device_serial=None if device_serial is None else int(device_serial),
+        activity_name=_track.activity_name,
+    )
 
     surface_multipliers = json.loads(surface_multipliers_json) if surface_multipliers_json else None
     working_multipliers = (

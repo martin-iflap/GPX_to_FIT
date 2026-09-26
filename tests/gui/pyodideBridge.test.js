@@ -148,3 +148,52 @@ describe('convert smoothness', () => {
     assert.match(combineCall, /\bsmoothness\s*=\s*int\(smoothness\)/);
   });
 });
+
+describe('convert device', () => {
+  const convertArgs = {
+    startIso: '2026-06-01T08:00:00.000Z',
+    durationSeconds: 3600,
+    sportEnumName: 'HIKING',
+    anchors: [],
+    surfaceLookup: false,
+  };
+  let originalFetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    globalThis.loadPyodide = async () => fakeRuntime;
+    globalThis.fetch = async () => ({ ok: true, text: async () => '', json: async () => ({}) });
+    fakeRuntime.globalsSet.clear();
+    fakeRuntime.scripts.length = 0;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    delete globalThis.loadPyodide;
+  });
+
+  it('hands every part of the device identity to Python', async () => {
+    await convert({
+      ...convertArgs,
+      device: { name: 'Garmin Forerunner 965', manufacturer: 1, product: 4315, serialNumber: 42 },
+    });
+    assert.equal(fakeRuntime.globalsSet.get('device_name'), 'Garmin Forerunner 965');
+    assert.equal(fakeRuntime.globalsSet.get('device_manufacturer'), 1);
+    assert.equal(fakeRuntime.globalsSet.get('device_product'), 4315);
+    assert.equal(fakeRuntime.globalsSet.get('device_serial'), 42);
+  });
+
+  it('sets every device global to null when no device is chosen', async () => {
+    await convert(convertArgs);
+    for (const name of ['device_name', 'device_manufacturer', 'device_product', 'device_serial']) {
+      assert.equal(fakeRuntime.globalsSet.get(name), null, name);
+    }
+  });
+
+  it('puts the IDs on the track that gets written, not on the shared parsed route', async () => {
+    await convert({ ...convertArgs, device: { manufacturer: 1, product: 4315 } });
+    const script = fakeRuntime.scripts.find((source) => /\bwrite_fit\(/.test(source));
+    assert.match(script, /device_manufacturer=/);
+    assert.doesNotMatch(script, /_track\.device\s*=/);
+  });
+});

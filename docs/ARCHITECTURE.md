@@ -133,6 +133,9 @@ classDiagram
     points: list~TrackPoint~
     sport: SportType?
     device: str?
+    device_manufacturer: int?
+    device_product: int?
+    device_serial: int?
     activity_name: str?
     start_time() datetime?
     total_distance() float
@@ -454,7 +457,8 @@ segment, so smoothing isn't cut off at an anchor.
 ```
 write_fit(track) -> bytes
   validate: every point has a timestamp, end > start
-  FileIdMessage (manufacturer 1 / product 3076, so Strava shows a Garmin device; product_name = track.device)
+  FileIdMessage (manufacturer/product = track.device_manufacturer/_product, or DEVELOPMENT/0 when None;
+                 serial only if track.device_serial; product_name = track.device)
   SportMessage (RUNNING | WALKING for hiking)
   Event START
   per point: [Event STOP_ALL + START if zero-distance leg took time]  RecordMessage(lat, lon, alt, distance, speed, ts)
@@ -540,6 +544,8 @@ flowchart TD
   pp["profilePanel.js<br/>slide-up panel, toggles"]
   pc["profileChart.js<br/>SVG chart"]
   sc["shortcuts.js<br/>global keys + ? panel"]
+  dp["devicePicker.js<br/>device button + &lt;dialog&gt;"]
+  dev["devices.js<br/>catalog, validation, storage"]
   th["theme.js<br/>light/dark"]
   fmt["format.js<br/>formatting + describeError"]
   cfg["config.js<br/>Thunderforest key (gitignored)"]
@@ -554,6 +560,9 @@ flowchart TD
   main --> photo
   main --> pp
   main --> sc
+  main --> dp
+  dp --> dev
+  dp --> ti
   main --> th
   main --> fmt
   ap --> bridge
@@ -653,6 +662,14 @@ photoAnchors.handleFiles
 - **`shortcuts.js`**: each entry in one `SHORTCUTS` array both binds a key
   and renders a row in the "?" panel. Each action calls `.click()` on the
   existing control.
+- **`devices.js`**: `DEVICE_CATALOG` (brand → `{name, manufacturer, product}`;
+  only IDs with a real source: Garmin from `fit_tool`'s `GarminProduct`, other
+  brands only from a recording Strava named) plus pure helpers
+  (`selectionLabel`, `parseCustomIds`, `parseStoredSelection`,
+  `toConvertDevice`). Tested.
+- **`devicePicker.js`**: the sidebar's device button and the native
+  `<dialog>` it opens with `showModal()`. Persists the choice in
+  `localStorage` (`device`). jsdom has no `showModal`, so it is untested.
 - **`profileChart.js`**: pure helpers (`niceTicks`, `linearScale`,
   `buildSeries`, `stopRuns`, `averageMovingSpeedMps`, `linePath`, …) plus
   `createProfileChart`. The pure part has tests.
@@ -741,20 +758,22 @@ flowchart TD
 This is the literal order of the Python that `convert()` runs. The bridge
 converts JSON and ISO strings into dataclasses first.
 
-1. `_track.device = device_name` (if one was given)
-2. `boundary = add_start_end_anchors(_track, start, duration=…)`
-3. `mid_route = build_user_anchors(_track, raw_anchors, existing_anchors=boundary)`.
+1. `boundary = add_start_end_anchors(_track, start, duration=…)`
+2. `mid_route = build_user_anchors(_track, raw_anchors, existing_anchors=boundary)`.
    The GUI always sends `distanceFromStart`, so no lat/lon lookup happens
    here.
-4. `hard_anchors = sorted(boundary + mid_route)`
-5. `resolved_mode_b, mode_a_stops = resolve_stops(_track, raw_stops, hard_anchors)`
-6. `all_anchors = sorted(hard_anchors + stop_arrival/departure anchors)`
-7. `working_track = Track(expand_track_with_stops(_track.points, all_stops), sport, device, name)`
-8. `working_multipliers = expand_multipliers_with_stops(...)` (if surface
+3. `hard_anchors = sorted(boundary + mid_route)`
+4. `resolved_mode_b, mode_a_stops = resolve_stops(_track, raw_stops, hard_anchors)`
+5. `all_anchors = sorted(hard_anchors + stop_arrival/departure anchors)`
+6. `working_track = Track(expand_track_with_stops(_track.points, all_stops), sport, device, name)`,
+   where `device` is `device_name or _track.device` plus the three device IDs.
+   They go on the working track, never on `_track`, so clearing the device
+   between two conversions of one route really clears it
+7. `working_multipliers = expand_multipliers_with_stops(...)` (if surface
    data was fetched)
-9. `combine(working_track, all_anchors, sport, working_multipliers, mode_a_stops, smoothness)`
-10. `fit_bytes = write_fit(working_track)`
-11. `_profile_samples = build_activity_profile(working_track)`, converted
+8. `combine(working_track, all_anchors, sport, working_multipliers, mode_a_stops, smoothness)`
+9. `fit_bytes = write_fit(working_track)`
+10. `_profile_samples = build_activity_profile(working_track)`, converted
     to camelCase dicts
 
 Surface multipliers are computed against `_track` (not yet expanded), and
@@ -811,7 +830,7 @@ It touches the app in exactly three places:
 |---|---|---|
 | pytest, `core/` | `tests/core/`, `tests/core/pacing/` | every `core` module. Shared track builders live in `tests/core/conftest.py` |
 | pytest, harness | `tests/tuning/` | see [TUNING_ARCHITECTURE.md §13](TUNING_ARCHITECTURE.md#13-tests) |
-| node, GUI | `tests/gui/*.test.js` | `format`, `dateTimeField`, `timeInput`, `markerList`, `photoAnchors`, `pyodideBridge` (against a fake Pyodide), `shortcuts`, `profileChart`. `testUtils/domSetup.js` sets up jsdom |
+| node, GUI | `tests/gui/*.test.js` | `format`, `dateTimeField`, `timeInput`, `markerList`, `photoAnchors`, `pyodideBridge` (against a fake Pyodide), `shortcuts`, `profileChart`, `devices`. `testUtils/domSetup.js` sets up jsdom |
 | untested | none | `map.js`, `anchorPopovers.js`, `anchors.js`, `stops.js`, `profilePanel.js`, `main.js` (Leaflet and popover UI), which have to be checked by hand in a browser |
 
 ---
@@ -850,4 +869,4 @@ It touches the app in exactly three places:
 
 **Adding a persisted setting**
 - Wrap the `localStorage` access in try/catch.
-- Update the "Only three settings" line in `about.html#privacy`.
+- Update the "Only four settings" line in `about.html#privacy`.

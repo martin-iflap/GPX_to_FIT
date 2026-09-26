@@ -8,7 +8,7 @@ from fit_tool.profile.messages.file_id_message import FileIdMessage
 from fit_tool.profile.messages.lap_message import LapMessage
 from fit_tool.profile.messages.record_message import RecordMessage
 from fit_tool.profile.messages.session_message import SessionMessage
-from fit_tool.profile.profile_type import Event, EventType, Sport
+from fit_tool.profile.profile_type import Event, EventType, Manufacturer, Sport
 
 from gpx2fit.core.fit_writer import _fit_timestamp, write_fit
 from gpx2fit.core.models import SportType, Track
@@ -147,6 +147,31 @@ class TestWriteFitOutput:
         decoded = FitFile.from_bytes(write_fit(self._build_track(SportType.RUNNING)))
         file_id = next(r.message for r in decoded.records if isinstance(r.message, FileIdMessage))
         assert not file_id.product_name
+
+    def _file_id(self, track: Track) -> FileIdMessage:
+        decoded = FitFile.from_bytes(write_fit(track))
+        return next(r.message for r in decoded.records if isinstance(r.message, FileIdMessage))
+
+    def test_no_device_writes_development_ids_and_no_serial(self):
+        file_id = self._file_id(self._build_track(SportType.RUNNING))
+        assert file_id.manufacturer == Manufacturer.DEVELOPMENT.value
+        assert file_id.product == 0
+        assert file_id.serial_number is None
+
+    def test_chosen_device_ids_are_written_to_file_id(self):
+        track = self._build_track(SportType.RUNNING)
+        track.device_manufacturer = 1
+        track.device_product = 4315
+        file_id = self._file_id(track)
+        assert (file_id.manufacturer, file_id.product) == (1, 4315)
+        assert file_id.serial_number is None
+
+    def test_serial_number_is_written_only_when_given(self):
+        track = self._build_track(SportType.RUNNING)
+        track.device_manufacturer = 32
+        track.device_product = 43
+        track.device_serial = 123456789
+        assert self._file_id(track).serial_number == 123456789
 
     def test_lap_summary_matches_track_totals(self):
         track = self._build_track(SportType.RUNNING)

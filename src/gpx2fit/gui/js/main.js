@@ -12,6 +12,7 @@ import * as anchorsModule from './anchors.js';
 import * as stopsModule from './stops.js';
 import { initTheme } from './theme.js';
 import { initShortcuts } from './shortcuts.js';
+import { initDevicePicker } from './devicePicker.js';
 import { createAnchorPlacer } from './anchorPopovers.js';
 import { initPhotoDrop, resetPhotoDrop } from './photoAnchors.js';
 import { initProfilePanel, showProfile, hideProfile } from './profilePanel.js';
@@ -28,7 +29,8 @@ const sportControlEl = document.getElementById('sportControl');
 const surfaceLookupToggleEl = document.getElementById('surfaceLookupToggle');
 const smoothnessSliderEl = document.getElementById('smoothnessSlider');
 const smoothnessValueEl = document.getElementById('smoothnessValue');
-const deviceInputEl = document.getElementById('deviceInput');
+const deviceButtonEl = document.getElementById('deviceButton');
+const deviceDialogEl = document.getElementById('deviceDialog');
 const startTimeFieldEl = document.getElementById('startTimeField');
 const startTimeToggleContainer = document.getElementById('startTimeToggle');
 const anchorListEl = document.getElementById('anchorList');
@@ -85,6 +87,7 @@ initProfilePanel({
   showButtonEl: profileShowButtonEl,
   mapModule,
 });
+const devicePicker = initDevicePicker({ buttonEl: deviceButtonEl, dialogEl: deviceDialogEl });
 initShortcuts({
   triggerButton: shortcutsToggle,
   panelContainer: shortcutsPanelEl,
@@ -92,6 +95,7 @@ initShortcuts({
   runButton,
   gpxFileInput,
   photoFileInput: photoFileInputEl,
+  deviceButton: deviceButtonEl,
 });
 
 /* ---------- status ---------- */
@@ -393,7 +397,7 @@ runButton.addEventListener('click', async () => {
       sportEnumName,
       anchors: anchorsPayload,
       stops: stopsPayload,
-      device: deviceInputEl.value.trim() || undefined,
+      device: devicePicker.getConvertDevice(),
       surfaceLookup: surfaceLookupToggleEl.checked,
       smoothness: Number(smoothnessSliderEl.value),
     });

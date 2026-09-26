@@ -35,6 +35,7 @@
         <a href="#anchors">Anchors</a>
         <a href="#photos">Photos</a>
         <a href="#stops">Stops</a>
+        <a href="#device">Device</a>
         <a href="#privacy">Privacy</a>
       </nav>
 
@@ -148,6 +149,32 @@
         </p>
       </section>
 
+      <section id="device" class="about-section">
+        <h2>Device</h2>
+        <p>
+          A FIT file names the device that recorded it with two numbers: a manufacturer ID and a product ID.
+          Strava looks that pair up in its own list of devices and shows the name only if it finds a match. It
+          ignores any device name written into the file. So typing "Garmin Forerunner 965" does nothing on Strava,
+          but the Forerunner 965's IDs do.
+        </p>
+        <p>
+          That's why the picker only offers devices whose IDs are known. Garmin publishes theirs, and a couple of
+          Wahoo ones are known from other FIT tools. Most other brands don't publish them, and a guessed ID would
+          just show nothing.
+        </p>
+        <ul>
+          <li><strong>No device</strong> (the default) writes a neutral ID, so Strava shows no device.</li>
+          <li>
+            <strong>Custom IDs</strong> are for any other device. You can copy the IDs from a FIT file that device
+            recorded, using any FIT viewer.
+          </li>
+          <li>
+            <strong>Name embedded in file</strong> is written into the file too. Strava doesn't show it, but some
+            other apps do.
+          </li>
+        </ul>
+      </section>
+
       <section id="privacy" class="about-section about-section--privacy">
         <h2>Privacy</h2>
         <p>
@@ -186,7 +213,10 @@
         </ul>
 
         <h3>Stored in your browser</h3>
-        <p>Only three settings: light or dark theme, whether surface lookup is on, and your pace smoothness level.</p>
+        <p>
+          Only four settings: light or dark theme, whether surface lookup is on, your pace smoothness level, and the
+          device you picked (with its embedded name).
+        </p>
 
         <h3>Check it yourself</h3>
         <p>

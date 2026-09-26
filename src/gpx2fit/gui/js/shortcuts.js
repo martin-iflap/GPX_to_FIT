@@ -15,7 +15,8 @@
 // - Ctrl+Shift+R is a browser hard-reload and is NOT preventable by a page,
 //   so the sport shortcuts use Alt instead.
 // - Alt+D/E/F/T/V/B/S are browser menu or address-bar accelerators and are
-//   deliberately avoided; Alt+H/R/U/P are free (Alt+H opens Firefox's Help
+//   deliberately avoided (so the device picker is Alt+W, for "watch", not
+//   Alt+D); Alt+H/R/U/P/W are free (Alt+H opens Firefox's Help
 //   menu when its menu bar is reachable, which the preventDefault below
 //   suppresses).
 // - Matching is on `event.code`, not `event.key`, because Option+letter on
@@ -49,13 +50,14 @@ function isEditableTarget(target) {
 // `keys` is display-only (rendered as <kbd> chips); `match` is what actually
 // fires. `plain` marks a shortcut with no modifier, which must not fire while
 // the user is typing — with a modifier there's no such ambiguity, so Alt/Ctrl
-// shortcuts stay live inside the time and device fields.
+// shortcuts stay live inside the time fields.
 const SHORTCUTS = [
   { keys: ['Alt', 'H'], label: 'Sport: Hiking', action: 'hiking', match: (e) => isAltCombo(e, 'KeyH') },
   { keys: ['Alt', 'R'], label: 'Sport: Running', action: 'running', match: (e) => isAltCombo(e, 'KeyR') },
   { keys: ['Ctrl', 'Enter'], label: 'Convert to FIT', action: 'convert', match: isPrimaryEnter },
   { keys: ['Alt', 'U'], label: 'Choose a GPX file', action: 'uploadGpx', match: (e) => isAltCombo(e, 'KeyU') },
   { keys: ['Alt', 'P'], label: 'Add photos', action: 'uploadPhotos', match: (e) => isAltCombo(e, 'KeyP') },
+  { keys: ['Alt', 'W'], label: 'Choose a device', action: 'chooseDevice', match: (e) => isAltCombo(e, 'KeyW') },
   { keys: ['?'], label: 'Show these shortcuts', action: 'togglePanel', plain: true, match: (e) => e.key === '?' && !e.ctrlKey && !e.metaKey && !e.altKey },
   { keys: ['Esc'], label: 'Close this panel', action: 'closePanel', plain: true, match: (e) => e.key === 'Escape' },
 ];
@@ -93,6 +95,7 @@ function ariaKeyshortcuts(keys) {
  * @param {HTMLButtonElement} opts.runButton - the Convert button
  * @param {HTMLInputElement} opts.gpxFileInput - the hidden GPX file input
  * @param {HTMLInputElement} opts.photoFileInput - the hidden photo file input
+ * @param {HTMLButtonElement} opts.deviceButton - the sidebar button that opens the device picker
  */
 export function initShortcuts({
   triggerButton,
@@ -101,6 +104,7 @@ export function initShortcuts({
   runButton,
   gpxFileInput,
   photoFileInput,
+  deviceButton,
 }) {
   /* ---------- panel ---------- */
 
@@ -193,6 +197,10 @@ export function initShortcuts({
       case 'uploadPhotos':
         photoFileInput.click();
         return true;
+      case 'chooseDevice':
+        setPanelOpen(false);
+        deviceButton.click();
+        return true;
       case 'togglePanel':
         setPanelOpen(!isPanelOpen());
         return true;
@@ -210,7 +218,9 @@ export function initShortcuts({
   /* ---------- global key handler ---------- */
 
   document.addEventListener('keydown', (event) => {
-    if (event.defaultPrevented) {
+    // A modal dialog (the device picker) makes the page behind it inert, and
+    // its shortcuts with it: Ctrl+Enter mustn't convert from under the popup.
+    if (event.defaultPrevented || document.querySelector('dialog[open]')) {
       return;
     }
     for (const shortcut of SHORTCUTS) {
@@ -235,6 +245,8 @@ export function initShortcuts({
       button?.setAttribute('aria-keyshortcuts', ariaKeyshortcuts(keys));
     } else if (action === 'convert') {
       runButton.setAttribute('aria-keyshortcuts', 'Control+Enter Meta+Enter');
+    } else if (action === 'chooseDevice') {
+      deviceButton.setAttribute('aria-keyshortcuts', ariaKeyshortcuts(keys));
     }
   });
 }

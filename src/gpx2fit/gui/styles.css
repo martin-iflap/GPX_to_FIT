@@ -3,7 +3,15 @@
   --font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", sans-serif;
 
   --bg-base: #f5f6f8;
-  --bg-elevated: rgba(255, 255, 255, 0.78);
+  /* Two tints share one blur. --bg-elevated is the near-opaque one, for
+     surfaces with nothing interesting behind them (the sidebar, its
+     dropdowns) and for the profile chart, whose lines would compete with
+     the map. --glass-bg is the see-through one for popups floating over the
+     map: thin enough, and blurred little enough, that shapes and colours
+     behind them still read, like macOS/iOS widgets. */
+  --bg-elevated: rgba(255, 255, 255, 0.62);
+  --glass-bg: rgba(255, 255, 255, 0.4);
+  --glass-filter: blur(14px) saturate(180%);
   --bg-elevated-2: rgba(15, 23, 42, 0.05);
   --bg-elevated-3: rgba(15, 23, 42, 0.09);
   --border-subtle: rgba(15, 23, 42, 0.09);
@@ -37,9 +45,18 @@
   --transition: 160ms ease;
 }
 
+/* color-scheme drives native scrollbars and form controls. "light dark" on
+   its own lets the browser follow the OS, so a light page on a dark OS got
+   dark scrollbars; an explicit pick pins it. */
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
 :root[data-theme="dark"] {
+  color-scheme: dark;
   --bg-base: #0b0d12;
   --bg-elevated: rgba(22, 24, 32, 0.72);
+  --glass-bg: rgba(22, 24, 32, 0.45);
   --bg-elevated-2: rgba(255, 255, 255, 0.06);
   --bg-elevated-3: rgba(255, 255, 255, 0.1);
   --border-subtle: rgba(255, 255, 255, 0.1);
@@ -62,6 +79,7 @@
   :root:not([data-theme="light"]) {
     --bg-base: #0b0d12;
     --bg-elevated: rgba(22, 24, 32, 0.72);
+    --glass-bg: rgba(22, 24, 32, 0.45);
     --bg-elevated-2: rgba(255, 255, 255, 0.06);
     --bg-elevated-3: rgba(255, 255, 255, 0.1);
     --border-subtle: rgba(255, 255, 255, 0.1);
@@ -171,8 +189,8 @@ body {
   min-height: 0;
   overflow-y: auto;
   background: var(--bg-elevated);
-  backdrop-filter: blur(20px) saturate(140%);
-  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
   border-left: 1px solid var(--border-subtle);
   box-shadow: -20px 0 60px var(--shadow-color);
 }
@@ -724,8 +742,8 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
   background: var(--bg-elevated);
-  backdrop-filter: blur(20px) saturate(140%);
-  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
   box-shadow: 0 20px 60px var(--shadow-color);
 }
 
@@ -801,8 +819,8 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
   background: var(--bg-elevated);
-  backdrop-filter: blur(20px) saturate(140%);
-  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
   box-shadow: 0 20px 60px var(--shadow-color);
 }
 
@@ -1072,10 +1090,10 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 
 .leaflet-popup-content-wrapper,
 .leaflet-popup-tip {
-  background: var(--bg-elevated);
+  background: var(--glass-bg);
   color: var(--text-primary);
-  backdrop-filter: blur(20px) saturate(140%);
-  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
 }
 
 .leaflet-popup-content-wrapper {
@@ -1175,8 +1193,8 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   display: flex;
   flex-direction: column;
   background: var(--bg-elevated);
-  backdrop-filter: blur(20px) saturate(140%);
-  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
   border-top: 1px solid var(--border-subtle);
   box-shadow: 0 -12px 40px var(--shadow-color);
   transform: translateY(calc(100% + 40px));
@@ -1211,9 +1229,9 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   padding: 0.4rem 0.9rem;
   border: 1px solid var(--border-subtle);
   border-radius: 999px;
-  background: var(--bg-elevated);
-  backdrop-filter: blur(20px) saturate(140%);
-  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
   box-shadow: 0 8px 24px var(--shadow-color);
   color: var(--text-primary);
   font: inherit;
@@ -1440,6 +1458,228 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   .app-shell {
     --profile-transition: 0s;
   }
+}
+
+/* ---------- device picker ---------- */
+
+/* Styled like a filled input rather than a button: it shows a value, the
+   current device, and only opens a picker for it. */
+.device-button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated-2);
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--transition), background var(--transition);
+}
+
+.device-button::after {
+  content: "›";
+  color: var(--text-tertiary);
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.device-button.is-empty {
+  color: var(--text-tertiary);
+}
+
+.device-button:hover {
+  border-color: var(--accent);
+}
+
+.device-button:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* The <dialog> itself is only a transparent, centred box; the frosted panel
+   inside it fills it exactly, so a click whose target is the dialog element
+   can only have landed on the backdrop (see devicePicker.js). */
+.device-dialog {
+  width: min(440px, calc(100vw - 2 * var(--space-4)));
+  max-height: min(80vh, 720px);
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  overflow: visible;
+}
+
+.device-dialog::backdrop {
+  background: rgba(15, 23, 42, 0.22);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+}
+
+.device-dialog-panel {
+  display: flex;
+  flex-direction: column;
+  max-height: inherit;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+  box-shadow: 0 20px 60px var(--shadow-color);
+}
+
+.device-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-4) var(--space-4) var(--space-2) var(--space-5);
+}
+
+.device-dialog-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.device-dialog-close {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 50%;
+  background: var(--bg-elevated-2);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.device-dialog-close:hover {
+  background: var(--bg-elevated-3);
+  color: var(--text-primary);
+}
+
+.device-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-5) var(--space-5);
+  overflow-y: auto;
+}
+
+.device-brand {
+  margin: var(--space-2) 0 calc(-1 * var(--space-1));
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.device-catalog {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.device-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+}
+
+.device-option {
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated-2);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.85rem;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.device-option:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.device-option.is-selected {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+.device-option--none {
+  color: var(--text-secondary);
+}
+
+.device-custom {
+  margin-top: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.device-custom summary {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.device-custom-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.device-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.device-field--wide {
+  grid-column: 1 / -1;
+}
+
+.device-custom-error {
+  margin: var(--space-2) 0 0;
+  font-size: 0.78rem;
+  color: var(--warning);
+}
+
+.device-custom-apply {
+  margin-top: var(--space-3);
+  padding: 0.45rem 0.9rem;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.device-custom-apply:hover {
+  background: var(--accent-hover);
+}
+
+/* The embedded-name field closes the list off from the custom IDs above. */
+.device-custom + .device-field {
+  margin-top: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
 }
 
 /* ---------- about page (about.html) ---------- */

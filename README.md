@@ -45,8 +45,10 @@ your device.
 - **Activity profile.** After conversion, a chart shows elevation and the
   generated speed or pace over time or distance, with stops marked. Hovering
   the chart highlights the point on the map.
-- **Strava-ready output.** Records, laps, session summary and timer events,
-  written with a device ID Strava recognises.
+- **Strava-ready output.** Records, laps, session summary and timer events.
+- **Device picker.** Choose a watch Strava recognises (it shows a device
+  only for manufacturer and product IDs it knows, never for a typed name),
+  enter custom IDs, or leave the file without a device.
 - **Keyboard shortcuts** for the main actions, and light and dark themes.
 
 Supported sports: **running** and **hiking**. Cycling needs a different
@@ -166,6 +168,9 @@ The full pipeline works end to end in the browser. Known limitations:
   uptime guarantee. If the request fails, the conversion still completes,
   without surface-based pacing.
 - Only running and hiking are supported.
+- The device picker lists Garmin models and two Wahoo bike computers (ELEMNT
+  and ELEMNT BOLT). Other brands don't publish their product IDs, so they
+  need custom IDs copied from one of their own FIT files.
 - Photo anchors read EXIF from JPEG and HEIC images. Video files aren't
   supported.
 

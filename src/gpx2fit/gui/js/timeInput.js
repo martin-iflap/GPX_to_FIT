@@ -120,7 +120,7 @@ function keepDecimalDigits(value) {
  *   whole-number) and rounds each step back to one decimal place, since
  *   repeated 0.1 steps otherwise drift into 4.300000000000001.
  */
-function wireNumericBox(input, { max = null, decimal = false, step = 1 } = {}) {
+export function wireNumericBox(input, { max = null, decimal = false, step = 1 } = {}) {
   const clean = (value) => (decimal ? keepDecimalDigits(value) : value.replace(/\D/g, ''));
 
   input.addEventListener('input', () => {

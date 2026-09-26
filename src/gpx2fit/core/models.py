@@ -52,12 +52,23 @@ class Track:
     Attributes:
         points: The track's points, in route order.
         sport: Sport type used for pacing and FIT generation. Optional for now.
-        device: Device name to embed in the FIT file, if available.
+        device: Device name to embed in the FIT file, if available. Written
+            as `product_name`, which Strava ignores.
+        device_manufacturer: FIT manufacturer ID (Garmin is 1). Together
+            with `device_product` this is what Strava matches against its
+            own device table to show a device name. None writes a neutral
+            "development" ID that no platform labels as a real device.
+        device_product: FIT product ID within that manufacturer. Only
+            meaningful alongside `device_manufacturer`.
+        device_serial: FIT serial number. Not shown by Strava; None omits it.
         activity_name: Cosmetic activity name, shown in Strava's feed.
     """
     points: list[TrackPoint]
     sport: SportType | None = None
     device: str | None = None
+    device_manufacturer: int | None = None
+    device_product: int | None = None
+    device_serial: int | None = None
     activity_name: str | None = None
 
     @property
@@ -268,7 +279,3 @@ class ProfileSample:
 
 # (Get-ChildItem -Recurse -File | Get-Content | Measure-Object).Count
 # rm ~/.claude/projects/YOUR_PROJECT_FOLDER/SESSION_ID.jsonl - delete session history if not needed anymore
-
-# Solve the Strava device name issue. for v1 perhaps just update the about page.
-# don't forget fit writer is set up as forerunner 240!
-# test without serial number and with random name.

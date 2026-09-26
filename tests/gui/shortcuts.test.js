@@ -48,13 +48,18 @@ function mount() {
   const gpxFileInput = fileInput(gpxClicks, 'gpx');
   const photoFileInput = fileInput(photoClicks, 'photo');
 
+  const deviceButton = document.createElement('button');
+  deviceButton.type = 'button';
+  const deviceClicks = [];
+  deviceButton.addEventListener('click', () => deviceClicks.push('device'));
+
   const triggerButton = document.createElement('button');
   triggerButton.type = 'button';
   const panelContainer = document.createElement('div');
 
-  document.body.append(sportControlEl, runButton, gpxFileInput, photoFileInput, triggerButton, panelContainer);
+  document.body.append(sportControlEl, runButton, gpxFileInput, photoFileInput, deviceButton, triggerButton, panelContainer);
 
-  initShortcuts({ triggerButton, panelContainer, sportControlEl, runButton, gpxFileInput, photoFileInput });
+  initShortcuts({ triggerButton, panelContainer, sportControlEl, runButton, gpxFileInput, photoFileInput, deviceButton });
 
   const panel = panelContainer.querySelector('.shortcuts-panel');
 
@@ -65,10 +70,12 @@ function mount() {
     runClicks,
     gpxClicks,
     photoClicks,
+    deviceButton,
+    deviceClicks,
     triggerButton,
     panel,
     reset() {
-      [sportClicks, runClicks, gpxClicks, photoClicks].forEach((log) => log.splice(0));
+      [sportClicks, runClicks, gpxClicks, photoClicks, deviceClicks].forEach((log) => log.splice(0));
       runButton.disabled = false;
       panel.classList.add('hidden');
       triggerButton.setAttribute('aria-expanded', 'false');
@@ -158,10 +165,33 @@ describe('initShortcuts', () => {
     });
   });
 
+  describe('device picker', () => {
+    it('Alt+W clicks the device button and closes the shortcuts panel', () => {
+      press({ key: '?' });
+      const event = press({ code: 'KeyW', altKey: true });
+      assert.deepEqual(ctx.deviceClicks, ['device']);
+      assert.equal(isPanelOpen(), false);
+      assert.equal(event.defaultPrevented, true);
+    });
+
+    it('does nothing while a dialog is already open', () => {
+      const dialog = document.createElement('dialog');
+      dialog.setAttribute('open', '');
+      document.body.append(dialog);
+      press({ code: 'KeyW', altKey: true });
+      dialog.remove();
+      assert.deepEqual(ctx.deviceClicks, []);
+    });
+
+    it('advertises the binding via aria-keyshortcuts', () => {
+      assert.equal(ctx.deviceButton.getAttribute('aria-keyshortcuts'), 'Alt+W');
+    });
+  });
+
   describe('the shortcuts panel', () => {
     it('lists one row per bound shortcut', () => {
       assert.equal(isPanelOpen(), false);
-      assert.equal(ctx.panel.querySelectorAll('.shortcut-row').length, 7);
+      assert.equal(ctx.panel.querySelectorAll('.shortcut-row').length, 8);
       assert.equal(ctx.triggerButton.getAttribute('aria-expanded'), 'false');
     });
 

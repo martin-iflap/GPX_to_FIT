@@ -155,9 +155,13 @@
           </section>
 
           <section class="control">
-            <label class="control-label" for="deviceInput">Device name (optional)</label>
-            <!-- maxlength matches FitFileBuilder(min_string_size=50) in fit_writer.py -->
-            <input id="deviceInput" type="text" class="text-input" placeholder="e.g. Garmin Forerunner 965" maxlength="50" />
+            <span id="deviceLabel" class="control-label">Device</span>
+            <!-- Label text is set by devicePicker.js from the current choice. -->
+            <button id="deviceButton" type="button" class="device-button is-empty" aria-haspopup="dialog" aria-labelledby="deviceLabel deviceButton">Select a device</button>
+            <p class="control-hint control-hint--flush">
+              Strava only shows devices it recognizes.
+              <a href="about.html#device" target="_blank" rel="opener">Why?</a>
+            </p>
           </section>
 
           <section class="control">
@@ -203,6 +207,51 @@
         </div>
       </aside>
     </div>
+
+    <!-- The device picker (devicePicker.js fills .device-catalog). A modal
+         <dialog> sits in the top layer, above Leaflet, whatever its z-index. -->
+    <dialog id="deviceDialog" class="device-dialog" aria-labelledby="deviceDialogTitle">
+      <div class="device-dialog-panel">
+        <div class="device-dialog-header">
+          <h2 id="deviceDialogTitle" class="device-dialog-title">Choose a device</h2>
+          <button type="button" class="device-dialog-close" aria-label="Close" data-device-close>
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"></line><line x1="18" y1="6" x2="6" y2="18"></line></svg>
+          </button>
+        </div>
+
+        <div class="device-dialog-body">
+          <button type="button" class="device-option device-option--none" data-device-none>No device</button>
+          <div class="device-catalog"></div>
+
+          <details class="device-custom">
+            <summary>Custom IDs</summary>
+            <div class="device-custom-fields">
+              <label class="device-field">
+                <span>Manufacturer</span>
+                <input type="text" inputmode="numeric" class="text-input" data-custom="manufacturer" placeholder="1" />
+              </label>
+              <label class="device-field">
+                <span>Product</span>
+                <input type="text" inputmode="numeric" class="text-input" data-custom="product" placeholder="3076" />
+              </label>
+              <label class="device-field device-field--wide">
+                <span>Serial number (optional)</span>
+                <input type="text" inputmode="numeric" class="text-input" data-custom="serialNumber" />
+              </label>
+            </div>
+            <p class="device-custom-error" role="alert" hidden></p>
+            <button type="button" class="device-custom-apply" data-custom-apply>Use these IDs</button>
+          </details>
+
+          <label class="device-field device-field--wide">
+            <span>Name embedded in file</span>
+            <!-- maxlength matches FitFileBuilder(min_string_size=50) in fit_writer.py -->
+            <input type="text" class="text-input device-name-input" maxlength="50" placeholder="e.g. Garmin Forerunner 965" />
+          </label>
+          <p class="popover-hint">Strava ignores this name and shows the device from its IDs. Some other apps read it.</p>
+        </div>
+      </div>
+    </dialog>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://cdn.jsdelivr.net/pyodide/v0.27.3/full/pyodide.js"></script>
