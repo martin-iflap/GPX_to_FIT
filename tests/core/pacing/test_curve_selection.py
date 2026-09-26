@@ -14,7 +14,12 @@ from gpx2fit.core.pacing.curve_selection import (
     resolve_max_speed_ratio,
     resolve_tobler_weight,
 )
-from gpx2fit.core.pacing.gradient import blended_speeds_from_gradients, calculate_gradient
+from gpx2fit.core.pacing.gradient import (
+    blended_speeds_from_gradients,
+    calculate_gradient,
+    minetti_speeds_from_gradients,
+    tobler_speeds_from_gradients,
+)
 from tests.core.conftest import (
     flat_track,
     leg_distances,
@@ -232,10 +237,20 @@ class TestResolveCurveShape:
                 share = abs(math.log(steep)) / math.log(ratio)
                 assert 1 - math.tanh(share) ** 2 > 0.35
 
-    def test_running_at_its_hilly_bound_keeps_roughly_the_old_minetti_exponents(self):
+    def test_running_at_its_hilly_bound_keeps_roughly_the_old_minetti_uphill_exponent(self):
+        # Only uphill: the downhill exponent moved on purpose when the descent
+        # cost term changed Minetti's shape below 0%.
         shape = resolve_curve_shape(MAX_SPEED_RATIO_BOUNDS[SportType.RUNNING].hilly) # todo: we probably don't want this hardcoded test.
         assert shape.minetti.uphill == pytest.approx(0.6, abs=0.05)
-        assert shape.minetti.downhill == pytest.approx(0.5, abs=0.05)
+
+    @pytest.mark.parametrize("speeds_fn", [minetti_speeds_from_gradients, tobler_speeds_from_gradients])
+    def test_descent_reference_grade_is_clearly_off_flat_speed(self, speeds_fn):
+        # The downhill exponent divides by |log(raw speed at -CURVE_REFERENCE_GRADE)|.
+        # Neither curve is monotonic downhill: both peak on a gentle descent and
+        # cross back through flat speed further down. If a curve change moved
+        # that crossing near the reference grade, the exponent would blow up.
+        [down] = speeds_fn([-CURVE_REFERENCE_GRADE], uphill_exponent=1.0, downhill_exponent=1.0)
+        assert abs(math.log(down)) > 0.15
 
     def test_tobler_is_softened_rather_than_raw(self):
         shape = resolve_curve_shape(MAX_SPEED_RATIO_BOUNDS[SportType.HIKING].hilly)

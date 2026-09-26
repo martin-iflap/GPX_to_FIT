@@ -22,7 +22,8 @@ def _track(legs: list[tuple[float, float]]) -> Track:
 
 
 def _minetti_cost(gradient: float) -> float:
-    """Minetti et al. (2002) energy-cost polynomial, computed independently of the implementation."""
+    """Minetti et al. (2002) energy-cost polynomial plus the 10·|g| descent term,
+    computed independently of the implementation."""
     return (
         155.4 * gradient ** 5
         - 30.4 * gradient ** 4
@@ -30,6 +31,7 @@ def _minetti_cost(gradient: float) -> float:
         + 46.3 * gradient ** 2
         + 19.5 * gradient
         + 3.6
+        + 10.0 * max(0.0, -gradient)
     )
 
 
@@ -265,7 +267,7 @@ class TestTurningPoints:
 
 
 class TestMinettiRawCurve:
-    """With both exponents at 1.0, the model is the pure inverted Minetti cost curve."""
+    """With both exponents at 1.0, the model is the pure inverted cost curve."""
 
     def test_flat_ground_is_the_models_unit_speed(self):
         assert _raw_minetti([0.0]) == pytest.approx([1.0])
@@ -327,10 +329,9 @@ class TestMinettiDefaultCurve:
 class TestMinettiSoftening:
     """The default curve is Minetti's shape with a softened amplitude.
 
-    Raw Minetti (constant metabolic power) predicts a 20% descent at twice
-    flat speed and a 20% climb at 0.4x — a spread wide enough that, once
-    scaled to a slow real-world pace, climbs cross Strava's "resting"
-    threshold. The softening narrows that spread, but must not flatten it
+    Raw Minetti (constant metabolic power) predicts a 20% climb at 0.4x flat
+    speed — a spread wide enough that, once scaled to a slow real-world pace,
+    climbs cross Strava's "resting" threshold. The softening narrows that spread, but must not flatten it
     into near-constant pace either.
     """
 
@@ -353,12 +354,42 @@ class TestMinettiSoftening:
         assert _relative_to_flat(minetti_speeds_from_gradients, 0.2) <= 0.6
         assert _relative_to_flat(minetti_speeds_from_gradients, 0.3) <= 0.5
 
-    def test_moderate_descents_are_still_clearly_faster_than_flat(self):
-        assert _relative_to_flat(minetti_speeds_from_gradients, -0.1) >= 1.15
+    def test_moderate_descents_are_still_faster_than_flat(self):
+        assert _relative_to_flat(minetti_speeds_from_gradients, -0.1) >= 1.05
 
     def test_descent_speed_gain_is_well_below_raw_minettis_doubling(self):
         peak = max(_relative_to_flat(minetti_speeds_from_gradients, -g / 100) for g in range(0, 46))
         assert peak <= 1.6
+
+
+class TestMinettiDescentShape:
+    """The raw curve's descents follow Strava's heart-rate-based grade-adjusted
+    pace rather than Minetti's constant-metabolic-cost doubling (see
+    gradient._minetti_cost). The bands come from Strava's measured factors."""
+
+    def test_fastest_descent_is_a_gentle_one(self):
+        grades = [-g / 1000 for g in range(0, 451)]
+        speeds = _raw_minetti(grades)
+        fastest = grades[speeds.index(max(speeds))]
+        assert -0.11 <= fastest <= -0.07
+        assert 1.10 <= max(speeds) <= 1.20
+
+    def test_steep_descents_are_slower_than_flat(self):
+        assert _relative_to_flat(_raw_minetti, -0.15) > 1.0
+        assert _relative_to_flat(_raw_minetti, -0.2) < 1.0
+        assert _relative_to_flat(_raw_minetti, -0.3) == pytest.approx(0.67, abs=0.03)
+
+    def test_descents_keep_slowing_past_the_fastest_grade(self):
+        gradients = [-0.1, -0.15, -0.2, -0.3, -0.4, -0.44, -0.46, -0.6]
+        speeds = _raw_minetti(gradients)
+        assert all(later < earlier for earlier, later in zip(speeds, speeds[1:]))
+
+    def test_climbs_are_minettis_own(self):
+        def plain_minetti_cost(gradient: float) -> float:
+            return 155.4 * gradient ** 5 - 30.4 * gradient ** 4 - 43.3 * gradient ** 3 + 46.3 * gradient ** 2 + 19.5 * gradient + 3.6
+
+        for g in (0.05, 0.1, 0.2, 0.4):
+            assert _relative_to_flat(_raw_minetti, g) == pytest.approx(plain_minetti_cost(0.0) / plain_minetti_cost(g))
 
     def test_descents_are_softened_more_than_climbs(self):
         # Downhill pace is limited by footing and braking rather than

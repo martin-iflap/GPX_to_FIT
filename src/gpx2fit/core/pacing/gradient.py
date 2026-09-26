@@ -50,17 +50,20 @@ TURNING_POINT_MIN_WINDOW_M = 30.0
 # range follow a scaled Tobler curve instead — see _raw_minetti_relative_speed.
 _MINETTI_MAX_GRADIENT = 0.45
 
+# Extra cost per unit of descent added to Minetti's polynomial — see
+# _minetti_cost. It moves the fastest descent from about -18% to about -9%.
+_MINETTI_DOWNHILL_COST_SLOPE = 10.0
+
 # Minetti's C(g) is an energy cost, so 1/cost swings harder than real pace
-# does (a 20% descent at 2x flat speed, a 20% climb at 0.4x) — scaled to a
-# slow real-world activity, that pushes climbs below Strava's "resting"
-# threshold (their time vanishes from moving time) and turns descents into
-# sprints. So relative speed is raised to these exponents instead: 1.0 is
-# raw Minetti, lower is flatter. Descents are softened more than climbs
-# because downhill pace is limited by footing and braking, not metabolic
-# cost. With these values a 10% climb runs at ~0.68x flat speed, a 20%
-# climb at ~0.50x, and the fastest descent at ~1.4x (TestMinettiSoftening
-# in test_gradient.py pins these bands). They're arguments, not hard-coded,
-# so a future model selector can tune the response per activity.
+# does (a 20% climb at 0.4x flat speed) — scaled to a slow real-world
+# activity, that pushes climbs below Strava's "resting" threshold (their time
+# vanishes from moving time). So relative speed is raised to these exponents
+# instead: 1.0 is the raw curve, lower is flatter. With these values a 10%
+# climb runs at ~0.74x flat speed, a 20% climb at ~0.58x, and the fastest
+# descent (about -9%) at ~1.07x (TestMinettiSoftening in test_gradient.py
+# pins these bands). Paced output doesn't use these defaults:
+# curve_selection.resolve_curve_shape fits both exponents per workout, and
+# these only survive as the defaults of resolve_tobler_weight's probe.
 MINETTI_UPHILL_EXPONENT = 0.6
 MINETTI_DOWNHILL_EXPONENT = 0.5
 
@@ -318,7 +321,17 @@ def tobler_speeds_from_gradients(
 
 
 def _minetti_cost(gradient: float) -> float:
-    """Minetti et al. (2002) energy-cost polynomial C(g) in J/(kg·m), for gradient g within its calibrated domain.
+    """Minetti et al. (2002) energy-cost polynomial C(g) in J/(kg·m), for gradient g within its calibrated domain,
+    plus _MINETTI_DOWNHILL_COST_SLOPE * |g| on descents.
+
+    Minetti's cost keeps falling down to about -18%, so its inverse has descents
+    at twice flat speed. Nobody runs downhill at a constant metabolic cost, so
+    that shape can't be fixed by softening, which scales the curve but keeps the
+    fastest point at -18%. The linear term moves it: Strava's heart-rate-based
+    grade-adjusted pace (reverse-engineered by Aaron Schroeder's `specialsauce`)
+    is fastest at -8 to -10% and 1.14x flat, and back to flat speed by about
+    -18%. The term matches those measurements within ~0.01 from -30% to 0%.
+    Climbs are left as Minetti's.
     Returns:
         The cost of moving one kilogram of body mass one meter along a slope with the given gradient, which is
         inverse of speed.
@@ -330,6 +343,7 @@ def _minetti_cost(gradient: float) -> float:
         + 46.3 * (gradient ** 2)
         + 19.5 * gradient
         + 3.6
+        + _MINETTI_DOWNHILL_COST_SLOPE * max(0.0, -gradient)
     )
 
 
