@@ -60,6 +60,7 @@ export const DEVICE_CATALOG = [
       // RIVAL have no public source, and the corpus's 32/43 is still unnamed.
       { name: 'ELEMNT', manufacturer: WAHOO, product: 28 },
       { name: 'ELEMNT BOLT', manufacturer: WAHOO, product: 31 },
+      { name: 'ELEMNT BOLT V2', manufacturer: WAHOO, product: 43 }, // Gemini said 1164 is for v3, but I am not convinced about the source.
     ],
   },
 ];

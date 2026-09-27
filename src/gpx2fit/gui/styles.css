@@ -1819,6 +1819,10 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   text-align: center;
 }
 
+.about-footer p {
+  margin: 0 0 var(--space-2);
+}
+
 @media (max-width: 480px) {
   .about-page {
     padding-top: var(--space-5);

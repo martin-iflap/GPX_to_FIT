@@ -181,3 +181,17 @@ Python 3.14 · [gpxpy](https://github.com/tkrajina/gpxpy) ·
 [exifr](https://github.com/MikeKovarik/exifr) · Valhalla · vanilla
 JavaScript (ES modules, no framework, no bundler) · pytest · Node's test
 runner + jsdom · numpy (tuning harness only)
+
+## License
+
+Copyright © 2026 Martin.
+
+This project is licensed under the
+[GNU Affero General Public License v3.0](LICENSE). You may use, modify and
+share it, including commercially, as long as you keep the copyright notice and
+release your changes under the same license. That includes hosting a modified
+version as a website: its users must be able to get its full source code.
+
+The third-party libraries it uses keep their own licenses: gpxpy (Apache 2.0),
+fit-tool (BSD 3-Clause), Leaflet (BSD 2-Clause), exifr (MIT) and Pyodide
+(MPL 2.0).
