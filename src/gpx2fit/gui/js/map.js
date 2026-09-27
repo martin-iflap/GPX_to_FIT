@@ -18,6 +18,7 @@
 // is an intentional external global, not a typo.
 
 import { THUNDERFOREST_API_KEY } from './config.js';
+import { isPhoneLayout } from './mobileLayout.js';
 
 const THUNDERFOREST_ATTRIBUTION =
   'Maps &copy; <a href="https://www.thunderforest.com/">Thunderforest</a>, Data &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
@@ -43,13 +44,19 @@ let routeLine = null;
 let routeHitLine = null;
 let hoverMarker = null;
 const markers = new Map();
+// How many pixels at the bottom of the map something else covers (the phone
+// layout's sheet). See setBottomInsetProvider.
+let getBottomInset = () => 0;
+// The phone layout's stand-in for the Leaflet popup; see openAnchorPopup.
+let routeDialog = null;
 
 // Screen-pixel width of the invisible click target drawn on top of the
 // visible route line — the visible stroke (weight 4) is too thin to click
 // reliably, so a much fatter, near-transparent line underneath it (opacity
 // kept just above 0 rather than exactly 0, since a hard 0 risks the
 // renderer treating the stroke as non-hit-testable) absorbs the click.
-const ROUTE_HIT_WEIGHT = 22;
+// A fingertip is far less precise than a mouse, so touch screens get more.
+const ROUTE_HIT_WEIGHT = typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches ? 34 : 22;
 
 /**
  * Creates the Leaflet map instance in the given container. Must be called
@@ -66,6 +73,21 @@ export function initMap(containerId) {
   // step. pan: false keeps the top-left anchored, so the view doesn't drift.
   new ResizeObserver(() => map.invalidateSize({ pan: false })).observe(map.getContainer());
   return map;
+}
+
+/**
+ * Registers how many pixels at the bottom of the map are hidden behind
+ * something (the phone layout's sheet — see mobileLayout.js), so fitting the
+ * route and panning to a pin aim at the part of the map that's visible.
+ * @param {() => number} provider
+ */
+export function setBottomInsetProvider(provider) {
+  getBottomInset = provider;
+}
+
+/** Moves the tile attribution control, e.g. out from under the phone layout's sheet. @param {'topright'|'bottomright'} position */
+export function setAttributionPosition(position) {
+  map.attributionControl?.setPosition(position);
 }
 
 /** Swaps the basemap tile layer. @param {'light'|'dark'} theme */
@@ -124,8 +146,8 @@ export function renderRoute(points, onRouteClick) {
     onRouteClick(event.latlng.lat, event.latlng.lng);
   });
 
-  map.fitBounds(routeLine.getBounds(), { padding: [32, 32] });
   map.invalidateSize();
+  map.fitBounds(routeLine.getBounds(), { paddingTopLeft: [32, 32], paddingBottomRight: [32, 32 + getBottomInset()] });
 }
 
 /** Shows (or moves) the dot marking the profile chart's hovered position on the route. */
@@ -227,12 +249,17 @@ export function renumberMarkers(orderedIds) {
   });
 }
 
-/** Pans (without zooming) the map so the given pin is centered. */
+/** Pans (without zooming) the map so the given pin is centered in the map's visible part. */
 export function panToMarker(id) {
   const entry = markers.get(id);
-  if (entry) {
-    map.panTo(entry.marker.getLatLng());
+  if (!entry) {
+    return;
   }
+  // Centring on a point half the covered height below the pin puts the pin
+  // itself in the middle of what's left uncovered.
+  const zoom = map.getZoom();
+  const target = map.project(entry.marker.getLatLng(), zoom).add([0, getBottomInset() / 2]);
+  map.panTo(map.unproject(target, zoom));
 }
 
 /** Toggles the `.is-active` style on a pin (used for sidebar-row hover/click sync). */
@@ -263,6 +290,13 @@ export function highlightMarker(id, isActive) {
  *   mis-anchored relative to its tip
  */
 export function openAnchorPopup(lat, lon, buildContent) {
+  // On a phone a popup is squeezed into the part of the map above the sheet,
+  // so the same content goes in a modal dialog instead. The builders only
+  // ever see a container, close() and updateLayout(), so they don't change.
+  if (isPhoneLayout()) {
+    openRouteDialog(buildContent);
+    return;
+  }
   const container = document.createElement('div');
   // maxWidth just caps auto-sizing; the actual widths are forced via CSS
   // `!important` (240px normally, 492px for the stop popover's widened
@@ -271,4 +305,26 @@ export function openAnchorPopup(lat, lon, buildContent) {
   const popup = L.popup({ closeButton: true, className: 'anchor-popover', maxWidth: 500 }).setLatLng([lat, lon]);
   buildContent(container, () => map.closePopup(), () => popup.update());
   popup.setContent(container).openOn(map);
+}
+
+/** The phone layout's version of openAnchorPopup: the same content in `#routeDialog`. */
+function openRouteDialog(buildContent) {
+  if (!routeDialog) {
+    routeDialog = document.getElementById('routeDialog');
+    routeDialog.querySelector('[data-route-close]').addEventListener('click', () => routeDialog.close());
+    // Same backdrop check as the device picker: the panel fills the dialog,
+    // so a click whose target is the dialog itself landed on the backdrop.
+    routeDialog.addEventListener('click', (event) => {
+      if (event.target === routeDialog) {
+        routeDialog.close();
+      }
+    });
+  }
+  const body = routeDialog.querySelector('.route-dialog-body');
+  body.replaceChildren();
+  // A dialog sizes itself to its content, so there is no layout to update.
+  buildContent(body, () => routeDialog.close(), () => {});
+  if (!routeDialog.open) {
+    routeDialog.showModal();
+  }
 }

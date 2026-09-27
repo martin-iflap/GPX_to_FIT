@@ -2,7 +2,9 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <!-- Tints a phone browser's toolbar; theme.js keeps it at --bg-base. -->
+    <meta name="theme-color" content="#f5f6f8" />
     <title>GPX to FIT</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <link rel="stylesheet" href="styles.css" />
@@ -98,7 +100,8 @@
               <input id="gpxFileInput" type="file" accept=".gpx" class="visually-hidden" />
               <div class="dropzone-content">
                 <span class="dropzone-icon">⤒</span>
-                <p class="dropzone-text">Drag &amp; drop a GPX file, or <span class="dropzone-link">browse</span></p>
+                <!-- .copy-pointer / .copy-touch: styles.css shows one or the other. -->
+                <p class="dropzone-text"><span class="copy-pointer">Drag &amp; drop a GPX file, or <span class="dropzone-link">browse</span></span><span class="copy-touch"><span class="dropzone-link">Tap to choose a GPX file</span></span></p>
                 <p id="fileName" class="dropzone-filename" hidden></p>
               </div>
             </div>
@@ -175,7 +178,7 @@
               <span class="control-label">Anchor points</span>
             </div>
             <ul id="anchorList" class="anchor-list"></ul>
-            <p id="anchorEmptyState" class="anchor-empty">No anchor points yet — click anywhere on the route to add one.</p>
+            <p id="anchorEmptyState" class="anchor-empty">No anchor points yet — <span class="copy-pointer">click</span><span class="copy-touch">tap</span> anywhere on the route to add one.</p>
           </section>
 
           <section class="control">
@@ -186,7 +189,7 @@
               <input id="photoFileInput" type="file" accept="image/*" multiple class="visually-hidden" />
               <div class="dropzone-content">
                 <span class="dropzone-icon">📷</span>
-                <p class="dropzone-text">Drag &amp; drop photos, or <span class="dropzone-link">browse</span></p>
+                <p class="dropzone-text"><span class="copy-pointer">Drag &amp; drop photos, or <span class="dropzone-link">browse</span></span><span class="copy-touch"><span class="dropzone-link">Tap to add photos</span></span></p>
               </div>
             </div>
             <ul id="photoList" class="anchor-list"></ul>
@@ -198,7 +201,7 @@
               <span class="control-label">Stops</span>
             </div>
             <ul id="stopList" class="anchor-list"></ul>
-            <p id="stopEmptyState" class="anchor-empty">No stops yet — click the route and choose "Add stop" to record a pause.</p>
+            <p id="stopEmptyState" class="anchor-empty">No stops yet — <span class="copy-pointer">click</span><span class="copy-touch">tap</span> the route and choose "Add stop" to record a pause.</p>
           </section>
 
           <button id="runButton" class="primary-button" type="button" disabled>Convert to FIT</button>
@@ -250,6 +253,17 @@
           </label>
           <p class="popover-hint">Strava ignores this name and shows the device from its IDs. Some other apps read it.</p>
         </div>
+      </div>
+    </dialog>
+
+    <!-- The phone layout's stand-in for the map's anchor/stop popups (see
+         map.js openAnchorPopup); anchorPopovers.js fills .route-dialog-body. -->
+    <dialog id="routeDialog" class="device-dialog route-dialog" aria-label="Route point">
+      <div class="device-dialog-panel">
+        <button type="button" class="device-dialog-close" aria-label="Close" data-route-close>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"></line><line x1="18" y1="6" x2="6" y2="18"></line></svg>
+        </button>
+        <div class="route-dialog-body"></div>
       </div>
     </dialog>
 

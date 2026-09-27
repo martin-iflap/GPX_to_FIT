@@ -35,6 +35,10 @@ describe('DEVICE_CATALOG', () => {
   it('includes the Wahoo ELEMNT BOLT, the ID the corpus BOLT files carry', () => {
     assert.equal(selectionLabel({ ...NO_DEVICE, manufacturer: 32, product: 31 }), 'Wahoo ELEMNT BOLT');
   });
+
+  it('includes the Wahoo ELEMNT BOLT V2, the ID real BOLT V2 files carry', () => {
+    assert.equal(selectionLabel({ ...NO_DEVICE, manufacturer: 32, product: 43 }), 'Wahoo ELEMNT BOLT V2');
+  });
 });
 
 describe('selectionLabel', () => {
@@ -47,7 +51,7 @@ describe('selectionLabel', () => {
   });
 
   it('shows the IDs of a custom device', () => {
-    assert.equal(selectionLabel({ ...NO_DEVICE, manufacturer: 32, product: 43 }), 'Custom device (32/43)');
+    assert.equal(selectionLabel({ ...NO_DEVICE, manufacturer: 32, product: 1164 }), 'Custom device (32/1164)');
   });
 });
 

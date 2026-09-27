@@ -16,6 +16,7 @@ import { initDevicePicker } from './devicePicker.js';
 import { createAnchorPlacer } from './anchorPopovers.js';
 import { initPhotoDrop, resetPhotoDrop } from './photoAnchors.js';
 import { initProfilePanel, showProfile, hideProfile } from './profilePanel.js';
+import { coveredMapHeight, initMobileLayout, revealMap } from './mobileLayout.js';
 import { describeError, fitFileNameFromGpx, formatDistanceKm, formatFileSize } from './format.js';
 
 const dropzone = document.getElementById('dropzone');
@@ -57,6 +58,8 @@ const profileSpeedToggleEl = document.getElementById('profileSpeedToggle');
 const profileElevationToggleEl = document.getElementById('profileElevationToggle');
 const profileCloseButtonEl = document.getElementById('profileCloseButton');
 const profileShowButtonEl = document.getElementById('profileShowButton');
+const mapPanelEl = document.getElementById('mapPanel');
+const sidebarEl = document.getElementById('sidebar');
 
 // Route data from the most recently parsed GPX file, and the current values
 // of the sport/start-time controls. Read by the convert handler and by the
@@ -87,6 +90,14 @@ initProfilePanel({
   showButtonEl: profileShowButtonEl,
   mapModule,
 });
+initMobileLayout({
+  sidebarEl,
+  mapPanelEl,
+  profilePanelEl,
+  profileShowButtonEl,
+  mapModule,
+});
+mapModule.setBottomInsetProvider(coveredMapHeight);
 const devicePicker = initDevicePicker({ buttonEl: deviceButtonEl, dialogEl: deviceDialogEl });
 initShortcuts({
   triggerButton: shortcutsToggle,
@@ -314,8 +325,10 @@ async function handleFile(file) {
     // answer once a GPX has actually parsed.
     startTimeToggle.refresh();
 
+    // Before rendering, so the route is fitted to the map the sheet will leave visible.
+    revealMap();
     mapModule.renderRoute(points, anchorPlacer.handleRouteClick);
-    setStatus('Route loaded. Set a start time and a duration, end time or average speed, or click the route to add anchors.');
+    setStatus('Route loaded. Set a start time and a duration, end time or average speed, or tap the route to add anchors.');
   } catch (error) {
     console.error(error);
     const { message, kind } = describeError(error);
@@ -333,7 +346,13 @@ dropzone.addEventListener('keydown', (event) => {
 });
 // handleFile is async but fire-and-forget here: it reports its own errors via
 // setStatus and never rejects, so there's nothing for the caller to await.
-gpxFileInput.addEventListener('change', () => void handleFile(gpxFileInput.files[0]));
+gpxFileInput.addEventListener('change', () => {
+  const file = gpxFileInput.files[0];
+  // Cleared so that choosing the same file again (e.g. to start over) still
+  // fires 'change'. The File object stays readable after this.
+  gpxFileInput.value = '';
+  void handleFile(file);
+});
 
 ['dragenter', 'dragover'].forEach((eventName) => {
   dropzone.addEventListener(eventName, (event) => {
@@ -360,6 +379,10 @@ runButton.addEventListener('click', async () => {
   }
 
   downloadLink.hidden = true;
+  // Each conversion's Blob stays in memory for as long as a URL points at it.
+  if (downloadLink.href) {
+    URL.revokeObjectURL(downloadLink.href);
+  }
   downloadLink.removeAttribute('href');
   runButton.disabled = true;
   runButton.classList.add('is-loading');

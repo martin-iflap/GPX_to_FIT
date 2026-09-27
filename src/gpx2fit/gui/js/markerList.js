@@ -7,6 +7,7 @@
 // gets, so that's the only thing callers provide.
 
 import * as mapModule from './map.js';
+import { revealMap } from './mobileLayout.js';
 
 /**
  * @param {object} opts
@@ -78,7 +79,12 @@ export function createMarkerList({ idOffset = 0, markerKind, deleteAriaLabel, re
       });
 
       row.append(info, deleteBtn);
-      row.addEventListener('click', () => mapModule.panToMarker(item.id));
+      row.addEventListener('click', () => {
+        // On a phone the sheet may be covering most of the map; bring it
+        // back into view first, or the pan happens out of sight.
+        revealMap();
+        mapModule.panToMarker(item.id);
+      });
       row.addEventListener('mouseenter', () => mapModule.highlightMarker(item.id, true));
       row.addEventListener('mouseleave', () => mapModule.highlightMarker(item.id, false));
 

@@ -262,4 +262,30 @@ describe('createProfileChart', () => {
     assert.equal(hovered[1], null);
     assert.equal(container.querySelector('.profile-tooltip').hidden, true);
   });
+
+  it('keeps a tapped readout after the finger lifts, until a tap elsewhere', () => {
+    const container = sizedContainer(600, 200);
+    document.body.append(container);
+    const hovered = [];
+    const chart = createProfileChart(container, { onHover: (s) => hovered.push(s) });
+    chart.setData(SAMPLES);
+    const svg = container.querySelector('svg');
+    svg.getBoundingClientRect = () => ({ left: 0, top: 0, width: 600, height: 200 });
+    const touchEvent = (type, init = {}) => {
+      const event = new MouseEvent(type, { bubbles: true, ...init });
+      Object.defineProperty(event, 'pointerType', { value: 'touch' });
+      return event;
+    };
+    const tooltip = container.querySelector('.profile-tooltip');
+
+    svg.dispatchEvent(touchEvent('pointerdown', { clientX: 10000 }));
+    svg.dispatchEvent(touchEvent('pointerleave'));
+    assert.deepEqual(hovered, [SAMPLES[SAMPLES.length - 1]]);
+    assert.equal(tooltip.hidden, false);
+
+    document.body.dispatchEvent(touchEvent('pointerdown'));
+    assert.equal(hovered[hovered.length - 1], null);
+    assert.equal(tooltip.hidden, true);
+    container.remove();
+  });
 });

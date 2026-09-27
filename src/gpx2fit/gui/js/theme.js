@@ -33,15 +33,29 @@ export function initTheme(themeToggleButton) {
     mapModule.setMapTheme(theme);
     const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
     mapModule.updateRouteColor(accent);
+    // A phone browser tints its toolbar with this, so it follows the page.
+    const background = getComputedStyle(document.documentElement).getPropertyValue('--bg-base').trim();
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', background);
   }
 
   themeToggleButton.addEventListener('click', () => {
     const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-    localStorage.setItem('theme', next);
+    try {
+      localStorage.setItem('theme', next);
+    } catch {
+      // Not remembered this time; the switch itself still applies.
+    }
     applyTheme(next);
   });
 
-  const stored = localStorage.getItem('theme');
+  // Storage can throw (site data blocked). Uncaught here, that would stop
+  // main.js before it wires everything after the theme.
+  let stored = null;
+  try {
+    stored = localStorage.getItem('theme');
+  } catch {
+    // Fall back to the OS preference below.
+  }
   if (stored === 'light' || stored === 'dark') {
     applyTheme(stored);
     return;

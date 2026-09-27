@@ -54,13 +54,15 @@ export const DEVICE_CATALOG = [
   {
     brand: 'Wahoo',
     devices: [
-      // From GoldenCheetah's FITmetadata.json (its FIT reader's device-name
-      // table). 31 also appears in real BOLT recordings in the tuning corpus.
-      // Neither has been upload-tested on Strava yet. ROAM, BOLT v2/3 and
-      // RIVAL have no public source, and the corpus's 32/43 is still unnamed.
+      // 28 and 31 are from GoldenCheetah's FITmetadata.json (its FIT reader's
+      // device-name table); 31 also appears in real BOLT recordings in the
+      // tuning corpus. 43 (BOLT V2) comes from the owner's own BOLT V2
+      // recordings. None has been upload-tested on Strava yet. ROAM, BOLT v3
+      // and RIVAL have no confirmed source (1164 has been suggested for the
+      // BOLT v3, unsourced, so it isn't listed).
       { name: 'ELEMNT', manufacturer: WAHOO, product: 28 },
       { name: 'ELEMNT BOLT', manufacturer: WAHOO, product: 31 },
-      { name: 'ELEMNT BOLT V2', manufacturer: WAHOO, product: 43 }, // Gemini said 1164 is for v3, but I am not convinced about the source.
+      { name: 'ELEMNT BOLT V2', manufacturer: WAHOO, product: 43 },
     ],
   },
 ];

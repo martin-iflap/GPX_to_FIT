@@ -543,6 +543,7 @@ flowchart TD
   dtf["dateTimeField.js<br/>custom date + time fields, segment linking"]
   pp["profilePanel.js<br/>slide-up panel, toggles"]
   pc["profileChart.js<br/>SVG chart"]
+  mob["mobileLayout.js<br/>phone scroll sheet"]
   sc["shortcuts.js<br/>global keys + ? panel"]
   dp["devicePicker.js<br/>device button + &lt;dialog&gt;"]
   dev["devices.js<br/>catalog, validation, storage"]
@@ -565,6 +566,10 @@ flowchart TD
   dp --> ti
   main --> th
   main --> fmt
+  main --> mob
+  mob -. "mapModule injected" .-> map
+  map --> mob
+  ml --> mob
   ap --> bridge
   ap --> map
   ap --> anchors
@@ -587,7 +592,9 @@ flowchart TD
 Dependencies are injected in two places. `photoAnchors.js` receives
 `resolvePhotoAnchors`, `addAnchor` and `removeAnchor` as arguments rather
 than importing them, so its tests can pass in fakes. `profilePanel.js`
-receives `mapModule` so it can draw the hover marker.
+receives `mapModule` so it can draw the hover marker. `mobileLayout.js`
+receives `mapModule` so it can move the attribution. `map.js` itself imports
+only `isPhoneLayout` from it, and `markerList.js` only `revealMap`.
 
 ### 7.2 Who owns which state
 
@@ -675,6 +682,22 @@ photoAnchors.handleFiles
   `createProfileChart`. The pure part has tests.
 - **`format.js`**: every formatter, plus `describeError(err) →
   {message, kind: 'input'|'error'}`.
+- **`mobileLayout.js`**: the phone layout (`PHONE_LAYOUT_QUERY`, ≤ 860 px,
+  kept in step with `styles.css`). The CSS fixes the map full-screen behind
+  the sidebar, which becomes a sheet in the page's scroll. The module:
+  - opens the page with the sheet half-way up
+  - moves `#profilePanel` and `#profileShowButton` to the top of the sheet,
+    and moves the Leaflet attribution to the top right
+  - `coveredMapHeight()` tells `map.js` how much of the map the sheet hides,
+    via `setBottomInsetProvider`. `renderRoute` and `panToMarker` then aim at
+    the visible part.
+  - `revealMap()` scrolls the sheet back to half-way. It runs after a GPX
+    parses and when an anchor or stop row is clicked.
+
+  On phones, `map.js`'s `openAnchorPopup` builds the popover into the
+  `#routeDialog` modal instead of a Leaflet popup. The builders in
+  `anchorPopovers.js` get the same `(container, close, updateLayout)` either
+  way. The layout logic is tested against a stubbed `matchMedia`.
 
 ---
 
@@ -830,7 +853,7 @@ It touches the app in exactly three places:
 |---|---|---|
 | pytest, `core/` | `tests/core/`, `tests/core/pacing/` | every `core` module. Shared track builders live in `tests/core/conftest.py` |
 | pytest, harness | `tests/tuning/` | see [TUNING_ARCHITECTURE.md §13](TUNING_ARCHITECTURE.md#13-tests) |
-| node, GUI | `tests/gui/*.test.js` | `format`, `dateTimeField`, `timeInput`, `markerList`, `photoAnchors`, `pyodideBridge` (against a fake Pyodide), `shortcuts`, `profileChart`, `devices`. `testUtils/domSetup.js` sets up jsdom |
+| node, GUI | `tests/gui/*.test.js` | `format`, `dateTimeField`, `timeInput`, `markerList`, `photoAnchors`, `pyodideBridge` (against a fake Pyodide), `shortcuts`, `profileChart`, `devices`, `mobileLayout`. `testUtils/domSetup.js` sets up jsdom |
 | untested | none | `map.js`, `anchorPopovers.js`, `anchors.js`, `stops.js`, `profilePanel.js`, `main.js` (Leaflet and popover UI), which have to be checked by hand in a browser |
 
 ---

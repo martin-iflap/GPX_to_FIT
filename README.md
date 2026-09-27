@@ -168,9 +168,10 @@ The full pipeline works end to end in the browser. Known limitations:
   uptime guarantee. If the request fails, the conversion still completes,
   without surface-based pacing.
 - Only running and hiking are supported.
-- The device picker lists Garmin models and two Wahoo bike computers (ELEMNT
-  and ELEMNT BOLT). Other brands don't publish their product IDs, so they
-  need custom IDs copied from one of their own FIT files.
+- The device picker lists Garmin models and three Wahoo bike computers
+  (ELEMNT, ELEMNT BOLT and ELEMNT BOLT V2). Other brands don't publish
+  their product IDs, so they need custom IDs copied from one of their own
+  FIT files.
 - Photo anchors read EXIF from JPEG and HEIC images. Video files aren't
   supported.
 

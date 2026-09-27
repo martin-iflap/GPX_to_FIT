@@ -261,7 +261,14 @@ a.theme-toggle {
 .theme-toggle:hover {
   color: var(--text-primary);
   background: var(--bg-elevated-2);
-  transform: translateY(-1px);
+}
+
+/* Only with a real hover: a touch screen keeps :hover on whatever was last
+   tapped, which would leave the button floating a pixel up. */
+@media (hover: hover) {
+  .theme-toggle:hover {
+    transform: translateY(-1px);
+  }
 }
 
 .theme-toggle:focus-visible {
@@ -952,7 +959,13 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 
 .primary-button:hover:not(:disabled) {
   background: var(--accent-hover);
-  transform: translateY(-1px);
+}
+
+/* See .theme-toggle:hover. */
+@media (hover: hover) {
+  .primary-button:hover:not(:disabled) {
+    transform: translateY(-1px);
+  }
 }
 
 .primary-button:disabled {
@@ -1682,6 +1695,46 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   border-top: 1px solid var(--border-subtle);
 }
 
+/* ---------- route dialog (phone layout's anchor/stop popovers) ---------- */
+
+/* Borrows the device picker's dialog and panel, and lays its body out like
+   .anchor-popover's popup content, since the same builders fill both. The
+   close button floats over the corner: the builders bring their own heading,
+   so a header row would only add an empty line above it. */
+.route-dialog {
+  max-height: min(85vh, 720px);
+  max-height: min(85dvh, 720px);
+}
+
+.route-dialog .device-dialog-panel {
+  position: relative;
+}
+
+.route-dialog .device-dialog-close {
+  position: absolute;
+  top: var(--space-3);
+  right: var(--space-3);
+}
+
+.route-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  overflow-y: auto;
+}
+
+/* Clear of the close button. */
+.route-dialog-body > .popover-heading:first-child {
+  padding-right: var(--space-7);
+}
+
+/* One column: arrival above departure. Side by side they need the 492px
+   the wide map popup gets, which a phone doesn't have. */
+.route-dialog .stop-time-columns {
+  grid-template-columns: 1fr;
+}
+
 /* ---------- about page (about.html) ---------- */
 
 .about-page {
@@ -1835,33 +1888,97 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 
 /* ---------- responsive ---------- */
 
+/* The phone layout: a scroll sheet. The map fills the screen, fixed, and the
+   sidebar is a sheet in the page's normal flow that starts low enough to
+   show --sheet-max-map of it. js/mobileLayout.js opens the page scrolled to
+   the half-way point. From there the sheet scrolls down to show more map, or
+   up to show every control. It is all native scrolling: touches on the map
+   pan the map, and touches on the sheet scroll the page. Keep the width in
+   step with PHONE_LAYOUT_QUERY in mobileLayout.js. */
 @media (max-width: 860px) {
+  /* Pulling down at the top would otherwise pull-to-refresh, and a reload
+     drops the route, anchors and stops. */
+  html {
+    overscroll-behavior-y: none;
+  }
+
   .app-shell {
-    grid-template-columns: 1fr;
+    --sheet-max-map: 85svh;
+    --profile-height: 200px;
+    display: block;
     height: auto;
-    min-height: 100vh;
   }
 
-  /* The map is too short here to cover, so the panel takes its own space
-     under it instead, pushing the sidebar down; the map itself still keeps its size. */
+  /* lvh: the map reaches the bottom of the screen even while the browser's
+     toolbar is showing, so the toolbar collapsing never uncovers a gap. */
   #mapPanel {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 100vh;
+    height: 100lvh;
+  }
+
+  /* In the middle of the part of the map the sheet leaves visible at first. */
+  .map-empty-state {
+    bottom: 50vh;
+    bottom: 50svh;
+  }
+
+  #sidebar {
+    position: relative;
+    z-index: 1;
+    margin-top: 85vh;
+    margin-top: var(--sheet-max-map);
+    min-height: 100vh;
+    min-height: 100svh;
+    /* The page scrolls, not the sheet. A scrolling sheet would trap touches
+       and fight the page scroll that moves it. */
     overflow: visible;
+    /* Nearly opaque: this sheet sits over busy map tiles, not a plain page. */
+    background: var(--bg-base);
+    background: color-mix(in srgb, var(--bg-base) 90%, transparent);
+    border-left: none;
+    border-top: 1px solid var(--border-subtle);
+    border-radius: 20px 20px 0 0;
+    box-shadow: 0 -12px 40px var(--shadow-color);
   }
 
-  #map {
-    height: 45vh;
+  /* A grab handle, purely a cue: the sheet moves with the page scroll. */
+  #sidebar::before {
+    content: "";
+    display: block;
+    width: 36px;
+    height: 5px;
+    margin: var(--space-2) auto 0;
+    border-radius: 3px;
+    background: var(--text-tertiary);
+    opacity: 0.5;
   }
 
-  #profilePanel {
+  .sidebar-header {
+    padding-top: var(--space-3);
+  }
+
+  /* mobileLayout.js moves the profile panel to the top of the sheet, right
+     under the visible map, where it grows open instead of sliding. The
+     sheet already has the glass, so the panel drops its own. */
+  #sidebar #profilePanel {
     position: relative;
     height: 0;
     overflow: hidden;
     transform: none;
+    background: transparent;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    border-top: none;
+    border-bottom: 1px solid var(--border-subtle);
     box-shadow: none;
     transition: height var(--profile-transition);
   }
 
-  .app-shell.has-profile #profilePanel {
+  .app-shell.has-profile #sidebar #profilePanel {
     height: var(--profile-height);
   }
 
@@ -1869,17 +1986,71 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
     transform: none;
   }
 
-  .profile-show-button {
-    bottom: auto;
-    top: calc(45vh - var(--space-4));
-    transform: translate(-50%, -100%);
+  #sidebar .profile-show-button {
+    position: static;
+    transform: none;
+    margin: var(--space-3) auto 0;
   }
 
-  #sidebar {
-    grid-column: 1;
-    grid-row: 2;
-    border-left: none;
-    border-top: 1px solid var(--border-subtle);
-    box-shadow: 0 -20px 60px var(--shadow-color);
+  /* Keeps the Download link, the sheet's last control, clear of the iPhone
+     home bar. (Convert/Download deliberately don't stick to the screen:
+     pinned, they covered too much of a phone.) */
+  .sidebar-body {
+    padding-bottom: calc(var(--space-6) + env(safe-area-inset-bottom));
+  }
+}
+
+/* ---------- touch screens ---------- */
+
+.copy-touch {
+  display: none;
+}
+
+/* A phone or tablet with no mouse: "tap" wording, and no keyboard-shortcuts
+   button (the bindings stay, for anyone who does attach a keyboard). */
+@media (hover: none) and (pointer: coarse) {
+  .copy-pointer {
+    display: none;
+  }
+
+  .copy-touch {
+    display: inline;
+  }
+
+  #shortcutsToggle {
+    display: none;
+  }
+}
+
+/* Fingertip-sized targets. */
+@media (pointer: coarse) {
+  .theme-toggle,
+  .device-dialog-close {
+    width: 40px;
+    height: 40px;
+  }
+
+  .anchor-row-delete {
+    min-width: 40px;
+    min-height: 40px;
+  }
+
+  .profile-legend-item,
+  .segmented--compact .segmented-option,
+  .speed-unit-button {
+    min-height: 36px;
+  }
+
+  .checkbox-row input {
+    width: 20px;
+    height: 20px;
+  }
+
+  /* Leaflet gives its container font-size: 0.75rem, so popup inputs inherit
+     12px, and iOS zooms the whole page into any input under 16px. Phones
+     get the route dialog instead; this covers touch tablets, which keep the
+     map popups. */
+  .leaflet-popup .text-input {
+    font-size: 16px;
   }
 }

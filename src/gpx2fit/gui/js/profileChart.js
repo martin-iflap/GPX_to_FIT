@@ -495,15 +495,30 @@ export function createProfileChart(container, { onHover } = {}) {
     layout = { series, plot, scaleX, scaleSpeed, scaleElevation, stopY, hoverGroup, crosshair, speedDot, elevationDot };
   }
 
-  svg.addEventListener('pointermove', (event) => {
+  function hoverAt(event) {
     if (!layout) {
       return;
     }
     const rect = svg.getBoundingClientRect();
     const px = Math.min(Math.max(event.clientX - rect.left, layout.plot.left), layout.plot.left + layout.plot.width);
     showHover(nearestSampleIndex(layout.series.xs, layout.scaleX.invert(px)));
+  }
+
+  // A tap fires no pointermove, so pointerdown shows the readout too.
+  svg.addEventListener('pointerdown', hoverAt);
+  svg.addEventListener('pointermove', hoverAt);
+  // A finger "leaves" the moment it lifts, which would make a tap's readout
+  // flash and vanish. For touch, it stays until the next tap elsewhere.
+  svg.addEventListener('pointerleave', (event) => {
+    if (event.pointerType !== 'touch') {
+      hideHover();
+    }
   });
-  svg.addEventListener('pointerleave', hideHover);
+  document.addEventListener('pointerdown', (event) => {
+    if (!svg.contains(event.target) && !tooltip.hidden) {
+      hideHover();
+    }
+  });
 
   if (typeof ResizeObserver !== 'undefined') {
     new ResizeObserver(() => render()).observe(container);
