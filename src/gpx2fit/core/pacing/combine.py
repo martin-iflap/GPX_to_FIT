@@ -23,6 +23,8 @@ _MIN_SURFACE_MULTIPLIER = 0.05
 # messages (contradictory anchor/stop times) point at a concrete, recognizable
 # entry rather than an opaque distance/timestamp pair.
 _ANCHOR_SOURCE_LABELS = {
+    "start": "start",
+    "end": "end",
     "user": "anchor",
     "photo": "photo anchor",
     "stop_arrival": "stop arrival",
@@ -32,6 +34,9 @@ _ANCHOR_SOURCE_LABELS = {
 def _describe_anchor(anchor: Anchor) -> str:
     """Human-readable description of an anchor for InputError messages, e.g. "photo anchor at 5.30 km (2026-09-13 14:02)"."""
     label = _ANCHOR_SOURCE_LABELS.get(anchor.source, "anchor")
+    if anchor.source in ("start", "end"):
+        # Its place is implied, and "the start at 0.00 km" only adds noise.
+        return f"{label} ({anchor.timestamp:%Y-%m-%d %H:%M})"
     return f"{label} at {anchor.distance_from_start / 1000:.2f} km ({anchor.timestamp:%Y-%m-%d %H:%M})"
 
 

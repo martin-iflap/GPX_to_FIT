@@ -8,7 +8,7 @@ adjacent leg's pace.
 from dataclasses import replace
 
 from gpx2fit.core.models import Anchor, InputError, ModeAStop, RawStop, ResolvedStop, Track, TrackPoint
-from gpx2fit.core.pacing.anchors import nearest_point_distance_from_start
+from gpx2fit.core.pacing.anchors import nearest_point_distance_from_start, route_end_collision_message
 
 
 def _resolve_distance(track: Track, raw: RawStop) -> float:
@@ -71,16 +71,18 @@ def resolve_stops(
     mode_a: list[ModeAStop] = []
     mode_b: list[ResolvedStop] = []
 
-    seen_distances = {a.distance_from_start for a in hard_anchors}
+    # Distance → source of what already sits there.
+    seen_distances = {a.distance_from_start: a.source for a in hard_anchors}
 
     for raw in raw_stops:
         distance = _resolve_distance(track, raw)
         if distance in seen_distances:
             raise InputError(
-                f"A stop at {distance / 1000:.2f} km lands on the exact same point as another anchor or stop. "
+                route_end_collision_message("A stop", seen_distances[distance])
+                or f"A stop at {distance / 1000:.2f} km lands on the exact same point as another anchor or stop. "
                 "Move it slightly, or remove the duplicate."
             )
-        seen_distances.add(distance)
+        seen_distances[distance] = "stop"
 
         has_duration = raw.duration is not None
         has_start_end = raw.start_timestamp is not None and raw.end_timestamp is not None

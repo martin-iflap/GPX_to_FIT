@@ -10,6 +10,7 @@ import { createTimeToggle } from './timeInput.js';
 import { createDateTimeField } from './dateTimeField.js';
 import * as anchorsModule from './anchors.js';
 import * as stopsModule from './stops.js';
+import { effectiveStopTimes } from './activityWindow.js';
 import { initTheme } from './theme.js';
 import { initShortcuts } from './shortcuts.js';
 import { initDevicePicker } from './devicePicker.js';
@@ -17,7 +18,7 @@ import { createAnchorPlacer } from './anchorPopovers.js';
 import { initPhotoDrop, resetPhotoDrop } from './photoAnchors.js';
 import { initProfilePanel, showProfile, hideProfile } from './profilePanel.js';
 import { coveredMapHeight, initMobileLayout, revealMap } from './mobileLayout.js';
-import { describeError, fitFileNameFromGpx, formatDistanceKm, formatFileSize } from './format.js';
+import { describeError, fitFileNameFromGpx, formatDistanceKm, formatFileSize, leftOutNote } from './format.js';
 
 const dropzone = document.getElementById('dropzone');
 const gpxFileInput = document.getElementById('gpxFileInput');
@@ -236,9 +237,15 @@ function getStartTime() {
  * types is a moving speed rather than a stops-included one.
  */
 function totalStopSeconds() {
+  // Every stop, active or not: whether a stop is active depends on the end
+  // time, which in avg-speed mode depends on this very total.
   return stopsModule.getStops().reduce((total, stop) => {
-    const seconds =
-      stop.mode === 'duration' ? stop.durationSeconds : (stop.departure.getTime() - stop.arrival.getTime()) / 1000;
+    if (stop.mode === 'duration') {
+      return total + (Number.isFinite(stop.durationSeconds) ? stop.durationSeconds : 0);
+    }
+    // Resolved against the current start, since a side entered as a duration follows it.
+    const { arrival, departure } = effectiveStopTimes(stop, getStartTime());
+    const seconds = (departure.getTime() - arrival.getTime()) / 1000;
     return total + (Number.isFinite(seconds) ? seconds : 0);
   }, 0);
 }
@@ -255,6 +262,13 @@ const startTimeToggle = createTimeToggle({
   onChange: (result) => {
     startTimeResult = result;
     updateConvertAvailability();
+    // Every placed anchor and stop is re-checked against the new start–end
+    // at once, so one that no longer fits shows as inactive now rather than
+    // failing the conversion later.
+    const start = getStartTime();
+    const activityWindow = result.isValid && start ? { start, end: result.resolvedDate } : null;
+    anchorsModule.setActivityWindow(activityWindow);
+    stopsModule.setActivityWindow(activityWindow);
   },
 });
 
@@ -400,12 +414,14 @@ runButton.addEventListener('click', async () => {
       return;
     }
     const sportEnumName = sportValue === 'running' ? 'RUNNING' : 'HIKING';
-    const anchorsPayload = anchorsModule.getAnchors().map((a) => ({
+    // Only the anchors and stops inside the current start–end; the rest stay
+    // in their lists, marked inactive, and are reported below.
+    const anchorsPayload = anchorsModule.getActiveAnchors().map((a) => ({
       distanceFromStart: a.distanceFromStart,
       timestamp: a.timestamp.toISOString(),
       source: a.source ?? 'user',
     }));
-    const stopsPayload = stopsModule.getStops().map((s) => ({
+    const stopsPayload = stopsModule.getActiveStops().map((s) => ({
       distanceFromStart: s.distanceFromStart,
       durationSeconds: s.mode === 'duration' ? s.durationSeconds : undefined,
       startIso: s.mode === 'startEnd' ? s.arrival.toISOString() : undefined,
@@ -431,7 +447,7 @@ runButton.addEventListener('click', async () => {
     downloadLink.hidden = false;
     downloadLink.textContent = `Download FIT (${formatFileSize(blob.size)})`;
     showProfile(profile, convertedSport);
-    setStatus('FIT file generated successfully.');
+    setStatus(`FIT file generated successfully.${leftOutNote(anchorsModule.countInactiveAnchors(), stopsModule.countInactiveStops())}`);
     downloadLink.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     // So the Ctrl+Enter path ends one plain Enter away from the file, rather
     // than leaving focus on a button that just disabled itself.

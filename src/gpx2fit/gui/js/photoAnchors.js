@@ -182,7 +182,7 @@ async function readFile(file, removeAnchor) {
  *   a duration. A valid result is required before photos are resolved, so
  *   every photo can be checked against the actual activity time window
  *   (see resolvePhotoAnchors below) instead of just its GPS.
- * @param {(photoReadings: {lat: number, lon: number, timestamp: string}[], activityWindow?: {startIso: string, endIso: string}) => Promise<{status: 'ok'|'too_far'|'outside_activity_time', lat: number, lon: number, distanceFromStart: number, timestamp: string, gapM: number}[]>} opts.resolvePhotoAnchors -
+ * @param {(photoReadings: {lat: number, lon: number, timestamp: string}[], activityWindow?: {startIso: string, endIso: string}) => Promise<{status: 'ok'|'too_far'|'outside_activity_time'|'at_route_end', lat: number, lon: number, distanceFromStart: number, timestamp: string, gapM: number}[]>} opts.resolvePhotoAnchors -
  *   pyodideBridge.resolvePhotoAnchors, reused as-is
  * @param {(anchor: {lat: number, lon: number, distanceFromStart: number, timestamp: Date, source: string}) => number} opts.addAnchor -
  *   anchors.js's addAnchor, reused as-is
@@ -251,6 +251,10 @@ export function initPhotoDrop({
       const result = results[index];
       if (result.status === 'outside_activity_time') {
         reading.setRowStatus(`Taken ${formatDateTime(reading.timestamp)}, outside the activity's time — ignored`, true);
+        return;
+      }
+      if (result.status === 'at_route_end') {
+        reading.setRowStatus('At the route\'s start/finish — your start/end time already covers this point', true);
         return;
       }
       if (result.status !== 'ok') {

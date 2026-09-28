@@ -933,6 +933,17 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   color: var(--danger);
 }
 
+/* Kept but not used: an anchor or stop outside the activity's current
+   start–end (see activityWindow.js). Amber rather than red, since moving the
+   start back makes it active again. */
+.anchor-row.is-inactive .anchor-row-distance {
+  opacity: 0.55;
+}
+
+.anchor-row.is-inactive .anchor-row-time {
+  color: var(--warning);
+}
+
 .anchor-empty {
   margin: 0;
   padding: var(--space-4) var(--space-2);
@@ -1101,6 +1112,11 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   transform: scale(1.2);
 }
 
+/* The map side of .anchor-row.is-inactive (see map.js's setMarkerDimmed). */
+.leaflet-marker-icon.is-dimmed {
+  opacity: 0.4;
+}
+
 .leaflet-popup-content-wrapper,
 .leaflet-popup-tip {
   background: var(--glass-bg);
@@ -1148,6 +1164,10 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   margin: 0;
   font-size: 0.78rem;
   color: var(--text-tertiary);
+}
+
+.popover-hint.is-warning {
+  color: var(--warning);
 }
 
 .popover-confirm {

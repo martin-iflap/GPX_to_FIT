@@ -12,6 +12,7 @@ import {
   formatFileSize,
   formatPace,
   formatSpeedKmh,
+  leftOutNote,
   pad,
 } from '../../src/gpx2fit/gui/js/format.js';
 
@@ -200,5 +201,22 @@ describe('describeError', () => {
 
   it('stringifies a non-Error thrown value', () => {
     assert.deepEqual(describeError('plain string'), { message: 'Error: plain string', kind: 'error' });
+  });
+});
+
+describe('leftOutNote', () => {
+  it('says nothing when nothing was left out', () => {
+    assert.equal(leftOutNote(0, 0), '');
+  });
+
+  it('names a single anchor or stop in the singular', () => {
+    assert.equal(leftOutNote(1, 0), " 1 anchor outside the activity's time was left out.");
+    assert.equal(leftOutNote(0, 1), " 1 stop outside the activity's time was left out.");
+  });
+
+  it('uses plurals and joins both kinds', () => {
+    assert.equal(leftOutNote(2, 0), " 2 anchors outside the activity's time were left out.");
+    assert.equal(leftOutNote(2, 3), " 2 anchors and 3 stops outside the activity's time were left out.");
+    assert.equal(leftOutNote(1, 1), " 1 anchor and 1 stop outside the activity's time were left out.");
   });
 });

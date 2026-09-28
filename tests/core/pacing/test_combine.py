@@ -5,6 +5,7 @@ from datetime import timedelta
 import pytest
 
 from gpx2fit.core.models import InputError, ModeAStop, SportType, Track, TrackPoint
+from gpx2fit.core.pacing.anchors import add_start_end_anchors
 from gpx2fit.core.pacing.combine import combine
 from gpx2fit.core.pacing.curve_selection import DEFAULT_SMOOTHNESS, MAX_SPEED_RATIO_BOUNDS
 from gpx2fit.core.pacing.gradient import (
@@ -123,6 +124,23 @@ class TestCombineDegenerateSegment:
         # anchor/stop times), not a bug
         with pytest.raises(InputError):
             combine(track, anchors, SportType.RUNNING)
+
+    def test_ordering_error_names_the_start_rather_than_a_distance(self):
+        # The boundary anchors built by add_start_end_anchors, and a photo
+        # timed before the start: the message must point at "the start"
+        # the user typed, not at an anonymous "anchor at 0.00 km".
+        track = Track(points=[
+            point(elevation=0.0, distance_from_start=0.0),
+            point(elevation=0.0, distance_from_start=100.0),
+            point(elevation=0.0, distance_from_start=200.0),
+        ])
+        boundary = add_start_end_anchors(track, START, duration=timedelta(minutes=10))
+        photo = anchor(100.0, START - timedelta(minutes=1), source="photo")
+
+        with pytest.raises(InputError, match=r"than the start \(") as error:
+            combine(track, [boundary[0], photo, boundary[1]], SportType.RUNNING)
+        assert "anchor at 0.00 km" not in str(error.value)
+        assert "photo anchor at 0.10 km" in str(error.value)
 
     def test_anchor_with_identical_timestamp_to_previous_anchor_raises(self):
         track = Track(points=[
@@ -424,6 +442,13 @@ class TestCombineModelSelection:
         # lunch break must leave the moving legs paced exactly as they were.
         moving_time = timedelta(seconds=2000.0 / 3.5)
         stop_duration = timedelta(minutes=45)
+        # premise: counting the stop as moving time really would change the
+        # curve. Without this, a retune of the thresholds could leave both
+        # readings on the same curve and the test would pass without testing anything.
+        probe = rolling_track(distance=2000.0, climb_per_km=40.0)
+        assert resolved_weight(probe, (moving_time + stop_duration).total_seconds(), SportType.RUNNING) > (
+            resolved_weight(probe, moving_time.total_seconds(), SportType.RUNNING) + 0.5
+        )
 
         without_stop = combine(
             rolling_track(distance=2000.0, climb_per_km=40.0),

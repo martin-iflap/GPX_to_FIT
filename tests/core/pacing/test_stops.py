@@ -3,6 +3,7 @@ from datetime import timedelta
 import pytest
 
 from gpx2fit.core.models import InputError, RawStop, SportType, Track
+from gpx2fit.core.pacing.anchors import add_start_end_anchors
 from gpx2fit.core.pacing.combine import combine
 from gpx2fit.core.pacing.stops import (
     ModeAStop,
@@ -85,6 +86,22 @@ class TestResolveStopsValidation:
         raw = [RawStop(distance_from_start=500.0, duration=timedelta(minutes=5))]
 
         with pytest.raises(InputError):
+            resolve_stops(track, raw, hard_anchors)
+
+    def test_stop_on_the_start_says_so(self):
+        track = Track(points=[point(distance_from_start=0.0), point(distance_from_start=500.0), point(distance_from_start=1000.0)])
+        hard_anchors = add_start_end_anchors(track, START, duration=timedelta(minutes=20))
+        raw = [RawStop(distance_from_start=0.0, duration=timedelta(minutes=5))]
+
+        with pytest.raises(InputError, match=r"route's start"):
+            resolve_stops(track, raw, hard_anchors)
+
+    def test_stop_on_the_finish_says_so(self):
+        track = Track(points=[point(distance_from_start=0.0), point(distance_from_start=500.0), point(distance_from_start=1000.0)])
+        hard_anchors = add_start_end_anchors(track, START, duration=timedelta(minutes=20))
+        raw = [RawStop(distance_from_start=1000.0, duration=timedelta(minutes=5))]
+
+        with pytest.raises(InputError, match=r"route's finish"):
             resolve_stops(track, raw, hard_anchors)
 
     @pytest.mark.parametrize(

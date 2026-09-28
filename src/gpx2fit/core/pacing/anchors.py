@@ -141,9 +141,11 @@ def add_start_end_anchors(
             Only used if end_time is not given.
 
     Returns:
-        A two-element list: an Anchor at distance 0.0 (start_time), and an
-        Anchor at the track's total_distance (end_time, or start_time +
-        duration). Both anchors have source="user".
+        A two-element list: an Anchor at distance 0.0 (start_time) with
+        source="start", and an Anchor at the track's total_distance
+        (end_time, or start_time + duration) with source="end". The sources
+        let error messages name "the start"/"the finish" instead of a bare
+        distance.
     Raises:
         ValueError: If the track has no points, or if neither end_time nor
             duration is provided.
@@ -159,9 +161,32 @@ def add_start_end_anchors(
         raise ValueError("Either end_time or duration must be provided.")
 
     return [
-        Anchor(distance_from_start=0.0, timestamp=start_time, source="user"),
-        Anchor(distance_from_start=track.total_distance, timestamp=resolved_end_time, source="user"),
+        Anchor(distance_from_start=0.0, timestamp=start_time, source="start"),
+        Anchor(distance_from_start=track.total_distance, timestamp=resolved_end_time, source="end"),
     ]
+
+
+def route_end_collision_message(what: str, source: str) -> str | None:
+    """User-facing InputError text for `what` landing on the route's start or finish.
+
+    Args:
+        what: What collided, as the sentence's subject (e.g. "An anchor").
+        source: The existing anchor's source it collided with.
+    Returns:
+        The message when `source` is "start" or "end", otherwise None (a
+        collision between two mid-route entries keeps its caller's wording).
+    """
+    if source == "start":
+        return (
+            f"{what} lands on the route's start, which already has the start time you entered. "
+            "Move it a little further along the route, or change the start time instead."
+        )
+    if source == "end":
+        return (
+            f"{what} lands on the route's finish, which already has the activity's end time. "
+            "Move it a little earlier along the route, or change the end time instead."
+        )
+    return None
 
 
 def build_user_anchors(
@@ -200,7 +225,9 @@ def build_user_anchors(
             other), unlike the ValueError cases above.
     """
     anchors: list[Anchor] = []
-    seen_distances = {a.distance_from_start for a in (existing_anchors or [])}
+    # Distance → source of whatever already sits there, so a collision with
+    # the start or finish can be named as such.
+    seen_distances = {a.distance_from_start: a.source for a in (existing_anchors or [])}
     for raw in raw_anchors:
         if raw.distance_from_start is not None:
             distance = raw.distance_from_start
@@ -212,11 +239,13 @@ def build_user_anchors(
         if distance < 0 or distance > track.total_distance:
             raise ValueError("Anchor distance_from_start is outside track bounds.")
         if distance in seen_distances:
+            what = "A photo anchor" if raw.source == "photo" else "An anchor"
             raise InputError(
-                f"Two anchors land on the exact same point on the route ({distance / 1000:.2f} km from the "
+                route_end_collision_message(what, seen_distances[distance])
+                or f"Two anchors land on the exact same point on the route ({distance / 1000:.2f} km from the "
                 "start). Move one of them slightly, or remove the duplicate."
             )
-        seen_distances.add(distance)
+        seen_distances[distance] = raw.source
 
         anchors.append(Anchor(distance_from_start=distance, timestamp=raw.timestamp, source=raw.source))
 

@@ -30,17 +30,17 @@ Contents
 These rules shape the whole codebase. Breaking one of them means
 redesigning, not refactoring.
 
-| Rule | Why |
-|---|---|
-| **`core/` does no I/O.** Every function takes and returns bytes or dataclasses, never a file path, a network call, or `print()`. | `core/` runs inside Pyodide in the browser. The network calls it needs (Valhalla) are made by JS, and the results are passed in as data. |
-| **`core/` doesn't know about its interface.** No HTML, no CLI parsing. | The GUI is the only interface today, but a CLI could be added on top of `core/` unchanged. |
-| **One data contract.** Every module reads and writes the types in `core/models.py`. | No module invents its own point or track shape. Stops and photos get their own input types, but they resolve down to `Anchor`/`TrackPoint` before pacing sees them. |
+| Rule                                                                                                                                                               | Why                                                                                                                                                                                                  |
+|--------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **`core/` does no I/O.** Every function takes and returns bytes or dataclasses, never a file path, a network call, or `print()`.                                   | `core/` runs inside Pyodide in the browser. The network calls it needs (Valhalla) are made by JS, and the results are passed in as data.                                                             |
+| **`core/` doesn't know about its interface.** No HTML, no CLI parsing.                                                                                             | The GUI is the only interface today, but a CLI could be added on top of `core/` unchanged.                                                                                                           |
+| **One data contract.** Every module reads and writes the types in `core/models.py`.                                                                                | No module invents its own point or track shape. Stops and photos get their own input types, but they resolve down to `Anchor`/`TrackPoint` before pacing sees them.                                  |
 | **Start and end are anchors.** A known time at distance 0, at the end, at a summit, from a photo, or at a stop's arrival/departure all use the same `Anchor` type. | `combine()` has one code path: fit between consecutive anchors. The average-speed entry is also just another way to set the end anchor's time. It's converted in JS, and `core/` never sees a speed. |
-| **Two-stage inputs.** `RawAnchor → Anchor`, `RawStop → ResolvedStop \| ModeAStop`, `RawPhotoAnchor → ResolvedPhotoAnchor`. | "Raw" is what the frontend can know (a click position, a distance). "Resolved" is pinned to a track point. Don't merge the two stages. |
-| **Derived values are computed, not cached.** `Track.total_distance`, `total_elevation_gain` and `start_time` are properties. | Pacing mutates `points` in place. A cached total could silently go stale, and recomputing costs almost nothing at this data size. |
-| **`SportType` is a closed enum and a dispatch key.** | `curve_selection`, `surface` and `fit_writer` branch on it. Adding cycling needs a new pacing model, not just a new enum value. |
-| **`InputError` is a user-facing contract.** | Raise it only for problems the user can fix, with a plain-language message. See [§9](#9-errors). |
-| **Pacing is resolved per workout, fitted per segment.** | Which curve to use, how much speed may swing, and the curve exponents are decided once from the whole track. Anchors only mark where a time is known, not where the terrain changes. |
+| **Two-stage inputs.** `RawAnchor → Anchor`, `RawStop → ResolvedStop \| ModeAStop`, `RawPhotoAnchor → ResolvedPhotoAnchor`.                                         | "Raw" is what the frontend can know (a click position, a distance). "Resolved" is pinned to a track point. Don't merge the two stages.                                                               |
+| **Derived values are computed, not cached.** `Track.total_distance`, `total_elevation_gain` and `start_time` are properties.                                       | Pacing mutates `points` in place. A cached total could silently go stale, and recomputing costs almost nothing at this data size.                                                                    |
+| **`SportType` is a closed enum and a dispatch key.**                                                                                                               | `curve_selection`, `surface` and `fit_writer` branch on it. Adding cycling needs a new pacing model, not just a new enum value.                                                                      |
+| **`InputError` is a user-facing contract.**                                                                                                                        | Raise it only for problems the user can fix, with a plain-language message. See [§9](#9-errors).                                                                                                     |
+| **Pacing is resolved per workout, fitted per segment.**                                                                                                            | Which curve to use, how much speed may swing, and the curve exponents are decided once from the whole track. Anchors only mark where a time is known, not where the terrain changes.                 |
 
 ---
 
@@ -184,7 +184,7 @@ classDiagram
   class ResolvedPhotoAnchor {
     distance_from_start, lat, lon: float
     timestamp: datetime
-    status: ok|too_far|outside_activity_time
+    status: ok|outside_activity_time|too_far|at_route_end
     gap_m: float
   }
   class ProfileSample {
@@ -276,9 +276,10 @@ flowchart TD
   dm["distance_meters(lat,lon,lat,lon)<br/>haversine"]
   np1["nearest_point_distance_from_start(track, lat, lon)<br/>→ float"] --> dm
   npc["nearest_point_candidates(track, lat, lon,<br/>radius 25 m, gap 50 m, max 4)<br/>→ [{distance_from_start, lat, lon}]"] --> dm
-  ase["add_start_end_anchors(track, start, end|duration)<br/>→ [Anchor@0, Anchor@total]"]
+  ase["add_start_end_anchors(track, start, end|duration)<br/>→ [Anchor@0 'start', Anchor@total 'end']"]
   bua["build_user_anchors(track, raw_anchors, existing)<br/>→ sorted [Anchor]"] --> np1
   bua -.-> err["InputError: two anchors on one point"]
+  bua --> recm["route_end_collision_message(what, source)<br/>names the start/finish, else None"]
 ```
 
 `nearest_point_candidates` is how out-and-back routes are handled. It finds
@@ -309,12 +310,13 @@ Python itself returned.
 
 ```
 resolve_photo_anchors(track, raw_photo_anchors, max_match 150 m,
-                      activity_start?, activity_end?, tolerance 15 min)
+                      activity_start?, activity_end?)
   for each photo:
      nearest_point_candidates → pick the candidate closest to the photo's GPS
-     status = "outside_activity_time"  if the capture time is outside the padded window  (checked first)
-            | "ok"                     if gap ≤ 150 m
-            | "too_far"
+     status = "outside_activity_time"  unless start < capture time < end, no padding  (checked first)
+            | "too_far"                if gap > 150 m
+            | "at_route_end"           if the match is the first or last point (the start/end anchors sit there)
+            | "ok"
   → [ResolvedPhotoAnchor]   (never raises for a bad match; the caller decides)
 ```
 
@@ -379,11 +381,11 @@ flowchart LR
   rcs --> fe["_fitted_exponents<br/>UPHILL_FILL 0.65 · DOWNHILL_FILL 0.3"]
 ```
 
-| Decision | Inputs | How |
-|---|---|---|
-| **Tobler weight** (how much walking curve to mix in) | flat-equivalent speed, verticality, sport | Flat-equivalent speed = `Σ(leg_distance / minetti_speed) / active_seconds`, i.e. the speed with the terrain divided out. Verticality is the distance-weighted mean `|gradient|`. Each is ramped through a `_smoothstep` band around the sport's `TOBLER_THRESHOLDS`, and the result is the `max()` of the two. Minetti is always the probe curve. |
-| **Max speed ratio** (how far a leg may swing from the median) | verticality, sport, smoothness | Ramps from `MAX_SPEED_RATIO_BOUNDS[sport].flat` to `.hilly` around `HILLY_VERTICALITY` (0.06 ± 0.04), then raised to `SMOOTHNESS_SCALES[level]`. Level 5 leaves it unchanged. |
-| **Curve shape** (exponents for both curves) | max speed ratio | Exponents are chosen so that at ±25% grade each curve's log-speed equals `FILL × log(ratio)`. The curve and the bound therefore always narrow together, and the soft clamp only has to catch outliers. |
+| Decision                                                      | Inputs                                    | How                                                                                                                                                                                                                                                                                                                                                                                    |
+|---------------------------------------------------------------|-------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Tobler weight** (how much walking curve to mix in)          | flat-equivalent speed, verticality, sport | Flat-equivalent speed = `Σ(leg_distance / minetti_speed) / active_seconds`, i.e. the speed with the terrain divided out. Verticality is the distance-weighted mean `                                   \|gradient\|`. Each is ramped through a `_smoothstep` band around the sport's `TOBLER_THRESHOLDS`, and the result is the `max()` of the two. Minetti is always the probe curve. |
+| **Max speed ratio** (how far a leg may swing from the median) | verticality, sport, smoothness            | Ramps from `MAX_SPEED_RATIO_BOUNDS[sport].flat` to `.hilly` around `HILLY_VERTICALITY` (0.06 ± 0.04), then raised to `SMOOTHNESS_SCALES[level]`. Level 5 leaves it unchanged.                                                                                                                                                                                                          |
+| **Curve shape** (exponents for both curves)                   | max speed ratio                           | Exponents are chosen so that at ±25% grade each curve's log-speed equals `FILL × log(ratio)`. The curve and the bound therefore always narrow together, and the soft clamp only has to catch outliers.                                                                                                                                                                                 |
 
 All three are first-guess constants that the tuning harness is calibrating.
 
@@ -407,7 +409,7 @@ leg has a SAC scale, one of two things happens:
 
 - The SAC factor replaces `physical` outright when it's severe (≤ 0.85) and
   within 0.25 of `physical`.
-- Otherwise it's blended in: `0.7·sac + 0.3·physical`.
+- Otherwise, it's blended in: `0.7·sac + 0.3·physical`.
 
 A leg with no matched edge gets 1.0. The HTTP request itself is made in
 `pyodideBridge.js`.
@@ -441,7 +443,7 @@ Within one segment, `_pace_segment` does the following, in order:
 3. Compress `v_i` toward the segment median with
    `median · exp(L · tanh(ln(v/median) / L))`, where `L = ln(max_ratio)`.
    This is a soft clamp, so it never produces a flat plateau.
-4. Modelled time per leg is `d_i / v_i`. Scale all of them so they add up
+4. Modeled time per leg is `d_i / v_i`. Scale all of them so they add up
    to the segment's active time.
 5. Walk the legs, adding the time. When the walk crosses a Mode A stop's
    zero-distance leg, add the stop's duration to that point and every later
@@ -490,17 +492,17 @@ here, in Python.
 This is the only file that talks to Python. It exports four calls and one
 helper:
 
-| Export | Python it runs | Returns |
-|---|---|---|
-| `parseGpx(bytes)` | `_track = parse_gpx_bytes(...)` | `{points, summary}` for the map and sidebar |
-| `resolveAnchorCandidates(lat, lon)` | `nearest_point_candidates(_track, …)` | 1–4 candidates |
-| `resolvePhotoAnchors(readings, window)` | `resolve_photo_anchors(_track, …)` | status per photo |
-| `convert({...})` | the full pipeline ([§8.3](#83-inside-convert)) | `{fitBytes, profile}` |
-| `classifyPyError(err)` | none | tags `InputError`s ([§9](#9-errors)) |
+| Export                                  | Python it runs                                 | Returns                                     |
+|-----------------------------------------|------------------------------------------------|---------------------------------------------|
+| `parseGpx(bytes)`                       | `_track = parse_gpx_bytes(...)`                | `{points, summary}` for the map and sidebar |
+| `resolveAnchorCandidates(lat, lon)`     | `nearest_point_candidates(_track, …)`          | 1–4 candidates                              |
+| `resolvePhotoAnchors(readings, window)` | `resolve_photo_anchors(_track, …)`             | status per photo                            |
+| `convert({...})`                        | the full pipeline ([§8.3](#83-inside-convert)) | `{fitBytes, profile}`                       |
+| `classifyPyError(err)`                  | none                                           | tags `InputError`s ([§9](#9-errors))        |
 
 Three mechanisms keep the bridge working:
 
-1. **Lazy startup (`ensurePyodide`).** The first call does all of the
+1. **Lazy startup (`ensurePyodide`).** The first call does all the
    setup:
    - `loadPyodide` from jsdelivr
    - `micropip.install('gpxpy')` and `micropip.install('fit-tool')`
@@ -538,6 +540,7 @@ flowchart TD
   anchors["anchors.js<br/>anchor list state"]
   stops["stops.js<br/>stop list state + change listener"]
   ml["markerList.js<br/>shared list+pin bookkeeping"]
+  aw["activityWindow.js<br/>is an anchor/stop inside start–end?"]
   photo["photoAnchors.js<br/>EXIF via exifr → resolve → addAnchor"]
   ti["timeInput.js<br/>createTimeToggle (duration / end / avg speed)"]
   dtf["dateTimeField.js<br/>custom date + time fields, segment linking"]
@@ -577,6 +580,10 @@ flowchart TD
   ap --> ti
   anchors --> ml
   stops --> ml
+  anchors --> aw
+  stops --> aw
+  ap --> aw
+  main --> aw
   ml --> map
   pp --> pc
   pp -. "mapModule injected" .-> map
@@ -598,20 +605,37 @@ only `isPhoneLayout` from it, and `markerList.js` only `revealMap`.
 
 ### 7.2 Who owns which state
 
-| State | Owner | Read by |
-|---|---|---|
-| route points, total distance, GPX file name, sport | `main.js` (module variables) | convert handler; getters passed to `anchorPopovers`, `photoAnchors`, `timeInput` |
-| start date/time | `dateTimeField` instance in `main.js` | `getStartTime()` |
-| duration / end / avg-speed result | `createTimeToggle` instance (`startTimeToggle`) | `startTimeResult` cache and `getResult()` at convert time |
-| anchors | `anchors.js`, backed by `markerList` | `getAnchors()` at convert time |
-| stops | `stops.js`, backed by `markerList` | `getStops()`; the change listener refreshes the time toggle |
-| parsed `Track` | Python global `_track` | every bridge call |
-| theme, surface toggle, smoothness | `localStorage` | `theme.js`, `main.js` |
+| State                                              | Owner                                                                                           | Read by                                                                                                                      |
+|----------------------------------------------------|-------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------|
+| route points, total distance, GPX file name, sport | `main.js` (module variables)                                                                    | convert handler; getters passed to `anchorPopovers`, `photoAnchors`, `timeInput`                                             |
+| start date/time                                    | `dateTimeField` instance in `main.js`                                                           | `getStartTime()`                                                                                                             |
+| duration / end / avg-speed result                  | `createTimeToggle` instance (`startTimeToggle`)                                                 | `startTimeResult` cache and `getResult()` at convert time                                                                    |
+| anchors                                            | `anchors.js`, backed by `markerList`                                                            | `getActiveAnchors()` at convert time                                                                                         |
+| stops                                              | `stops.js`, backed by `markerList`                                                              | `getActiveStops()` at convert time; `getStops()` for the avg-speed stop total; the change listener refreshes the time toggle |
+| activity window (start–end)                        | pushed by `startTimeToggle`'s `onChange` into `anchors.js` and `stops.js` (`setActivityWindow`) | each module's `isInactive` check and `getActive*()`                                                                          |
+| parsed `Track`                                     | Python global `_track`                                                                          | every bridge call                                                                                                            |
+| theme, surface toggle, smoothness                  | `localStorage`                                                                                  | `theme.js`, `main.js`                                                                                                        |
 
 `main.js` calls `startTimeToggle.refresh()` whenever the average-speed
 duration could change: after a GPX parses, on a sport change, and on any
 stop change. The convert handler calls `getResult()` again rather than
 trusting the cached value.
+
+Every time that toggle's result changes (including a start-time edit),
+`main.js` pushes the new `{start, end}` into `anchors.setActivityWindow` and
+`stops.setActivityWindow`. Each module re-checks its items with
+`activityWindow.js` (strictly inside, the same rule as the photo check).
+A window with the same times as before (`sameWindow`) is ignored, and the
+re-render (`markerList.refresh`) rebuilds the rows without renumbering the
+pins, since a time change can't reorder them. An item outside is kept but marked `.is-inactive`, its pin is dimmed
+(`map.setMarkerDimmed`), and it is left out of `getActive*()`. Moving the
+window back makes it active again. The convert status then reports how
+many were left out (`format.leftOutNote`). An anchor or stop time entered
+as "Duration since start" is stored with its offset (`offsetSeconds`, or
+`arrival`/`departureOffsetSeconds`), so it follows the start instead of
+staying at a fixed clock time. `totalStopSeconds` counts every stop, active
+or not: whether a stop is active depends on the end time, which in
+avg-speed mode depends on that total.
 
 ### 7.3 Interaction flows
 
@@ -634,10 +658,10 @@ sequenceDiagram
     AP->>U: openCandidatePicker
     U->>AP: pick a pass
   end
-  AP->>U: openKindChoicePopover (anchor or stop?)
+  AP->>U: openKindChoicePopover (anchor or stop? — a hint instead at the route's first/last point)
   alt anchor
-    AP->>U: openAnchorTimePopover (time of day | since start, with estimate hint)
-    AP->>L: anchors.addAnchor({lat, lon, distanceFromStart, timestamp})
+    AP->>U: openAnchorTimePopover (time of day | since start, with estimate hint, blocked outside start–end)
+    AP->>L: anchors.addAnchor({lat, lon, distanceFromStart, timestamp, offsetSeconds?})
   else stop
     AP->>U: openStopPopover (duration | arrival+departure)
     AP->>L: stops.addStop({... mode ...})
@@ -652,7 +676,8 @@ photoAnchors.handleFiles
   guard: a route is loaded and the start time is valid
   readFile → readPhotoMetadata(file) → exifr: {lat, lon, DateTimeOriginal}
   resolvePhotoAnchors(readings, {startIso, endIso})     (one batch, one bridge call)
-  per result: ok → addAnchor({..., source: 'photo'}) · too_far / outside_activity_time → row message only
+  per result: ok → addAnchor({..., source: 'photo'}) · too_far / outside_activity_time / at_route_end → row message only
+  afterwards: a start/duration change re-checks the photo anchor like any other (anchors.setActivityWindow)
 ```
 
 ### 7.4 Smaller modules
@@ -817,10 +842,10 @@ flowchart LR
   raw --> de2["describeError → kind 'error'"] --> red["status line, red, full traceback"]
 ```
 
-| Raise | When |
-|---|---|
-| `InputError` | The user can fix it: corrupt GPX, two anchors on one point, a stop on an anchor, departure ≤ arrival, anchor times out of order with distance, stops longer than their segment. Write the message for the user: plain words, real km and times, and a hint at the fix. |
-| `ValueError` / `RuntimeError` | A broken internal contract, i.e. a bug between the GUI and `core/`. The traceback is shown so it can be debugged. |
+| Raise                         | When                                                                                                                                                                                                                                                                   |
+|-------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `InputError`                  | The user can fix it: corrupt GPX, two anchors on one point, a stop on an anchor, departure ≤ arrival, anchor times out of order with distance, stops longer than their segment. Write the message for the user: plain words, real km and times, and a hint at the fix. |
+| `ValueError` / `RuntimeError` | A broken internal contract, i.e. a bug between the GUI and `core/`. The traceback is shown so it can be debugged.                                                                                                                                                      |
 
 `combine._describe_anchor` formats an anchor for these messages, for
 example "photo anchor at 5.30 km (2026-09-13 14:02)".
@@ -849,12 +874,12 @@ It touches the app in exactly three places:
 
 ## 11. Tests
 
-| Suite | Location | Covers |
-|---|---|---|
-| pytest, `core/` | `tests/core/`, `tests/core/pacing/` | every `core` module. Shared track builders live in `tests/core/conftest.py` |
-| pytest, harness | `tests/tuning/` | see [TUNING_ARCHITECTURE.md §13](TUNING_ARCHITECTURE.md#13-tests) |
-| node, GUI | `tests/gui/*.test.js` | `format`, `dateTimeField`, `timeInput`, `markerList`, `photoAnchors`, `pyodideBridge` (against a fake Pyodide), `shortcuts`, `profileChart`, `devices`, `mobileLayout`. `testUtils/domSetup.js` sets up jsdom |
-| untested | none | `map.js`, `anchorPopovers.js`, `anchors.js`, `stops.js`, `profilePanel.js`, `main.js` (Leaflet and popover UI), which have to be checked by hand in a browser |
+| Suite           | Location                            | Covers                                                                                                                                                                                                                                                                                                                                                                                    |
+|-----------------|-------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| pytest, `core/` | `tests/core/`, `tests/core/pacing/` | every `core` module. Shared track builders live in `tests/core/conftest.py`                                                                                                                                                                                                                                                                                                               |
+| pytest, harness | `tests/tuning/`                     | see [TUNING_ARCHITECTURE.md §13](TUNING_ARCHITECTURE.md#13-tests)                                                                                                                                                                                                                                                                                                                         |
+| node, GUI       | `tests/gui/*.test.js`               | `format`, `dateTimeField`, `timeInput`, `markerList`, `activityWindow`, `anchors` + `stops` (`anchorsAndStops`: the activity-window re-check and `getActive*()`, with `map.js` mocked), `photoAnchors` (incl. `initPhotoDrop`'s per-status rows), `pyodideBridge` (against a fake Pyodide), `shortcuts`, `profileChart`, `devices`, `mobileLayout`. `testUtils/domSetup.js` sets up jsdom |
+| untested        | none                                | `map.js`, `anchorPopovers.js`, `profilePanel.js`, `main.js` (Leaflet and popover UI), plus the row/pin rendering side of `anchors.js`/`stops.js`, which have to be checked by hand in a browser                                                                                                                                                                                           |
 
 ---
 

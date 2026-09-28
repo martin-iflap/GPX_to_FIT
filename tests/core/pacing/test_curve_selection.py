@@ -89,8 +89,11 @@ class TestResolveToblerWeight:
         track = flat_track([float(d) for d in range(0, 5050, 50)])
         borderline_speed = TOBLER_THRESHOLDS[SportType.RUNNING].flat_equivalent_mps
 
+        # 0.5 is structural: the ramp is centred on the threshold. How far
+        # hiking sits above it depends on the gap between the two sports'
+        # (uncalibrated) thresholds, so only its direction is pinned.
         assert self._weight(track, borderline_speed, SportType.RUNNING) == pytest.approx(0.5)
-        assert self._weight(track, borderline_speed, SportType.HIKING) == 1.0
+        assert self._weight(track, borderline_speed, SportType.HIKING) > 0.5
 
     @pytest.mark.parametrize("sport, expected", [(SportType.RUNNING, 0.0), (SportType.HIKING, 1.0)])
     def test_degenerate_track_falls_back_to_the_sports_own_curve(self, sport, expected):
@@ -133,10 +136,13 @@ class TestResolveMaxSpeedRatio:
         assert resolved_max_speed_ratio(track, SportType.HIKING) <= resolved_max_speed_ratio(track, SportType.RUNNING)
 
     @pytest.mark.parametrize("sport", list(SportType))
-    def test_bounds_stay_within_a_sane_range(self, sport):
-        # _compress_speed_toward_typical needs > 1; much above ~2.8 lets pace swing unrealistically.
+    def test_bounds_are_usable_and_hills_swing_at_least_as_much_as_flats(self, sport):
+        # _compress_speed_toward_typical needs > 1, and the model (and the tuning
+        # harness's fit) assumes hilly >= flat. No upper cap here: the harness
+        # searches ratios up to 4.0, and whether a wide bound still paces
+        # realistically is TestResolveCurveShape.test_resolved_curves_stay_sane's job.
         bounds = MAX_SPEED_RATIO_BOUNDS[sport]
-        assert 1.0 < bounds.flat <= bounds.hilly <= 2.8
+        assert 1.0 < bounds.flat <= bounds.hilly
 
     @pytest.mark.parametrize("sport", list(SportType))
     def test_degenerate_track_falls_back_to_the_flat_bound(self, sport):
@@ -237,11 +243,41 @@ class TestResolveCurveShape:
                 share = abs(math.log(steep)) / math.log(ratio)
                 assert 1 - math.tanh(share) ** 2 > 0.35
 
-    def test_running_at_its_hilly_bound_keeps_roughly_the_old_minetti_uphill_exponent(self):
-        # Only uphill: the downhill exponent moved on purpose when the descent
-        # cost term changed Minetti's shape below 0%.
-        shape = resolve_curve_shape(MAX_SPEED_RATIO_BOUNDS[SportType.RUNNING].hilly) # todo: we probably don't want this hardcoded test.
-        assert shape.minetti.uphill == pytest.approx(0.6, abs=0.05)
+    # Every curve combine() can actually pace on at the default smoothness: each
+    # sport at both ends of its bound, on either end of the Minetti/Tobler blend.
+    PRODUCTION_SHAPES = [
+        pytest.param(sport, getattr(MAX_SPEED_RATIO_BOUNDS[sport], end), weight, id=f"{sport.name}-{end}-w{weight}")
+        for sport in SportType
+        for end in ("flat", "hilly")
+        for weight in (0.0, 1.0)
+    ]
+
+    @pytest.mark.parametrize("sport, ratio, tobler_weight", PRODUCTION_SHAPES)
+    def test_resolved_curves_stay_sane(self, sport, ratio, tobler_weight):
+        # Sanity bands on the output, not on any constant. The fills and bounds
+        # are there to be retuned, and the tuning harness, not this test, is what
+        # judges realism, so the bands are wide enough to admit every fill it
+        # has proposed so far (uphill 0.30 to 0.95, which put a +20% climb
+        # anywhere from 0.87x down to 0.44x). They catch a broken curve: one
+        # that goes the wrong way, collapses to even pacing, or runs away.
+        climb_10, climb_20, climb_30, descent_10, descent_20 = blended_speeds_from_gradients(
+            [0.1, 0.2, 0.3, -0.1, -0.2], tobler_weight, resolve_curve_shape(ratio)
+        )
+        assert 1.0 > climb_10 > climb_20 > climb_30
+        assert 0.4 <= climb_20 <= 0.9
+        assert climb_30 >= 0.25
+        assert max(descent_10, descent_20) <= 1.5
+        assert descent_20 >= 0.6
+
+    @pytest.mark.parametrize("sport", list(SportType))
+    def test_hilly_bound_never_gives_a_flatter_curve_than_the_flat_bound(self, sport):
+        bounds = MAX_SPEED_RATIO_BOUNDS[sport]
+        gradients = [0.1, 0.2, -0.2]
+        for weight in (0.0, 1.0):
+            flat = blended_speeds_from_gradients(gradients, weight, resolve_curve_shape(bounds.flat))
+            hilly = blended_speeds_from_gradients(gradients, weight, resolve_curve_shape(bounds.hilly))
+            for on_flat, on_hilly in zip(flat, hilly):
+                assert abs(math.log(on_hilly)) >= abs(math.log(on_flat))
 
     @pytest.mark.parametrize("speeds_fn", [minetti_speeds_from_gradients, tobler_speeds_from_gradients])
     def test_descent_reference_grade_is_clearly_off_flat_speed(self, speeds_fn):

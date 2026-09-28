@@ -2,7 +2,7 @@
 The frontend only extracts EXIF GPS + timestamp from a dropped photo.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from gpx2fit.core.models import Track, RawPhotoAnchor, ResolvedPhotoAnchor
 from gpx2fit.core.pacing.anchors import distance_meters, nearest_point_candidates
@@ -12,13 +12,6 @@ from gpx2fit.core.pacing.anchors import distance_meters, nearest_point_candidate
 # before the hike) rather than forced onto that point anyway.
 MAX_MATCH_DISTANCE_M = 150.0
 
-# A photo's own clock (rather than GPS time) drives its EXIF timestamp and is
-# rarely synced to the second, so the activity window is padded by this much
-# on each side before a photo is rejected as outside it. This is about
-# ordinary clock drift, not about tolerating a wrong date — a photo taken
-# hours or days off the activity is still rejected.
-ACTIVITY_TIME_TOLERANCE = timedelta(minutes=15) # todo: check this logic
-
 
 def resolve_photo_anchors(
     track: Track,
@@ -26,12 +19,11 @@ def resolve_photo_anchors(
     max_match_distance_m: float = MAX_MATCH_DISTANCE_M,
     activity_start: datetime | None = None,
     activity_end: datetime | None = None,
-    activity_time_tolerance: timedelta = ACTIVITY_TIME_TOLERANCE,
 ) -> list[ResolvedPhotoAnchor]:
     """Match each photo's GPS reading to the nearest point on the track.
 
     Reuses `nearest_point_candidates` (the same lookup manual map-click
-    anchors use) rather than a plain nearest-point search, so a photo taken
+    anchors use) rather than a plain nearest-point search. So a photo taken
     near an out-and-back route's overlap still resolves to whichever pass is
     physically closest to its own GPS fix, not just the first one in route
     order.
@@ -53,25 +45,29 @@ def resolve_photo_anchors(
         max_match_distance_m: Maximum allowed gap between a photo's GPS and
             its matched track point for the match to be trusted.
         activity_start: Start of the activity's planned time span. If given
-            together with `activity_end`, a photo captured outside
-            [activity_start - activity_time_tolerance, activity_end +
-            activity_time_tolerance] is rejected regardless of how well its
-            GPS matches the route. Omit (with `activity_end`) to skip this
-            check entirely, e.g. before the frontend has a valid start time.
+            together with `activity_end`, a photo not captured strictly
+            between the two is rejected regardless of how well its GPS
+            matches the route. Omit (with `activity_end`) to skip this check
+            entirely, e.g. before the frontend has a valid start time.
+            The window is exclusive and deliberately unpadded: the start and
+            end are themselves anchors at the route's first and last point,
+            so pacing.combine rejects any other anchor that isn't strictly
+            between them in time.
         activity_end: End of the activity's planned time span. See
             `activity_start`.
-        activity_time_tolerance: Padding applied to both ends of the
-            activity window before rejecting a photo, to absorb ordinary
-            camera clock drift rather than an actually-wrong date.
 
     Returns:
         One ResolvedPhotoAnchor per raw photo anchor, in the same order.
         `status` is "outside_activity_time" when `activity_start`/
-        `activity_end` are given and the photo's timestamp falls outside the
-        (padded) window — checked first, since a wrong date makes the
+        `activity_end` are given and the photo's timestamp isn't strictly
+        inside that window — checked first, since a wrong date makes the
         geographic match meaningless either way. Otherwise, `status` is
         "too_far" (rather than raising) when the nearest point is farther
-        than max_match_distance_m. In both cases the caller decides whether
+        than max_match_distance_m, then "at_route_end" when the match is the
+        route's first or last point: the start/end anchors already sit
+        there, so pacing.anchors.build_user_anchors would reject a second
+        anchor at the same distance (common on a loop, whose trailhead is
+        both). Only "ok" is usable. In every case the caller decides whether
         to use the anchor, matching how the frontend already surfaces bad
         matches per-photo instead of failing the whole batch.
     Raises:
@@ -86,11 +82,15 @@ def resolve_photo_anchors(
         if (
             activity_start is not None
             and activity_end is not None
-            and not (activity_start - activity_time_tolerance <= raw.timestamp <= activity_end + activity_time_tolerance)
+            and not (activity_start < raw.timestamp < activity_end)
         ):
             status = "outside_activity_time"
+        elif gap > max_match_distance_m:
+            status = "too_far"
+        elif nearest["distance_from_start"] in (0.0, track.total_distance):
+            status = "at_route_end"
         else:
-            status = "ok" if gap <= max_match_distance_m else "too_far"
+            status = "ok"
 
         results.append(
             ResolvedPhotoAnchor(

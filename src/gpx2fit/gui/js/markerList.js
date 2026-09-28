@@ -19,8 +19,12 @@ import { revealMap } from './mobileLayout.js';
  * @param {string} opts.deleteAriaLabel - aria-label for each row's delete button
  * @param {(item: object) => HTMLElement[]} opts.renderRowText - builds the
  *   row's text content (typically a distance line and a timeline) for one item
+ * @param {(item: object) => boolean} [opts.isInactive] - true for an item that
+ *   is kept but currently not used (e.g. an anchor outside the activity's
+ *   time); its row gets `.is-inactive` and its pin is dimmed. Re-evaluated
+ *   on every render, so call `refresh()` when what it reads changes.
  */
-export function createMarkerList({ idOffset = 0, markerKind, deleteAriaLabel, renderRowText }) {
+export function createMarkerList({ idOffset = 0, markerKind, deleteAriaLabel, renderRowText, isInactive = () => false }) {
   let items = [];
   let nextId = idOffset + 1;
   let listEl = null;
@@ -46,13 +50,20 @@ export function createMarkerList({ idOffset = 0, markerKind, deleteAriaLabel, re
     });
   }
 
-  function render() {
+  /**
+   * @param {boolean} [renumber] - false skips renumbering the pins, for a
+   *   re-render that can't have changed their order (see `refresh`)
+   */
+  function render(renumber = true) {
     items.sort((a, b) => a.distanceFromStart - b.distanceFromStart);
     listEl.innerHTML = '';
+
+    const inactiveIds = new Set(items.filter((item) => isInactive(item)).map((item) => item.id));
 
     items.forEach((item, index) => {
       const row = document.createElement('li');
       row.className = 'anchor-row';
+      row.classList.toggle('is-inactive', inactiveIds.has(item.id));
       row.dataset.id = String(item.id);
 
       const info = document.createElement('div');
@@ -92,7 +103,11 @@ export function createMarkerList({ idOffset = 0, markerKind, deleteAriaLabel, re
     });
 
     emptyStateEl.hidden = items.length > 0;
-    mapModule.renumberMarkers(sortedIds());
+    if (renumber) {
+      mapModule.renumberMarkers(sortedIds());
+    }
+    // After renumbering: setIcon replaces the pin's element, class and all.
+    items.forEach((item) => mapModule.setMarkerDimmed(item.id, inactiveIds.has(item.id)));
   }
 
   /**
@@ -153,5 +168,16 @@ export function createMarkerList({ idOffset = 0, markerKind, deleteAriaLabel, re
     changeListener = fn;
   }
 
-  return { init, add, remove, reset, getAll, setChangeListener };
+  /**
+   * Re-renders every row and pin from current state (e.g. after the activity
+   * window moved). Doesn't fire the change listener: no item was added or
+   * removed, and the listener's own work may be what triggered this. Nor
+   * does it renumber the pins, whose order only an add/remove can change;
+   * that skips a Leaflet `setIcon` per pin on every start-time keystroke.
+   */
+  function refresh() {
+    render(false);
+  }
+
+  return { init, add, remove, reset, getAll, setChangeListener, refresh };
 }

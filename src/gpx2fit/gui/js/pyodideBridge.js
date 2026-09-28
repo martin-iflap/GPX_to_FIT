@@ -210,14 +210,16 @@ export async function resolveAnchorCandidates(lat, lon) {
  * @param {{lat: number, lon: number, timestamp: string}[]} photoReadings -
  *   EXIF-derived GPS+timestamp per photo, timestamp as ISO 8601
  * @param {{startIso: string, endIso: string}} [activityWindow] - the
- *   activity's planned start/end time (ISO 8601). A photo captured outside
- *   this window (padded by a small clock-drift tolerance, see
- *   photo_anchors.ACTIVITY_TIME_TOLERANCE) resolves with status
- *   "outside_activity_time" regardless of how well its GPS matches the
+ *   activity's planned start/end time (ISO 8601). A photo not captured
+ *   strictly inside this window (no padding: the start and end are anchors
+ *   themselves, so an earlier or later photo could never be paced) resolves
+ *   with status "outside_activity_time" regardless of how well its GPS matches the
  *   route — catches e.g. the start-time field being left on its "now"
  *   default while the dropped photos are from a past activity. Omit to skip
  *   this check (e.g. before the frontend has a valid start time).
- * @returns {Promise<{status: 'ok'|'too_far'|'outside_activity_time', lat: number, lon: number, distanceFromStart: number, timestamp: string, gapM: number}[]>}
+ *   A match on the route's first or last point resolves as "at_route_end":
+ *   the start/end anchors already sit there, so it can't be an anchor too.
+ * @returns {Promise<{status: 'ok'|'too_far'|'outside_activity_time'|'at_route_end', lat: number, lon: number, distanceFromStart: number, timestamp: string, gapM: number}[]>}
  */
 export async function resolvePhotoAnchors(photoReadings, activityWindow) {
   return enqueue(async () => {

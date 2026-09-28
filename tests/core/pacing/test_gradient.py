@@ -327,12 +327,16 @@ class TestMinettiDefaultCurve:
 
 
 class TestMinettiSoftening:
-    """The default curve is Minetti's shape with a softened amplitude.
+    """The default Minetti exponents: Minetti's shape with a softened amplitude.
 
-    Raw Minetti (constant metabolic power) predicts a 20% climb at 0.4x flat
-    speed — a spread wide enough that, once scaled to a slow real-world pace,
-    climbs cross Strava's "resting" threshold. The softening narrows that spread, but must not flatten it
-    into near-constant pace either.
+    Paced output does not use these defaults (curve_selection.resolve_curve_shape
+    fits both exponents per workout; its realism is pinned by
+    test_curve_selection's TestResolveCurveShape). They survive as the curve
+    resolve_tobler_weight probes a workout's difficulty with, and the bands
+    below keep that probe a plausible running curve: raw Minetti (constant
+    metabolic power) puts a 20% climb at 0.4x flat speed, which overstates how
+    hard the terrain is, but a probe flattened to near-constant pace would see
+    no terrain at all.
     """
 
     GRADIENTS = [-0.4, -0.3, -0.2, -0.1, -0.05, 0.05, 0.1, 0.2, 0.3, 0.4]
@@ -348,8 +352,8 @@ class TestMinettiSoftening:
         assert min(raw, 1.0) < soft < max(raw, 1.0)
 
     def test_climbs_are_still_clearly_slower_than_flat(self):
-        # Guards against over-smoothing: realistic running pace drops
-        # substantially on climbs.
+        # Guards the probe against over-smoothing: realistic running pace
+        # drops substantially on climbs.
         assert _relative_to_flat(minetti_speeds_from_gradients, 0.1) <= 0.8
         assert _relative_to_flat(minetti_speeds_from_gradients, 0.2) <= 0.6
         assert _relative_to_flat(minetti_speeds_from_gradients, 0.3) <= 0.5
@@ -394,7 +398,9 @@ class TestMinettiDescentShape:
     def test_descents_are_softened_more_than_climbs(self):
         # Downhill pace is limited by footing and braking rather than
         # metabolic cost, so the energy model overstates descent speed more
-        # than it overstates climb slowdown.
+        # than it overstates climb slowdown. This is the default (probe)
+        # exponents only; in paced output the same idea is DOWNHILL_FILL vs
+        # UPHILL_FILL, which the tuning harness measures rather than a test pins.
         def retained_share(gradient: float) -> float:
             soft = _relative_to_flat(minetti_speeds_from_gradients, gradient)
             raw = _relative_to_flat(_raw_minetti, gradient)

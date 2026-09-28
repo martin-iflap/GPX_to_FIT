@@ -4,7 +4,22 @@ import * as mapModule from './map.js';
 import * as anchorsModule from './anchors.js';
 import * as stopsModule from './stops.js';
 import { createTimeToggle } from './timeInput.js';
+import { isStrictlyInside } from './activityWindow.js';
 import { describeError, formatClock, formatDistanceKm } from './format.js';
+
+// Shown under a time that the start/end anchors make unusable. The popover
+// catches it before the anchor or stop is added, so a later conversion never
+// has to reject it.
+const OUTSIDE_WINDOW_HINT = 'This time isn\'t between the activity\'s start and end.';
+
+/**
+ * A result's offset from the start, for a time entered as "Duration since
+ * start": stored so the anchor or stop follows later start changes. Absent
+ * for a time of day, which is a fixed clock time.
+ */
+function offsetSecondsOf(result) {
+  return result.mode === 'duration' ? result.durationSeconds : undefined;
+}
 
 /**
  * How many calendar days after `reference`'s day `target`'s day falls on
@@ -59,6 +74,30 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
     return new Date(start.getTime() + fraction * startTimeResult.durationSeconds * 1000);
   }
 
+  function currentWindow() {
+    const result = getStartTimeResult();
+    const start = getStartTime();
+    return result.isValid && start ? { start, end: result.resolvedDate } : null;
+  }
+
+  function isUsableTime(result) {
+    return result.isValid && isStrictlyInside(result.resolvedDate, currentWindow());
+  }
+
+  // The route's first and last point already carry the start and end time;
+  // another anchor or stop there would contradict them.
+  function isRouteEnd(distanceFromStart) {
+    return distanceFromStart === 0 || distanceFromStart === getTotalDistance();
+  }
+
+  function createWarningHint() {
+    const hint = document.createElement('p');
+    hint.className = 'popover-hint is-warning';
+    hint.textContent = OUTSIDE_WINDOW_HINT;
+    hint.hidden = true;
+    return hint;
+  }
+
   function estimateArrivalLabel(distanceFromStart) {
     const estimated = estimateArrivalDate(distanceFromStart);
     return estimated ? `~${formatClock(estimated)} (uniform-pace estimate)` : '';
@@ -92,6 +131,9 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
       const toggleContainer = document.createElement('div');
       container.append(toggleContainer);
 
+      const outsideHint = createWarningHint();
+      container.append(outsideHint);
+
       const confirmBtn = document.createElement('button');
       confirmBtn.type = 'button';
       confirmBtn.className = 'primary-button popover-confirm';
@@ -110,12 +152,13 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
         initialDayOffset: estimate && start ? dayOffsetBetween(start, estimate) : undefined,
         onChange: (result) => {
           lastResult = result;
-          confirmBtn.disabled = !result.isValid;
+          confirmBtn.disabled = !isUsableTime(result);
+          outsideHint.hidden = !result.isValid || isUsableTime(result);
         },
       });
 
       confirmBtn.addEventListener('click', () => {
-        if (!lastResult.isValid) {
+        if (!isUsableTime(lastResult)) {
           return;
         }
         anchorsModule.addAnchor({
@@ -123,6 +166,7 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
           lon: candidate.lon,
           distanceFromStart: candidate.distance_from_start,
           timestamp: lastResult.resolvedDate,
+          offsetSeconds: offsetSecondsOf(lastResult),
         });
         close();
       });
@@ -176,6 +220,16 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
       heading.className = 'popover-heading';
       heading.textContent = formatDistanceKm(candidate.distance_from_start);
       container.append(heading);
+
+      if (isRouteEnd(candidate.distance_from_start)) {
+        const hint = document.createElement('p');
+        hint.className = 'popover-hint';
+        hint.textContent = candidate.distance_from_start === 0
+          ? 'This is the route\'s start, and its time is the start time you entered. To add an anchor or stop, pick a point a little further along.'
+          : 'This is the route\'s finish, and its time is the activity\'s end. To add an anchor or stop, pick a point a little before it.';
+        container.append(hint);
+        return;
+      }
 
       const list = document.createElement('div');
       list.className = 'candidate-list';
@@ -261,6 +315,9 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
       columnsEl.append(arrivalColumn, departureColumn);
       startEndContainer.append(columnsEl);
 
+      const outsideHint = createWarningHint();
+      startEndContainer.append(outsideHint);
+
       container.append(durationContainer, startEndContainer);
 
       const confirmBtn = document.createElement('button');
@@ -275,12 +332,20 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
       let arrivalResult = { isValid: false };
       let departureResult = { isValid: false };
 
+      function isStartEndUsable() {
+        return isUsableTime(arrivalResult)
+          && isUsableTime(departureResult)
+          && departureResult.resolvedDate > arrivalResult.resolvedDate;
+      }
+
       function updateConfirmAvailability() {
         if (mode === 'duration') {
           confirmBtn.disabled = !durationResult.isValid;
+          outsideHint.hidden = true;
         } else {
-          confirmBtn.disabled =
-            !arrivalResult.isValid || !departureResult.isValid || !(departureResult.resolvedDate > arrivalResult.resolvedDate);
+          confirmBtn.disabled = !isStartEndUsable();
+          const eitherOutside = [arrivalResult, departureResult].some((r) => r.isValid && !isUsableTime(r));
+          outsideHint.hidden = !eitherOutside;
         }
       }
 
@@ -381,7 +446,7 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
             durationSeconds: durationResult.durationSeconds,
           });
         } else {
-          if (!arrivalResult.isValid || !departureResult.isValid || !(departureResult.resolvedDate > arrivalResult.resolvedDate)) {
+          if (!isStartEndUsable()) {
             return;
           }
           stopsModule.addStop({
@@ -391,6 +456,8 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
             mode: 'startEnd',
             arrival: arrivalResult.resolvedDate,
             departure: departureResult.resolvedDate,
+            arrivalOffsetSeconds: offsetSecondsOf(arrivalResult),
+            departureOffsetSeconds: offsetSecondsOf(departureResult),
           });
         }
         close();

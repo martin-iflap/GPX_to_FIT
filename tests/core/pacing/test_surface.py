@@ -287,72 +287,56 @@ class TestCalculateSurfaceMultipliers:
         [multiplier] = calculate_surface_multipliers(track, response, SportType.HIKING)
         assert multiplier == pytest.approx(physical)
 
-    def test_mild_sac_scale_is_blended_with_the_physical_multiplier(self, monkeypatch):
-        # sac multiplier (0.95) is above the dominance threshold, so it's
-        # blended in rather than trusted outright.
+    # The sac_scale cases below derive their sac multiplier from the thresholds
+    # under test rather than hardcoding one, so retuning _SAC_DOMINANCE_THRESHOLD
+    # or _SAC_CONFLICT_DELTA can't silently move a case into a different branch.
+    PHYSICAL = (
+        surface_module._FAMILY_WEIGHTS["surface"] * 0.8
+        + surface_module._FAMILY_WEIGHTS["road_class"] * 0.9
+        + surface_module._FAMILY_WEIGHTS["use"] * 0.7
+    )
+
+    def _with_sac(self, monkeypatch: pytest.MonkeyPatch, sac_multiplier: float) -> float:
+        """The multiplier for one leg on the fixed physical surface above, tagged sac_scale 3 = `sac_multiplier`."""
         _patch_tables(
             monkeypatch,
             surface={"a": 0.8},
             road_class={"x": 0.9},
             use={"p": 0.7},
-            sac_scale={"1": 0.95},
+            sac_scale={"3": sac_multiplier},
         )
         track = _track([(0.0, 0.0), (1.0, 1.0)])
         response = {
-            "edges": [_edge(1.0, surface="a", road_class="x", use="p", sac_scale=1)],
+            "edges": [_edge(1.0, surface="a", road_class="x", use="p", sac_scale=3)],
             "matched_points": [_matched(0), _matched(0)],
         }
-        physical = (
-            surface_module._FAMILY_WEIGHTS["surface"] * 0.8
-            + surface_module._FAMILY_WEIGHTS["road_class"] * 0.9
-            + surface_module._FAMILY_WEIGHTS["use"] * 0.7
-        )
-        expected = surface_module._SAC_BLEND_WEIGHT * 0.95 + (1 - surface_module._SAC_BLEND_WEIGHT) * physical
         [multiplier] = calculate_surface_multipliers(track, response, SportType.HIKING)
-        assert multiplier == pytest.approx(expected)
+        return multiplier
+
+    def _blend(self, sac_multiplier: float) -> float:
+        return surface_module._SAC_BLEND_WEIGHT * sac_multiplier + (1 - surface_module._SAC_BLEND_WEIGHT) * self.PHYSICAL
+
+    def test_mild_sac_scale_is_blended_with_the_physical_multiplier(self, monkeypatch):
+        # Above the dominance threshold, so blended rather than trusted outright.
+        threshold = surface_module._SAC_DOMINANCE_THRESHOLD
+        sac = threshold + (1.0 - threshold) / 2
+        assert sac > threshold  # premise
+        assert self._with_sac(monkeypatch, sac) == pytest.approx(self._blend(sac))
 
     def test_severe_sac_scale_agreeing_with_physical_is_used_outright(self, monkeypatch):
-        # sac multiplier (0.6) is at/below the dominance threshold and close
-        # to the physical multiplier (0.79), so it dominates outright.
-        _patch_tables(
-            monkeypatch,
-            surface={"a": 0.8},
-            road_class={"x": 0.9},
-            use={"p": 0.7},
-            sac_scale={"4": 0.6},
-        )
-        track = _track([(0.0, 0.0), (1.0, 1.0)])
-        response = {
-            "edges": [_edge(1.0, surface="a", road_class="x", use="p", sac_scale=4)],
-            "matched_points": [_matched(0), _matched(0)],
-        }
-        [multiplier] = calculate_surface_multipliers(track, response, SportType.HIKING)
-        assert multiplier == pytest.approx(0.6)
+        # At/below the dominance threshold and within the conflict delta of the
+        # physical multiplier, so it dominates outright.
+        delta = surface_module._SAC_CONFLICT_DELTA
+        sac = min(surface_module._SAC_DOMINANCE_THRESHOLD, self.PHYSICAL - delta / 2)
+        assert abs(sac - self.PHYSICAL) <= delta  # premise: the fixture's physical is reachable
+        assert self._with_sac(monkeypatch, sac) == pytest.approx(sac)
 
     def test_severe_sac_scale_conflicting_with_physical_falls_back_to_blend(self, monkeypatch):
-        # sac multiplier (0.3) is at/below the dominance threshold but far
-        # from the physical multiplier (0.79) — more than the conflict
-        # delta apart — so it's blended in rather than trusted alone.
-        _patch_tables(
-            monkeypatch,
-            surface={"a": 0.8},
-            road_class={"x": 0.9},
-            use={"p": 0.7},
-            sac_scale={"6": 0.3},
-        )
-        track = _track([(0.0, 0.0), (1.0, 1.0)])
-        response = {
-            "edges": [_edge(1.0, surface="a", road_class="x", use="p", sac_scale=6)],
-            "matched_points": [_matched(0), _matched(0)],
-        }
-        physical = (
-            surface_module._FAMILY_WEIGHTS["surface"] * 0.8
-            + surface_module._FAMILY_WEIGHTS["road_class"] * 0.9
-            + surface_module._FAMILY_WEIGHTS["use"] * 0.7
-        )
-        expected = surface_module._SAC_BLEND_WEIGHT * 0.3 + (1 - surface_module._SAC_BLEND_WEIGHT) * physical
-        [multiplier] = calculate_surface_multipliers(track, response, SportType.HIKING)
-        assert multiplier == pytest.approx(expected)
+        # At/below the dominance threshold but more than the conflict delta from
+        # the physical multiplier, so blended rather than trusted alone.
+        sac = min(surface_module._SAC_DOMINANCE_THRESHOLD, self.PHYSICAL - surface_module._SAC_CONFLICT_DELTA - 0.1)
+        assert sac > 0.0  # premise
+        assert self._with_sac(monkeypatch, sac) == pytest.approx(self._blend(sac))
 
     def test_zero_sac_scale_leaves_the_physical_multiplier_unchanged(self, monkeypatch):
         # sac_scale 0 is Valhalla's "no data" sentinel, not a real difficulty
@@ -412,7 +396,11 @@ class TestCalculateSurfaceMultipliers:
             "edges": [_edge(1.0, surface="a")],
             "matched_points": [_matched(0), _matched(0)],
         }
-        [hiking_multiplier] = calculate_surface_multipliers(track, response, SportType.HIKING, default_multiplier=0.9)
-        [running_multiplier] = calculate_surface_multipliers(track, response, SportType.RUNNING, default_multiplier=0.4)
-        assert hiking_multiplier == pytest.approx(0.9)
-        assert running_multiplier == pytest.approx(0.4)
+        # Default 1.0 for the untagged families, so the result can only move off
+        # 1.0 through the surface table; a default equal to the table value
+        # couldn't tell the table apart from the fallback.
+        surface_share = surface_module._FAMILY_WEIGHTS["surface"]
+        [hiking_multiplier] = calculate_surface_multipliers(track, response, SportType.HIKING)
+        [running_multiplier] = calculate_surface_multipliers(track, response, SportType.RUNNING)
+        assert hiking_multiplier == pytest.approx(surface_share * 0.9 + (1 - surface_share))
+        assert running_multiplier == pytest.approx(surface_share * 0.4 + (1 - surface_share))

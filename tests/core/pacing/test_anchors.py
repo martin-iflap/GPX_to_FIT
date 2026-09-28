@@ -140,6 +140,12 @@ class TestAddStartEndAnchors:
         with pytest.raises(ValueError):
             add_start_end_anchors(Track(points=[]), datetime(2024, 1, 1, 8, 0, 0), duration=timedelta(minutes=1))
 
+    def test_boundary_anchors_are_labelled_start_and_end(self):
+        # So an error about them can say "the start" rather than "anchor at 0.00 km".
+        track = Track(points=[point(distance_from_start=0.0), point(distance_from_start=1000.0)])
+        anchors = add_start_end_anchors(track, datetime(2024, 1, 1, 8, 0, 0), duration=timedelta(hours=1))
+        assert [a.source for a in anchors] == ["start", "end"]
+
 
 class TestBuildUserAnchors:
     def test_uses_distance_from_start_directly_when_given(self):
@@ -217,3 +223,31 @@ class TestBuildUserAnchors:
 
         with pytest.raises(InputError):
             build_user_anchors(track, raw, existing_anchors=existing)
+
+    def test_anchor_on_the_start_says_so(self):
+        track = Track(points=[point(distance_from_start=0.0), point(distance_from_start=1000.0)])
+        boundary = add_start_end_anchors(track, datetime(2024, 1, 1, 8, 0, 0), duration=timedelta(hours=1))
+        raw = [RawAnchor(timestamp=datetime(2024, 1, 1, 8, 30, 0), distance_from_start=0.0, source="photo")]
+
+        with pytest.raises(InputError, match=r"route's start") as error:
+            build_user_anchors(track, raw, existing_anchors=boundary)
+        assert "Two anchors" not in str(error.value)
+
+    def test_anchor_on_the_finish_says_so(self):
+        track = Track(points=[point(distance_from_start=0.0), point(distance_from_start=1000.0)])
+        boundary = add_start_end_anchors(track, datetime(2024, 1, 1, 8, 0, 0), duration=timedelta(hours=1))
+        raw = [RawAnchor(timestamp=datetime(2024, 1, 1, 8, 30, 0), distance_from_start=1000.0)]
+
+        with pytest.raises(InputError, match=r"route's finish"):
+            build_user_anchors(track, raw, existing_anchors=boundary)
+
+    def test_two_mid_route_anchors_on_one_point_keep_the_generic_message(self):
+        track = Track(points=[point(distance_from_start=0.0), point(distance_from_start=1000.0)])
+        boundary = add_start_end_anchors(track, datetime(2024, 1, 1, 8, 0, 0), duration=timedelta(hours=1))
+        raw = [
+            RawAnchor(timestamp=datetime(2024, 1, 1, 8, 20, 0), distance_from_start=500.0),
+            RawAnchor(timestamp=datetime(2024, 1, 1, 8, 30, 0), distance_from_start=500.0),
+        ]
+
+        with pytest.raises(InputError, match=r"Two anchors land on the exact same point"):
+            build_user_anchors(track, raw, existing_anchors=boundary)

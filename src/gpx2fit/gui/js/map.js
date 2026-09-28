@@ -275,6 +275,18 @@ export function highlightMarker(id, isActive) {
 }
 
 /**
+ * Toggles the `.is-dimmed` style on a pin (an anchor or stop that is kept but
+ * currently unused). Call it after `renumberMarkers`, whose `setIcon`
+ * replaces the pin's element and so drops the class.
+ */
+export function setMarkerDimmed(id, dimmed) {
+  const el = markers.get(id)?.marker.getElement();
+  if (el) {
+    el.classList.toggle('is-dimmed', dimmed);
+  }
+}
+
+/**
  * Opens a Leaflet popup at the given location and lets the caller fill it
  * with arbitrary DOM content (used for the anchor-time, stop, and
  * candidate-picker popovers).

@@ -129,7 +129,10 @@ class Anchor:
     Attributes:
         distance_from_start: Distance in meters from the track start.
         timestamp: The known time at this point.
-        source: "user" | "photo" | "stop_arrival" | "stop_departure".
+        source: "start" | "end" (the boundary anchors from
+            pacing.anchors.add_start_end_anchors) | "user" | "photo" |
+            "stop_arrival" | "stop_departure". Used only to word error
+            messages.
     """
     distance_from_start: float
     timestamp: datetime
@@ -218,9 +221,12 @@ class ResolvedPhotoAnchor:
         lat: Matched track point's latitude, in degrees.
         lon: Matched track point's longitude, in degrees.
         timestamp: The photo's own timestamp, carried through unchanged.
-        status: "ok" if the match is within MAX_MATCH_DISTANCE_M, "too_far"
-            if it isn't, or "outside_activity_time" if the photo's timestamp
-            falls outside the activity's time span (checked first — see
+        status: "ok" if the match is usable as an anchor. Otherwise, in the
+            order they're checked: "outside_activity_time" if the photo's
+            timestamp isn't strictly inside the activity's time span,
+            "too_far" if the match is beyond MAX_MATCH_DISTANCE_M, or
+            "at_route_end" if it's the route's first or last point, where
+            the start/end anchors already sit (see
             pacing.photo_anchors.resolve_photo_anchors).
         gap_m: Distance in meters between the photo's raw GPS and the matched point.
     """
@@ -257,25 +263,3 @@ class ProfileSample:
     lat: float
     lon: float
     is_stop: bool = False
-
-
-# TODO:
-# 1. Finish building the tuning harness and actually tune the constants.
-# 2. Fine tune surface + max speed capping speed adjustments. Check out the todos.
-#    Max speed capping is round one of the tuning harness. Surface weights are the last phase - they need a
-#    Valhalla trace_attributes fetch per corpus activity, which the harness doesn't do yet.
-# 4. Add support page and polish the site.
-# 5. Check the app on different devices and screen sizes.
-# Check the code, test, efficiency everything.
-# PUBLISH V-1.0.0 on cloudflare pages (we don't even need custom domain for this).
-# create a new branch.
-# 6. Add cycling sport type. It will require separate speed computing logic and all.
-# 7. Make the default map display pre-gpx-loaded an image to save requests (or just try to save the map somehow).
-# 8. It would be absolutely crazy if the users could drag and adjust speed in the graph and it would recalculate based on their changes.
-# 9. Would it make sense to convert some of the code to Cython or Numpy?
-
-# Make sure the tests are good and are actually testing the code not just passing.
-# check whether we want to convert some of the logic from JS to Python.
-
-# (Get-ChildItem -Recurse -File | Get-Content | Measure-Object).Count
-# rm ~/.claude/projects/YOUR_PROJECT_FOLDER/SESSION_ID.jsonl - delete session history if not needed anymore
