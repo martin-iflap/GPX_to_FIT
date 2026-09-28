@@ -39,6 +39,16 @@ describe('DEVICE_CATALOG', () => {
   it('includes the Wahoo ELEMNT BOLT V2, the ID real BOLT V2 files carry', () => {
     assert.equal(selectionLabel({ ...NO_DEVICE, manufacturer: 32, product: 43 }), 'Wahoo ELEMNT BOLT V2');
   });
+
+  it("uses Suunto's own product IDs for its older watches", () => {
+    assert.equal(selectionLabel({ ...NO_DEVICE, manufacturer: 23, product: 56 }), 'Suunto 5 Peak');
+    assert.equal(selectionLabel({ ...NO_DEVICE, manufacturer: 23, product: 34 }), 'Suunto 9 Baro');
+  });
+
+  it("leaves out the COROS source's product 294, which is COROS's manufacturer ID", () => {
+    assert.equal(findDevice(294, 294), null);
+    assert.equal(findDevice(294, 832)?.name, 'VERTIX 2');
+  });
 });
 
 describe('selectionLabel', () => {

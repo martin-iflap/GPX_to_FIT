@@ -695,8 +695,9 @@ photoAnchors.handleFiles
   and renders a row in the "?" panel. Each action calls `.click()` on the
   existing control.
 - **`devices.js`**: `DEVICE_CATALOG` (brand → `{name, manufacturer, product}`;
-  only IDs with a real source: Garmin from `fit_tool`'s `GarminProduct`, other
-  brands only from a recording Strava named) plus pure helpers
+  only IDs with a real source: Garmin from `fit_tool`'s `GarminProduct`, Suunto
+  from its own product-ID list, other brands from a recording Strava named or
+  another FIT reader's device table: GoldenCheetah, Runalyze) plus pure helpers
   (`selectionLabel`, `parseCustomIds`, `parseStoredSelection`,
   `toConvertDevice`). Tested.
 - **`devicePicker.js`**: the sidebar's device button and the native

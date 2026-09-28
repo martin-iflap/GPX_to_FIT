@@ -5,15 +5,19 @@
 // Strava shows a device only when the FIT file_id's manufacturer + product
 // pair is in its own table, and ignores the embedded product name. So only
 // IDs with a real source belong in this list: the Garmin ones are copied from
-// fit_tool's GarminProduct enum (the FIT SDK profile). No other brand
-// publishes its product IDs, so they are added only from a real recording
-// whose device Strava named, or from another FIT reader's device table built
-// the same way. A guessed ID would show nothing, which is the exact problem
+// fit_tool's GarminProduct enum (the FIT SDK profile), and Suunto's older
+// ones from Suunto's own product-ID list. Other brands' IDs are added only
+// from a real recording whose device Strava named, or from another FIT
+// reader's device table (GoldenCheetah's FITmetadata.json, Runalyze's
+// devices repo). A guessed ID would show nothing, which is the exact problem
 // this list exists to fix.
 
 /** FIT manufacturer IDs (FIT SDK `manufacturer` type). */
 export const GARMIN = 1;
+export const SUUNTO = 23;
 export const WAHOO = 32;
+export const POLAR = 123;
+export const COROS = 294;
 
 /**
  * Upper bounds of the FIT file_id fields: manufacturer and product are
@@ -52,17 +56,75 @@ export const DEVICE_CATALOG = [
     ],
   },
   {
+    brand: 'COROS',
+    devices: [
+      // From Runalyze's CorosFitSdkMapping (github.com/Runalyze/devices),
+      // which maps real uploads' file_id products to models. It also maps
+      // 294 (COROS's manufacturer ID) to VERTIX 2, which looks like a slip,
+      // so only 832 is used for that watch. PACE 4 and APEX 4 aren't in it
+      // yet. None has been upload-tested on Strava.
+      { name: 'PACE 2', manufacturer: COROS, product: 802 },
+      { name: 'PACE 3', manufacturer: COROS, product: 804 },
+      { name: 'PACE Pro', manufacturer: COROS, product: 805 },
+      { name: 'APEX Pro', manufacturer: COROS, product: 841 },
+      { name: 'APEX 2', manufacturer: COROS, product: 812 },
+      { name: 'APEX 2 Pro', manufacturer: COROS, product: 822 },
+      { name: 'VERTIX 2', manufacturer: COROS, product: 832 },
+      { name: 'VERTIX 2S', manufacturer: COROS, product: 833 },
+      { name: 'NOMAD', manufacturer: COROS, product: 861 },
+    ],
+  },
+  {
+    brand: 'Suunto',
+    devices: [
+      // Up to 56 (5 Peak) these come from Suunto's own product-ID list
+      // (apizone.suunto.com/fit-description → DeviceProductIDs.pdf), which
+      // Runalyze's SuuntoFitSdkMapping matches exactly. The newer ones are
+      // Runalyze's alone. None has been upload-tested on Strava.
+      { name: '5 Peak', manufacturer: SUUNTO, product: 56 },
+      { name: '9 Baro', manufacturer: SUUNTO, product: 34 },
+      { name: '9 Peak', manufacturer: SUUNTO, product: 42 },
+      { name: '9 Peak Pro', manufacturer: SUUNTO, product: 58 },
+      { name: 'Vertical', manufacturer: SUUNTO, product: 59 },
+      { name: 'Race', manufacturer: SUUNTO, product: 60 },
+      { name: 'Race S', manufacturer: SUUNTO, product: 61 },
+      { name: 'Race 2', manufacturer: SUUNTO, product: 66 },
+      { name: 'Run', manufacturer: SUUNTO, product: 65 },
+    ],
+  },
+  {
+    brand: 'Polar',
+    devices: [
+      // From Runalyze's PolarFitSdkMapping. It lists 270 twice (Vantage M3
+      // and Grit X2), so the Grit X2 is left out and the Vantage M3 uses its
+      // other ID, 268. None has been upload-tested on Strava.
+      { name: 'Pacer', manufacturer: POLAR, product: 256 },
+      { name: 'Pacer Pro', manufacturer: POLAR, product: 261 },
+      { name: 'Ignite 2', manufacturer: POLAR, product: 241 },
+      { name: 'Ignite 3', manufacturer: POLAR, product: 262 },
+      { name: 'Vantage M2', manufacturer: POLAR, product: 236 },
+      { name: 'Vantage M3', manufacturer: POLAR, product: 268 },
+      { name: 'Vantage V2', manufacturer: POLAR, product: 230 },
+      { name: 'Vantage V3', manufacturer: POLAR, product: 263 },
+      { name: 'Grit X', manufacturer: POLAR, product: 217 },
+      { name: 'Grit X Pro', manufacturer: POLAR, product: 251 },
+    ],
+  },
+  {
     brand: 'Wahoo',
     devices: [
       // 28 and 31 are from GoldenCheetah's FITmetadata.json (its FIT reader's
       // device-name table); 31 also appears in real BOLT recordings in the
       // tuning corpus. 43 (BOLT V2) comes from the owner's own BOLT V2
-      // recordings. None has been upload-tested on Strava yet. ROAM, BOLT v3
-      // and RIVAL have no confirmed source (1164 has been suggested for the
-      // BOLT v3, unsourced, so it isn't listed).
+      // recordings. 33 (the RIVAL watch) is from Runalyze's
+      // WahooFitSdkMapping, which also maps 43 to a BOLT. None has been
+      // upload-tested on Strava yet. Runalyze gives the ROAM two IDs (37 and
+      // 47) without saying which generation is which, so it isn't listed.
+      // BOLT v3 has no source (1164 has been suggested, unsourced).
       { name: 'ELEMNT', manufacturer: WAHOO, product: 28 },
       { name: 'ELEMNT BOLT', manufacturer: WAHOO, product: 31 },
       { name: 'ELEMNT BOLT V2', manufacturer: WAHOO, product: 43 },
+      { name: 'ELEMNT RIVAL', manufacturer: WAHOO, product: 33 },
     ],
   },
 ];

@@ -168,10 +168,10 @@ The full pipeline works end to end in the browser. Known limitations:
   uptime guarantee. If the request fails, the conversion still completes,
   without surface-based pacing.
 - Only running and hiking are supported.
-- The device picker lists Garmin models and three Wahoo bike computers
-  (ELEMNT, ELEMNT BOLT and ELEMNT BOLT V2). Other brands don't publish
-  their product IDs, so they need custom IDs copied from one of their own
-  FIT files.
+- The device picker lists Garmin, COROS, Suunto, Polar and Wahoo models.
+  Only Garmin's Forerunner 245 has been confirmed to show up on Strava.
+  Other devices need custom IDs copied from one of their own FIT files,
+  because most brands don't publish their product IDs.
 - Photo anchors read EXIF from JPEG and HEIC images. Video files aren't
   supported.
 
