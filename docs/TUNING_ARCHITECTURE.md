@@ -1,8 +1,10 @@
 # Tuning harness architecture
 
 How `tuning/` is put together: what each file owns, how a `.fit` recording
-becomes a score, and how the search turns scores into proposed constants.
-This assumes you know what the pacing model does (see
+becomes a score, and how the two independent searches in `fit.py` use those
+scores: `sweep` diagnoses the per-workout settings one activity wanted, and
+`fit` proposes new constants (§10.1). This assumes you know what the pacing
+model does (see
 [ARCHITECTURE.md §5](ARCHITECTURE.md#5-core-module-by-module)). The history
 of the corpus gates and of each fit run lives in `CLAUDE.md`, not here.
 
@@ -27,18 +29,18 @@ Contents
 
 ## 1. Rules
 
-| Rule | Why |
-|---|---|
-| **Dev tooling, not part of the converter.** It lives at the repo root, reads files, prints, and makes network calls. Nothing from `tuning/` goes in `backendFiles`. | `core/`'s no-I/O rule exists for Pyodide. The harness never runs in a browser. |
-| **numpy here, never in `core/`.** numpy is in the `dev` dependency group only. | Pyodide would have to download it for every user. The harness evaluates the same tracks thousands of times, so it needs the speed. |
-| **`core/` is never changed to suit the harness.** | The harness measures the model the app runs. It borrows `core/`'s public functions and restates only what it has to (§8). |
-| **The mirror test must pass.** `tests/tuning/test_model_mirror.py` checks that `model.elapsed_from_model` reproduces `combine()` exactly. | Without it the harness silently calibrates a model the app no longer runs. |
-| **Only the shape is measured.** | With only a start and an end anchor, `combine()` matches the total time by construction, whatever the constants. The objective scores the residuals minus their mean (§9). |
-| **One definition of the score.** The report and the search both go through `compare._evaluate`. | The number a fit minimises is, by construction, the number a report prints. |
-| **Cache raw numbers, never judgements.** Only `decode_fit_bytes` output is cached. | Changing a quality gate takes effect on the next run without anyone clearing a cache. |
-| **Nothing is guessed.** A sport the file can't map is rejected unless the caller overrides it. A bad file is skipped with a printed reason. | A silently mislabelled or silently dropped activity poisons the corpus without anyone noticing. |
-| **No new tests for `tuning/`**, except keeping the mirror test current. | Its output is a proposal a human reads, not a FIT file a user gets. |
-| **Corpus and output stay out of git.** `corpus/`, `tuning_out/` and `*.fit` are gitignored. | Real activities contain home GPS positions and heart rate. The decode and DEM caches hold the same positions. |
+| Rule                                                                                                                                                                | Why                                                                                                                                                                        |
+|---------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Dev tooling, not part of the converter.** It lives at the repo root, reads files, prints, and makes network calls. Nothing from `tuning/` goes in `backendFiles`. | `core/`'s no-I/O rule exists for Pyodide. The harness never runs in a browser.                                                                                             |
+| **numpy here, never in `core/`.** numpy is in the `dev` dependency group only.                                                                                      | Pyodide would have to download it for every user. The harness evaluates the same tracks thousands of times, so it needs the speed.                                         |
+| **`core/` is never changed to suit the harness.**                                                                                                                   | The harness measures the model the app runs. It borrows `core/`'s public functions and restates only what it has to (§8).                                                  |
+| **The mirror test must pass.** `tests/tuning/test_model_mirror.py` checks that `model.elapsed_from_model` reproduces `combine()` exactly.                           | Without it the harness silently calibrates a model the app no longer runs.                                                                                                 |
+| **Only the shape is measured.**                                                                                                                                     | With only a start and an end anchor, `combine()` matches the total time by construction, whatever the constants. The objective scores the residuals minus their mean (§9). |
+| **One definition of the score.** The report and the search both go through `compare._evaluate`.                                                                     | The number a fit minimises is, by construction, the number a report prints.                                                                                                |
+| **Cache raw numbers, never judgements.** Only `decode_fit_bytes` output is cached.                                                                                  | Changing a quality gate takes effect on the next run without anyone clearing a cache.                                                                                      |
+| **Nothing is guessed.** A sport the file can't map is rejected unless the caller overrides it. A bad file is skipped with a printed reason.                         | A silently mislabelled or silently dropped activity poisons the corpus without anyone noticing.                                                                            |
+| **No new tests for `tuning/`**, except keeping the mirror test current.                                                                                             | Its output is a proposal a human reads, not a FIT file a user gets.                                                                                                        |
+| **Corpus and output stay out of git.** `corpus/`, `tuning_out/` and `*.fit` are gitignored.                                                                         | Real activities contain home GPS positions and heart rate. The decode and DEM caches hold the same positions.                                                              |
 
 ---
 
@@ -51,9 +53,10 @@ tuning/
 ├── fit_reader.py   FIT bytes → DecodedFit (raw arrays) → ReferenceActivity (reading rules)
 ├── elevation.py    --dem-elevation: swap missing/noisy elevation for Valhalla /height
 ├── prepare.py      ReferenceActivity → PreparedActivity (moving time, gates, resample, GPX)
-├── model.py        PacingParams, TrackModel, the mirror of combine._pace_segment
+├── model.py        PacingParams, ParamsBySport, TrackModel, the mirror of combine._pace_segment
 ├── compare.py      ActivityContext, bucket residuals, objective, ActivityReport
-├── fit.py          sweep_activity (per activity), fit_constants (corpus search)
+├── fit.py          two independent searches: sweep_activity (per-workout settings,
+│                   one activity) and fit_constants (the constants, whole corpus)
 └── report.py       ActivityReport → text table / JSON
 
 tests/tuning/       pytest; conftest.py builds synthetic recordings with a known response
@@ -151,15 +154,15 @@ flowchart TD
 
 What each type is for:
 
-| Type | Built by | Holds | Depends on `PacingParams`? |
-|---|---|---|---|
-| `DecodedFit` | `fit_reader.decode_fit_bytes` | raw numbers only, NaN where absent | no (cacheable) |
-| `ReferenceActivity` | `fit_reader.read_decoded_activity` | points with real timestamps, pauses, sport | no |
-| `PreparedActivity` | `prepare.prepare_reference` | the production-shaped track plus the real answer | no |
-| `TrackModel` | `model.TrackModel.build` | everything about the track that no knob can change | only `gradient_window_m` |
-| `ActivityContext` | `compare.ActivityContext.build` | `TrackModel` plus bucket layout and real times | only `gradient_window_m` |
-| `ResolvedSettings` | `model.resolve` | the three per-workout decisions plus the features | yes |
-| `ActivityReport` | `compare.report_of` | everything a human reads for one activity | yes |
+| Type                | Built by                           | Holds                                              | Depends on `PacingParams`? |
+|---------------------|------------------------------------|----------------------------------------------------|----------------------------|
+| `DecodedFit`        | `fit_reader.decode_fit_bytes`      | raw numbers only, NaN where absent                 | no (cacheable)             |
+| `ReferenceActivity` | `fit_reader.read_decoded_activity` | points with real timestamps, pauses, sport         | no                         |
+| `PreparedActivity`  | `prepare.prepare_reference`        | the production-shaped track plus the real answer   | no                         |
+| `TrackModel`        | `model.TrackModel.build`           | everything about the track that no knob can change | only `gradient_window_m`   |
+| `ActivityContext`   | `compare.ActivityContext.build`    | `TrackModel` plus bucket layout and real times     | only `gradient_window_m`   |
+| `ResolvedSettings`  | `model.resolve`                    | the three per-workout decisions plus the features  | yes                        |
+| `ActivityReport`    | `compare.report_of`                | everything a human reads for one activity          | yes                        |
 
 Everything above the `PacingParams` line is computed once per activity, and
 everything below it once per evaluation. That split is where the speed
@@ -237,14 +240,25 @@ flowchart TD
 
 ### 5.3 Loading constants
 
-`_params_from(path)` returns `PacingParams()` (the shipped constants) when no
-file is given. Otherwise it reads the JSON and uses its `"global"` key if
-there is one, so `fit`'s own `proposed.json` can be fed back in.
+`_params_from(path)` returns a `model.ParamsBySport`: constants shared by
+every sport (`shared`, a `PacingParams`) plus per-sport overrides
+(`per_sport`, `{SportType: {field: value}}`). Every command then runs each
+activity with `params.for_sport(activity.sport)`.
 
-Known gap: it ignores `"per_sport"`. Running `compare --params
-tuning_out/proposed.json` applies the fitted global knobs only, not the
-per-sport fills and ratios. To check per-sport results, write a params file
-with those values at the top level and run each sport separately.
+| `--params` file                                                              | Loads as                                                                                                               |
+|------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------|
+| none                                                                         | `ParamsBySport()`, the shipped constants                                                                               |
+| `fit`'s `proposed.json`: `{"global": {...}, "per_sport": {"hiking": {...}}}` | `global` → `shared`, `per_sport` → the overrides. Both keys are optional, and other keys (history, split) are ignored. |
+| a flat `{field: value}` object                                               | the same constants for every sport                                                                                     |
+
+So `compare --params tuning_out/proposed.json` runs each activity with its
+own sport's fitted fills and ratios, exactly as `fit` scored them, and `fit
+--params tuning_out/proposed.json` resumes from where the last fit stopped.
+An override naming a field `PacingParams` doesn't have is rejected on load.
+
+Per-sport values exist only in the harness. `core/` ships one `UPHILL_FILL`
+and one `DOWNHILL_FILL` for all sports. Fitting them per sport shows whether
+the sports really disagree, and which constants could share one value.
 
 ---
 
@@ -359,7 +373,7 @@ The order matters in two places:
   batch first reports the real problem.
 
 The 50 m/s teleport threshold sits far above `prepare`'s 10 m/s spike gate on
-purpose. A genuinely fast stretch (a car ride in a mislabelled recording)
+purpose. A genuinely fast stretch (a car ride in a mislabeled recording)
 must reach the spike gate and get the whole activity rejected, rather than
 be patched out one point at a time.
 
@@ -394,15 +408,15 @@ flowchart TD
 
 `_check_quality` rejects, in order:
 
-| Gate | Rejects when | Fix |
-|---|---|---|
-| points | fewer than 50 | none |
-| distance | under 500 m | none |
-| moving time | under 120 s after stops are removed | none |
-| elevation missing | over 50% of points at the 0.0 sentinel, or elevation never changes | `--dem-elevation` |
-| elevation noisy | `elevation_noise` over 1.0 | `--dem-elevation` |
-| dropouts | gaps over max(30 s, 10 × median leg time) total over 10% of moving time | none |
-| GPS spikes | over 2% of legs faster than 10 m/s | none |
+| Gate              | Rejects when                                                            | Fix               |
+|-------------------|-------------------------------------------------------------------------|-------------------|
+| points            | fewer than 50                                                           | none              |
+| distance          | under 500 m                                                             | none              |
+| moving time       | under 120 s after stops are removed                                     | none              |
+| elevation missing | over 50% of points at the 0.0 sentinel, or elevation never changes      | `--dem-elevation` |
+| elevation noisy   | `elevation_noise` over 1.0                                              | `--dem-elevation` |
+| dropouts          | gaps over max(30 s, 10 × median leg time) total over 10% of moving time | none              |
+| GPS spikes        | over 2% of legs faster than 10 m/s                                      | none              |
 
 Anything short of rejection becomes a note, including a >10% mismatch
 against the device's own distance. Notes are carried into every report, so
@@ -429,21 +443,23 @@ every constant taken from a `PacingParams` instead.
 
 ### 8.1 What is borrowed and what is restated
 
-| In `core/` | In `model.py` | Borrowed or restated |
-|---|---|---|
-| `gradient.calculate_gradient` | called in `TrackModel.build` | borrowed |
-| `minetti_speeds_from_gradients`, `tobler_speeds_from_gradients` | called once per track at exponent 1.0 (`raw_minetti`, `raw_tobler`) | borrowed |
-| `gradient._soften` (`raw ** exponent`) | `_blended.softened` | restated (trivial) |
-| `blended_speeds_from_gradients` | `_blended` | restated over the raw curves |
-| `curve_selection.resolve_tobler_weight` | `tobler_weight_for` | restated, thresholds from params |
-| `curve_selection.resolve_max_speed_ratio` | `max_speed_ratio_for` | restated, bounds from params, no smoothness |
-| `curve_selection.resolve_curve_shape` | `curve_shape_for` | restated, fills and reference grade from params |
-| `_smoothstep`, `_verticality` | imported | borrowed |
-| `combine._compress_speed_toward_typical` | `_compressed` | restated in numpy |
-| `combine._pace_segment` scaling | `elapsed_from_model` | restated, single segment only |
+| In `core/`                                                      | In `model.py`                                                                                                    | Borrowed or restated                                                |
+|-----------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------|
+| `gradient.calculate_gradient`                                   | called in `TrackModel.build`                                                                                     | borrowed                                                            |
+| `minetti_speeds_from_gradients`, `tobler_speeds_from_gradients` | at exponent 1.0: Tobler once per track, Minetti once per descent cost slope (`raw_minetti(slope)`, `raw_tobler`) | borrowed                                                            |
+| `gradient._soften` (`raw ** exponent`)                          | `_blended.softened`                                                                                              | restated (trivial)                                                  |
+| `blended_speeds_from_gradients`                                 | `_blended`                                                                                                       | restated over the raw curves                                        |
+| `curve_selection.resolve_tobler_weight`                         | `tobler_weight_for`                                                                                              | restated, thresholds from params                                    |
+| `curve_selection.resolve_max_speed_ratio`                       | `max_speed_ratio_for`                                                                                            | restated, bounds from params, no smoothness                         |
+| `curve_selection.resolve_curve_shape`                           | `curve_shape_for`                                                                                                | restated, fills, reference grade and descent cost slope from params |
+| `_smoothstep`, `_verticality`, `_reference_swings`              | imported                                                                                                         | borrowed                                                            |
+| `combine._compress_speed_toward_typical`                        | `_compressed`                                                                                                    | restated in numpy                                                   |
+| `combine._pace_segment` scaling                                 | `elapsed_from_model`                                                                                             | restated, single segment only                                       |
 
 So a change to the Minetti polynomial or Tobler's slope factor reaches the
-harness on its own. A change to how speeds are softened, blended, bounded
+harness on its own. Minetti's descent cost slope is part of the curve, so
+core's `minetti_speeds_from_gradients` takes it as `downhill_cost_slope`
+(the app always uses the default) instead of the harness restating the curve. A change to how speeds are softened, blended, bounded
 or scaled does not, and the mirror test will catch it.
 
 ### 8.2 Call graph
@@ -451,17 +467,18 @@ or scaled does not, and the mirror test will catch it.
 ```mermaid
 flowchart TD
   tmb["TrackModel.build(track, gradient_window_m)"] --> cg["core calculate_gradient"]
-  tmb --> raw["core minetti_/tobler_speeds_from_gradients<br/>at exponent 1.0 → raw curves"]
-  tmb --> probe["core minetti_speeds_from_gradients<br/>at default exponents → flat_equivalent_distance_m"]
+  tmb --> raw["core tobler_speeds_from_gradients<br/>at exponent 1.0 → raw_tobler"]
   tmb --> vert["core _verticality"]
+  mat["TrackModel._minetti_at(slope)<br/>first use per slope, then cached"] --> rawm["core minetti_speeds_from_gradients<br/>at exponent 1.0 → raw_minetti(slope)"]
+  mat --> probe["core minetti_speeds_from_gradients<br/>at default exponents → flat_equivalent_mps"]
 
   efm["elapsed_from_model(model, sport, active_seconds, params, multipliers?)"]
   efm --> res["resolve(model, sport, active_seconds, params)"]
   res --> tw["tobler_weight_for<br/>(params.tobler_weight pins it)"]
   res --> msr["max_speed_ratio_for<br/>(params.max_speed_ratio pins it)"]
-  msr --> csf["curve_shape_for(ratio, params)"]
+  msr --> csf["curve_shape_for(ratio, params)<br/>swings cached per reference grade and slope"]
   res --> RS["ResolvedSettings<br/>+ verticality, flat_equivalent_mps"]
-  efm --> bl["_blended(model, weight, shape)"]
+  efm --> bl["_blended(model, raw_minetti, weight, shape)"]
   efm --> mul["× max(multipliers, _MIN_SURFACE_MULTIPLIER)"]
   efm --> cmpd["_compressed(speeds, ratio)<br/>tanh around the median"]
   efm --> scale["leg time = d / v, scaled so Σ = active_seconds,<br/>cumulative sum → elapsed per point"]
@@ -475,9 +492,15 @@ how `sweep_activity` works. `ratio_flat`, `ratio_hilly`,
 `tobler_flat_equivalent_mps` and `tobler_verticality` default to `None`,
 meaning "use the sport's shipped table value".
 
+`ParamsBySport` wraps one `PacingParams` shared by every sport with
+per-sport overrides on top, and `for_sport(sport)` merges the two. It's what
+`--params` loads and what `fit` proposes (§5.3, §10.3).
+
 `gradient_window_m` is the only field that changes the gradients themselves.
 A `TrackModel` records the window it was built for, and anything reusing
-one must check it (see §9).
+one must check it (see §9). `minetti_downhill_cost_slope` changes the raw
+Minetti curve but not the gradients, so a `TrackModel` computes that curve
+(and the probe's flat-equivalent distance) once per slope and keeps it.
 
 Smoothness is absent on purpose. It's a user preference that scales the
 ratio, not something to calibrate, so the harness always works at level 5
@@ -531,12 +554,12 @@ flowchart TD
 
 ### 9.3 What each bucket flag does
 
-| Flag | Paced? | In the objective? | In the band table? | Meaning |
-|---|---|---|---|---|
-| `steep` (>±40%) | yes | no | own outer rows | almost always bad elevation data |
-| `dawdle` | yes | no | no | slow flat ground the device didn't pause for |
-| `mixed` | yes | yes | no | slope changes direction inside the bucket, so its mean gradient misrepresents it |
-| none | yes | yes | yes | normal |
+| Flag            | Paced? | In the objective? | In the band table? | Meaning                                                                          |
+|-----------------|--------|-------------------|--------------------|----------------------------------------------------------------------------------|
+| `steep` (>±40%) | yes    | no                | own outer rows     | almost always bad elevation data                                                 |
+| `dawdle`        | yes    | no                | no                 | slow flat ground the device didn't pause for                                     |
+| `mixed`         | yes    | yes               | no                 | slope changes direction inside the bucket, so its mean gradient misrepresents it |
+| none            | yes    | yes               | yes                | normal                                                                           |
 
 Unscored buckets are still paced, exactly as the app would pace them.
 Because the objective subtracts the mean residual, the time the model gives
@@ -545,11 +568,11 @@ from matching total time.
 
 ### 9.4 Three entry points, one computation
 
-| Function | Returns | Used by |
-|---|---|---|
+| Function                              | Returns          | Used by                                                    |
+|---------------------------------------|------------------|------------------------------------------------------------|
 | `compare(prepared, params, bucket_m)` | `ActivityReport` | `command_compare`, `command_check` (one call per activity) |
-| `report_of(context, params)` | `ActivityReport` | `compare`, and `sweep_activity` for the baseline row |
-| `objective_of(context, params)` | `float` | `fit._Evaluator`, `sweep_activity` (thousands of calls) |
+| `report_of(context, params)`          | `ActivityReport` | `compare`, and `sweep_activity` for the baseline row       |
+| `objective_of(context, params)`       | `float`          | `fit._Evaluator`, `sweep_activity` (thousands of calls)    |
 
 All three go through `_evaluate`. The fit's `train_after`, the `objective`
 line of a `compare` report and `check`'s baseline are therefore the same
@@ -564,19 +587,36 @@ being too fast in one band forces being too slow in another. Read the
 
 ## 10. `fit.py`: the search
 
-### 10.1 Two stages
+### 10.1 Two independent searches over different numbers
 
-- **Stage one, `sweep_activity`** (diagnostic). Pins `tobler_weight` and
-  `max_speed_ratio` directly, bypassing the resolvers, and finds the pair
-  this one activity scores best at. It reports what the activity wanted next
-  to what the resolvers gave it. Stage two does not read it.
-- **Stage two, `fit_constants`** (the fit). Searches the constants shared by
-  every activity of a sport, on a training split, and reports a held-out
-  split to show whether they generalise.
+`fit.py` holds two searches. They are **not** steps of one pipeline: neither
+calls the other nor reads the other's output, and each backs its own command.
+They also search **different sets of numbers**:
 
-One activity's optimum is not the right constant. An athlete who faded on
-the last climb "wants" a bound the terrain doesn't justify, which is why
-stage two fits shared constants.
+```mermaid
+flowchart LR
+  terrain["terrain features<br/>verticality, flat-equivalent speed"] --> resolvers["resolvers<br/>read the CONSTANTS"]
+  resolvers --> settings["per-workout SETTINGS<br/>tobler_weight, max_speed_ratio"]
+  settings --> pacing["paced timestamps"]
+  fit["fit_constants (fit command)<br/>searches the constants"] -. varies .-> resolvers
+  sweep["sweep_activity (sweep command)<br/>pins the settings, skips the resolvers"] -. varies .-> settings
+```
+
+|                     | `sweep_activity` (`sweep`)                                                  | `fit_constants` (`fit`)                                                                                                                                 |
+|---------------------|-----------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Searches            | the two per-workout **settings**: `tobler_weight`, `max_speed_ratio`        | the **constants**: `uphill_fill`, `downhill_fill`, `ratio_flat`, `ratio_hilly` (per sport), `minetti_downhill_cost_slope`, `hilly_verticality` (shared) |
+| Scope               | one activity at a time                                                      | the whole corpus, split into train and held-out                                                                                                         |
+| Changes a constant? | no, every constant stays as given                                           | yes, that's the point                                                                                                                                   |
+| Output              | `optima.json`: what each activity wanted next to what the resolvers gave it | `proposed.json`: a proposal you can feed back with `--params`                                                                                           |
+| Used for            | diagnosis: did the resolvers choose badly, or could no setting have helped? | the change you might ship                                                                                                                               |
+
+A typical session runs `sweep` to see where the model goes wrong, then
+`fit` to change it. That link is a person reading a table, not code.
+
+Why `fit` can't just average what `sweep` found: one activity's optimum is
+not the right constant. An athlete who faded on the last climb "wants" a
+bound the terrain doesn't justify. `fit` searches constants shared by every
+activity of a sport and checks them on held-out activities.
 
 ### 10.2 `sweep_activity`
 
@@ -601,20 +641,37 @@ flowchart TD
   fc --> ev["_Evaluator(activities, base)<br/>one ActivityContext per activity, score memo"]
   ev --> gbs["group_by_shape(activities, evaluator.shapes())<br/>same-route groups"]
   gbs --> sc["split_corpus → train, test<br/>per sport, groups moved whole"]
-  sc --> init["start values: base fills;<br/>ratios from base or MAX_SPEED_RATIO_BOUNDS"]
+  sc --> init["start values: base.for_sport(sport) fills;<br/>ratios from there or MAX_SPEED_RATIO_BOUNDS"]
   init --> before["train_before, test_before"]
   before --> rounds{{"round 1..rounds"}}
   rounds --> st1["'curve shape': uphill_fill × downhill_fill<br/>per sport, on that sport's train set"]
-  st1 --> st2["'speed bound': ratio_flat × ratio_hilly<br/>per sport, cells with hilly < flat skipped"]
+  st1 --> st1b["'descent cost': minetti_downhill_cost_slope<br/>shared, whole train set"]
+  st1b --> st2["'speed bound': ratio_flat × ratio_hilly<br/>per sport, cells with hilly < flat skipped"]
   st2 --> st3["'hilliness ramp': hilly_verticality<br/>shared, whole train set"]
   st3 --> moved{"anything moved?"}
   moved -- yes --> rounds
   moved -- no --> after["train_after, test_after"]
-  after --> FR["FitResult<br/>global_params, sport_params, history, route_groups"]
+  after --> FR["FitResult<br/>global_params, sport_params, proposal, history, route_groups"]
 ```
 
-Each stage calls `_search_block`, and each block's step is recorded as a
-`StageStep` (values, whether it moved, training objective, plateau).
+"Stage" here means one of the `STAGES` blocks inside `fit_constants`. Those
+do run in sequence, every round. Each stage calls `_search_block`, and each
+block's step is recorded as a `StageStep` (values, whether it moved,
+training objective, plateau).
+
+`base` is a `ParamsBySport` (a bare `PacingParams` means the same for every
+sport). Each sport's knobs start from that sport's own values, so passing a
+previous `proposed.json` back in resumes the fit. `FitResult.proposal` is
+the whole result as `--params` reads it back: the fitted shared constants,
+and per sport the fitted knobs over any other overrides the base carried. A
+per-sport override of a shared knob (`minetti_downhill_cost_slope`,
+`hilly_verticality`) is dropped, since
+that knob gets one fitted value for everyone.
+
+Every `Stage` checks its knobs when it's constructed: each name must be a
+`PacingParams` field, `low < high`, the step positive and dividing the range
+evenly (`_grid`). A bad edit to `STAGES` fails on import, not after the
+corpus has loaded.
 
 ```mermaid
 flowchart TD
@@ -631,20 +688,21 @@ flowchart TD
 
 Why it's built this way:
 
-| Choice | Reason |
-|---|---|
-| Grid search | The objective is only piecewise smooth (medians, smoothsteps, tanh), one evaluation takes milliseconds, and a full grid shows how flat the optimum is. |
-| Blocks searched jointly | Knobs in a block trade off, so a one-at-a-time search stalls. The two ratios share a block so `ratio_hilly ≥ ratio_flat` only removes cells instead of deadlocking. |
-| Fills per sport | Shared fills let the running-heavy corpus flatten hiking's curve. |
-| `MIN_GAIN_SHARE` (0.1%) | A block moves only for a real gain, so a knob the corpus can't see stays put instead of drifting to whichever cell iteration order reached first. |
-| Plateau (0.5%) | Shows how firmly the corpus pins a value. A plateau spanning the whole range means the corpus doesn't constrain that knob. |
-| Not fitted: `curve_reference_grade` | It only rescales what the fills set, so the two slide along a ridge of equal scores. |
-| Not fitted: `hilly_verticality_band` | A corpus this size can't tell a wide ramp from a narrow one. |
+| Choice                               | Reason                                                                                                                                                                                                                                 |
+|--------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Grid search                          | The objective is only piecewise smooth (medians, smoothsteps, tanh), one evaluation takes milliseconds, and a full grid shows how flat the optimum is.                                                                                 |
+| Blocks searched jointly              | Knobs in a block trade off, so a one-at-a-time search stalls. The two ratios share a block so `ratio_hilly ≥ ratio_flat` only removes cells instead of deadlocking.                                                                    |
+| Fills per sport                      | Shared fills let the running-heavy corpus flatten hiking's curve.                                                                                                                                                                      |
+| One shared descent cost slope        | Core has one Minetti curve, and only Minetti-paced (running) activities see it. It sets where descents cross flat speed and `downhill_fill` scales them, so they trade off across rounds: its plateau is measured at the current fill. |
+| `MIN_GAIN_SHARE` (0.1%)              | A block moves only for a real gain, so a knob the corpus can't see stays put instead of drifting to whichever cell iteration order reached first.                                                                                      |
+| Plateau (0.5%)                       | Shows how firmly the corpus pins a value. A plateau spanning the whole range means the corpus doesn't constrain that knob.                                                                                                             |
+| Not fitted: `curve_reference_grade`  | It only rescales what the fills set, so the two slide along a ridge of equal scores.                                                                                                                                                   |
+| Not fitted: `hilly_verticality_band` | A corpus this size can't tell a wide ramp from a narrow one.                                                                                                                                                                           |
 
 ### 10.4 The evaluator and the split
 
-- **`_Evaluator`** builds every `ActivityContext` once, for
-  `base.gradient_window_m`. `objective` memoises on `(name, PacingParams)`;
+- **`_Evaluator`** builds every `ActivityContext` once, for the
+  `gradient_window_m` of `base.for_sport(activity.sport)`. `objective` memoises on `(name, PacingParams)`;
   `PacingParams` is frozen and hashable, and descent revisits cells
   constantly. `corpus_objective(params_for, activities)` is the
   distance-weighted mean, so a long mountain day counts for more than a
@@ -687,23 +745,28 @@ flowchart LR
   load --> s["sweep"]
   load --> f["fit"]
   load --> k["check"]
+  prm["_params_from(--params) → ParamsBySport<br/>for_sport(activity.sport) per activity"] -.-> c
+  prm -.-> s
+  prm -.-> f
+  prm -.-> k
   c --> c1["compare() per activity<br/>→ format_report"]
   s --> s1["sweep_activity per activity<br/>→ _print_optima"]
   f --> f1["fit_constants<br/>→ trace, before/after, boundary hits"]
   k --> k1["compare().objective per activity<br/>→ distance-weighted overall vs baseline"]
 ```
 
-| Command | Calls | Prints | Writes (under `--out-dir`, default `tuning_out/`) | Exit code |
-|---|---|---|---|---|
-| `compare` | `compare` once per activity | one report block each | `activities/<name>.json` with `--json`, `gpx/<name>.gpx` with `--dump-gpx` | 0 |
-| `sweep` | `sweep_activity` per activity | the optimum table (got vs want, headroom) | `optima.json` | 0 |
-| `fit` | `fit_constants` once | split sizes, before/after, "memorising" warning if held-out gained under 40% of train's gain, same-route groups, per-stage trace with plateaus, changed constants, boundary hits | `proposed.json` (global, per_sport, history, split) | 0 |
-| `check` | `compare` once per activity | overall before → after, regressed activities | `baseline.json` on first run or with `--write-baseline` (path from `--baseline`) | 1 if overall worsened by more than `--tolerance` (0.002) |
+| Command   | Calls                                               | Prints                                                                                                                                                                           | Writes (under `--out-dir`, default `tuning_out/`)                                | Exit code                                                |
+|-----------|-----------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------|----------------------------------------------------------|
+| `compare` | `compare` once per activity                         | one report block each                                                                                                                                                            | `activities/<name>.json` with `--json`, `gpx/<name>.gpx` with `--dump-gpx`       | 0                                                        |
+| `sweep`   | `sweep_activity` per activity (changes no constant) | the optimum table (got vs want, headroom)                                                                                                                                        | `optima.json`                                                                    | 0                                                        |
+| `fit`     | `fit_constants` once (independent of `sweep`)       | split sizes, before/after, "memorising" warning if held-out gained under 40% of train's gain, same-route groups, per-stage trace with plateaus, changed constants, boundary hits | `proposed.json` (global, per_sport, history, split); loads back with `--params`  | 0                                                        |
+| `check`   | `compare` once per activity                         | overall before → after, regressed activities                                                                                                                                     | `baseline.json` on first run or with `--write-baseline` (path from `--baseline`) | 1 if overall worsened by more than `--tolerance` (0.002) |
 
 All four return 1 with "No usable activities." if nothing survived loading.
 `fit` output is a proposal, not a patch: the fills are fitted per sport, but
-`core/` has one `UPHILL_FILL` and one `DOWNHILL_FILL`, so shipping
-different values per sport would need a per-sport table in
+`core/` has one `UPHILL_FILL` and one `DOWNHILL_FILL`. If the sports come
+out close, the per-sport values can collapse into the one shared constant.
+If they don't, shipping both would need a per-sport table in
 `curve_selection.py`.
 
 Surface multipliers: `compare`, `ActivityContext` and `elapsed_from_model`
@@ -715,14 +778,14 @@ built.
 
 ## 13. Tests
 
-| File | Covers |
-|---|---|
-| `conftest.py` | `synthetic_activity` / `synthetic_fit_bytes` build recordings on rolling terrain with a known gradient response, written through `core`'s own `fit_writer`; `with_standing_pause` adds an unpaused stop |
-| `test_model_mirror.py` | **load-bearing**: `elapsed_from_model` at default `PacingParams` equals `combine()`'s timestamps, and `resolve` equals core's resolvers, across both sports and three terrains |
-| `test_fit_reader.py` | sport mapping, round trip of a file this project wrote, pause extraction, rejections |
-| `test_prepare.py` | resampling, elevation rounding, reference timing, stop removal, trimming, GPX round trip |
-| `test_compare.py` | a self-consistent activity scores zero, a planted uphill weakness shows up, bucketing and bands |
-| `test_fit.py` | sweep bounds and headroom, split stratification and reproducibility, fit improves training, ratio ordering, boundary hits |
+| File                   | Covers                                                                                                                                                                                                  |
+|------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `conftest.py`          | `synthetic_activity` / `synthetic_fit_bytes` build recordings on rolling terrain with a known gradient response, written through `core`'s own `fit_writer`; `with_standing_pause` adds an unpaused stop |
+| `test_model_mirror.py` | **load-bearing**: `elapsed_from_model` at default `PacingParams` equals `combine()`'s timestamps, and `resolve` equals core's resolvers, across both sports and three terrains                          |
+| `test_fit_reader.py`   | sport mapping, round trip of a file this project wrote, pause extraction, rejections                                                                                                                    |
+| `test_prepare.py`      | resampling, elevation rounding, reference timing, stop removal, trimming, GPX round trip                                                                                                                |
+| `test_compare.py`      | a self-consistent activity scores zero, a planted uphill weakness shows up, bucketing and bands                                                                                                         |
+| `test_fit.py`          | sweep bounds and headroom, split stratification and reproducibility, fit improves training, ratio ordering, boundary hits                                                                               |
 
 Policy (from `CLAUDE.md`): keep these passing, don't add more, except that
 the mirror test must be updated whenever `_pace_segment` changes.
@@ -739,12 +802,15 @@ the mirror test must be updated whenever `_pace_segment` changes.
 - Add a field to `PacingParams` defaulting to the core constant.
 - Read it from `params` in the mirrored function.
 - To fit it, add it to a `Stage` in `STAGES` with a range wide enough to
-  contradict today's value. Keep each block to one or two knobs.
-- If it's per sport, add it to the starting values in `fit_constants`.
+  contradict today's value, and a step that divides the range evenly
+  (`Stage` refuses anything else on import). Keep each block to one or two
+  knobs.
+- If it's per sport, add it to the starting values in `fit_constants`
+  (read from `base.for_sport(sport)`).
 
 **Added or changed a quality gate**
 - Put reading rules (which points to drop) in `read_decoded_activity`, and
-  judgements about the prepared activity in `prepare._check_quality`.
+  judgments about the prepared activity in `prepare._check_quality`.
 - Raise `UnreadableActivity` with the file name and the measurement that
   failed.
 - No cache clear is needed.

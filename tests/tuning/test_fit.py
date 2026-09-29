@@ -157,4 +157,4 @@ class TestFitConstants:
     def test_the_fit_starts_from_the_constants_it_is_given(self):
         base = PacingParams(uphill_fill=0.5)
         result = fit_constants(_corpus(), base=base, rounds=1, holdout=0.0)
-        assert result.base_params.uphill_fill == 0.5
+        assert result.base_params.shared.uphill_fill == 0.5

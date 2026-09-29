@@ -1,8 +1,8 @@
 """Command line for the pacing tuning harness.
 
     uv run python -m tuning compare corpus/run01.fit       # read one activity
-    uv run python -m tuning sweep   corpus/                # what each activity wanted
-    uv run python -m tuning fit     corpus/                # fit the constants
+    uv run python -m tuning sweep   corpus/                # per activity: the settings it wanted
+    uv run python -m tuning fit     corpus/                # across the corpus: fit the constants
     uv run python -m tuning check   corpus/                # guard against regressions
 
 Every command takes files or directories; a directory is searched for .fit
@@ -22,13 +22,17 @@ from tuning.cache import DEFAULT_CACHE_DIR, content_key, decoded_activity, warm_
 from tuning.compare import DEFAULT_BUCKET_M, compare
 from tuning.elevation import DEFAULT_CACHE_DIR as DEM_CACHE_DIR
 from tuning.elevation import with_dem_elevation
-from tuning.fit import ActivityOptimum, fit_constants, sweep_activity
+from tuning.fit import PLATEAU_SHARE, ActivityOptimum, fit_constants, sweep_activity
 from tuning.fit_reader import UnreadableActivity, read_decoded_activity
-from tuning.model import PacingParams
+from tuning.model import PacingParams, ParamsBySport
 from tuning.prepare import DEFAULT_SPACING_M, PreparedActivity, prepare_reference
 from tuning.report import format_report, report_to_dict, write_json
 
 DEFAULT_OUT_DIR = Path("tuning_out")
+
+# The corpus's runner walks the first and last few hundred metres of every run,
+# which would read as slow steep terrain
+DEFAULT_TRIM_ENDS_M = 400.0
 
 
 def _fit_paths(paths: list[str]) -> list[Path]:
@@ -206,12 +210,26 @@ def _activities_from(args: argparse.Namespace) -> list[PreparedActivity]:
     )
 
 
-def _params_from(path: str | None) -> PacingParams:
-    """Load a PacingParams from JSON, or today's shipped constants if no path is given."""
+def _params_from(path: str | None) -> ParamsBySport:
+    """Load the constants to run with, or today's shipped ones if no path is given.
+
+    Two shapes are accepted:
+    - `fit`'s own `proposed.json`: {"global": {...}, "per_sport": {"hiking": {...}}}.
+      Both keys are optional, and anything else in the file is ignored.
+    - A flat {field: value} object, meaning the same constants for every sport.
+
+    Every command then runs each activity with its own sport's constants, so a
+    proposal is checked exactly as it was fitted.
+    """
     if not path:
-        return PacingParams()
+        return ParamsBySport()
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
-    return PacingParams(**raw.get("global", raw))
+    if "global" not in raw and "per_sport" not in raw:
+        return ParamsBySport(PacingParams(**raw))
+    return ParamsBySport(
+        PacingParams(**raw.get("global", {})),
+        {SportType(sport): dict(values) for sport, values in raw.get("per_sport", {}).items()},
+    )
 
 
 def command_compare(args: argparse.Namespace) -> int:
@@ -225,7 +243,7 @@ def command_compare(args: argparse.Namespace) -> int:
     out_dir = Path(args.out_dir)
 
     for activity in activities:
-        report = compare(activity, params, args.bucket)
+        report = compare(activity, params.for_sport(activity.sport), args.bucket)
         print(format_report(report))
         if args.json:
             write_json(out_dir / "activities" / f"{activity.name}.json", report_to_dict(report))
@@ -241,7 +259,7 @@ def command_compare(args: argparse.Namespace) -> int:
 
 
 def _print_optima(optima: list[ActivityOptimum]) -> None:
-    """The stage-one table: what each activity wanted, versus what it got."""
+    """The sweep's table: the settings each activity wanted, versus what the resolvers gave it."""
     header = (
         "  activity                       sport     dist   vert   flatEq"
         "   w:got  w:want   r:got  r:want    obj:got  obj:best   headroom"
@@ -269,18 +287,36 @@ def _print_optima(optima: list[ActivityOptimum]) -> None:
 
 
 def command_sweep(args: argparse.Namespace) -> int:
-    """Stage one across the corpus: each activity's empirical optimum."""
+    """Per activity, the tobler_weight and max_speed_ratio it scores best at. Changes no constant."""
     activities = _activities_from(args)
     if not activities:
         print("No usable activities.", file=sys.stderr)
         return 1
 
     params = _params_from(args.params)
-    optima = [sweep_activity(activity, params, args.bucket) for activity in activities]
+    optima = [
+        sweep_activity(activity, params.for_sport(activity.sport), args.bucket) for activity in activities
+    ]
     _print_optima(optima)
 
     out = Path(args.out_dir) / "optima.json"
     write_json(out, {
+        "summary":
+            {
+                "count": len(optima),
+                "sports": sorted({best.sport.value for best in optima}),
+                "total_distance_m": sum(best.distance_m for best in optima),
+                "total_moving_seconds": sum(best.moving_seconds for best in optima),
+                "avg_verticality": sum(best.verticality for best in optima)/len(optima),
+                "avg_flat_equivalent_mps": sum(best.flat_equivalent_mps for best in optima)/len(optima),
+                "avg_resolved_objective": sum(best.resolved_objective for best in optima)/len(optima),
+                "avg_best_objective": sum(best.best_objective for best in optima)/len(optima),
+                "avg_resolved_tobler_weight": sum(best.resolved_tobler_weight for best in optima)/len(optima),
+                "avg_best_tobler_weight": sum(best.best_tobler_weight for best in optima)/len(optima),
+                "avg_resolved_max_speed_ratio": sum(best.resolved_max_speed_ratio for best in optima)/len(optima),
+                "avg_best_max_speed_ratio": sum(best.best_max_speed_ratio for best in optima)/len(optima),
+                "avg_headroom": sum(best.headroom for best in optima)/len(optima),
+            },
         "activities": [
             {
                 "name": best.name,
@@ -305,7 +341,7 @@ def command_sweep(args: argparse.Namespace) -> int:
 
 
 def command_fit(args: argparse.Namespace) -> int:
-    """Stage two: fit the constants, and report how they hold up on held-out activities."""
+    """Fit the constants across the corpus, and report how they hold up on held-out activities."""
     activities = _activities_from(args)
     if not activities:
         print("No usable activities.", file=sys.stderr)
@@ -342,17 +378,24 @@ def command_fit(args: argparse.Namespace) -> int:
     print("  round  stage             sport       train    values")
     print("  " + "-" * 72)
     for step in result.history:
-        values = "  ".join(f"{name} {value:.3f}" for name, value in step.values.items())
+        values = "  ".join(
+            f"{name} {value:.3f}" + (
+                f" [{step.plateau[name][0]:.3f}-{step.plateau[name][1]:.3f}]" if name in step.plateau else ""
+            )
+            for name, value in step.values.items()
+        )
         sport = step.sport.value if step.sport is not None else "all"
         print(f"  {step.round:>5}  {step.stage:<16}  {sport:<9}  {step.train_objective:.4f}"
               f"  {'*' if step.changed else ' '} {values}")
     print("  (* = the block moved in that step)")
+    print(f"  [low-high] = values scoring within {PLATEAU_SHARE:.1%} of the block's best."
+          " A wide range means the corpus barely pins that knob.")
 
     print()
     print("  global constant            before     after")
     print("  " + "-" * 44)
     for name in sorted(vars(result.global_params)):
-        before, after = getattr(base, name), getattr(result.global_params, name)
+        before, after = getattr(base.shared, name), getattr(result.global_params, name)
         if before != after:
             print(f"  {name:<24}{before:>9.4f}{after:>10.4f}")
 
@@ -363,7 +406,7 @@ def command_fit(args: argparse.Namespace) -> int:
         print(f"  {sport.value:<12} constant      before     after")
         print("  " + "-" * 44)
         for name, after in sorted(values.items()):
-            before = getattr(base, name)
+            before = getattr(base.for_sport(sport), name)
             before = before if before is not None else shipped[name]
             print(f"  {name:<24}{before:>9.4f}{after:>10.4f}")
     print()
@@ -380,8 +423,12 @@ def command_fit(args: argparse.Namespace) -> int:
 
     out = Path(args.out_dir) / "proposed.json"
     write_json(out, {
-        "global": {name: getattr(result.global_params, name) for name in vars(result.global_params)},
-        "per_sport": {sport.value: values for sport, values in result.sport_params.items()},
+        # The whole proposal, in the shape `--params` reads back.
+        "global": {name: getattr(result.proposal.shared, name) for name in vars(result.proposal.shared)},
+        "per_sport": {
+            sport.value: dict(values)
+            for sport, values in sorted(result.proposal.per_sport.items(), key=lambda item: item[0].value)
+        },
         "history": [
             {
                 "round": step.round,
@@ -390,6 +437,7 @@ def command_fit(args: argparse.Namespace) -> int:
                 "values": step.values,
                 "changed": step.changed,
                 "train_objective": step.train_objective,
+                "plateau": {name: list(span) for name, span in step.plateau.items()},
             }
             for step in result.history
         ],
@@ -402,7 +450,8 @@ def command_fit(args: argparse.Namespace) -> int:
         "route_groups": result.route_groups,
     })
     print(f"\nWrote {out}")
-    print("These are proposals, not a patch. Check them against the per-activity notes before applying.")
+    print("These are proposals, not a patch. Check them against the per-activity notes before applying,")
+    print(f"e.g. `compare --params {out}` runs every activity with its own sport's fitted constants.")
     return 0
 
 
@@ -414,7 +463,10 @@ def command_check(args: argparse.Namespace) -> int:
         return 1
 
     params = _params_from(args.params)
-    scores = {activity.name: compare(activity, params, args.bucket).objective for activity in activities}
+    scores = {
+        activity.name: compare(activity, params.for_sport(activity.sport), args.bucket).objective
+        for activity in activities
+    }
     total_distance = sum(activity.distance_m for activity in activities)
     overall = sum(
         scores[activity.name] * activity.distance_m for activity in activities
@@ -447,10 +499,13 @@ def command_check(args: argparse.Namespace) -> int:
 def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("paths", nargs="+", help=".fit files, or directories to search recursively")
     parser.add_argument("--trims", help="JSON of {activity-name: [start_km, end_km]} usable ranges")
-    parser.add_argument("--trim-ends", type=float, default=0.0, metavar="METRES",
-                        help="cut this many metres from the start and end of every activity, e.g. 400 "
-                             "to drop a run's walk-in and walk-out (combines with --trims as their overlap)")
-    parser.add_argument("--params", help="JSON of constants to run with (default: the shipped ones)")
+    parser.add_argument("--trim-ends", type=float, default=DEFAULT_TRIM_ENDS_M, metavar="METRES",
+                        help="cut this many metres from the start and end of every activity, to drop a "
+                             f"run's walk-in and walk-out (default {DEFAULT_TRIM_ENDS_M:g}; 0 keeps the "
+                             "whole activity; combines with --trims as their overlap)")
+    parser.add_argument("--params", help="JSON of constants to run with: fit's proposed.json (shared plus "
+                                         "per-sport values) or a flat {constant: value} object for every "
+                                         "sport (default: the shipped ones)")
     parser.add_argument("--bucket", type=float, default=DEFAULT_BUCKET_M,
                         help=f"residual bucket length in metres (default {DEFAULT_BUCKET_M:.0f})")
     parser.add_argument("--spacing", type=float,
@@ -495,11 +550,13 @@ def main(argv: list[str] | None = None) -> int:
                                 help="also write the synthesized GPX, to drop into the browser GUI")
     compare_parser.set_defaults(func=command_compare)
 
-    sweep_parser = subparsers.add_parser("sweep", help="find each activity's own best weight and bound")
+    sweep_parser = subparsers.add_parser("sweep", help="per activity, find the tobler_weight and "
+                                                       "max_speed_ratio it wanted (changes no constant)")
     _add_common(sweep_parser)
     sweep_parser.set_defaults(func=command_sweep)
 
-    fit_parser = subparsers.add_parser("fit", help="fit the constants to the corpus")
+    fit_parser = subparsers.add_parser("fit", help="fit the constants the resolvers and curve shape read, "
+                                                   "across the corpus")
     _add_common(fit_parser)
     fit_parser.add_argument("--rounds", type=int, default=3,
                             help="the most passes through the staged blocks (stops early once nothing moves)")

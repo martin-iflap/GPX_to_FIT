@@ -3,7 +3,9 @@
 `core/`'s tunable constants are module-level names with no injection point, and
 `gradient.py` snapshots `_TOBLER_FLAT_SHAPE` / `_MINETTI_FLAT_COST` at import —
 so monkeypatching them is both invasive and subtly wrong (a patched slope factor
-would never reach the snapshot). `core/` is never modified to suit the harness.
+would never reach the snapshot). The one exception is Minetti's descent cost
+slope: it lives inside the curve, so `minetti_speeds_from_gradients` takes it as
+an argument (`downhill_cost_slope`) rather than have the harness restate the curve.
 
 What this module restates is exactly what can't be borrowed:
 
@@ -18,7 +20,8 @@ What this module restates is exactly what can't be borrowed:
 
 Nothing about the *curves* is restated: `TrackModel` calls `core/`'s own
 `minetti_speeds_from_gradients` / `tobler_speeds_from_gradients` once per
-track, at exponent 1.0, and every later evaluation only softens, blends and
+track (and Minetti once per descent cost slope), at exponent 1.0, and every
+later evaluation only softens, blends and
 scales those raw curves. Softening is `raw ** exponent`, which is exactly what
 `gradient._soften` does, so a change to the Minetti polynomial or Tobler's
 slope factor still reaches the harness without anything here being touched.
@@ -30,8 +33,10 @@ later refactor and the harness starts tuning a model the app doesn't run.
 timestamps exactly.
 """
 
+import functools
 import math
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field, fields, replace
 
 import numpy as np
 
@@ -47,11 +52,13 @@ from gpx2fit.core.pacing.curve_selection import (
     TOBLER_THRESHOLDS,
     UPHILL_FILL,
     VERTICALITY_BAND,
+    _reference_swings,
     _smoothstep,
     _verticality,
 )
 from gpx2fit.core.pacing.gradient import (
     GRADIENT_WINDOW_M,
+    MINETTI_DOWNHILL_COST_SLOPE,
     CurveExponents,
     CurveShape,
     calculate_gradient,
@@ -74,6 +81,8 @@ class PacingParams:
         curve_reference_grade: curve_selection.CURVE_REFERENCE_GRADE.
         uphill_fill: curve_selection.UPHILL_FILL.
         downhill_fill: curve_selection.DOWNHILL_FILL.
+        minetti_downhill_cost_slope: gradient.MINETTI_DOWNHILL_COST_SLOPE.
+            Changes the raw Minetti curve, which TrackModel keeps per value.
         ratio_flat: Overrides MAX_SPEED_RATIO_BOUNDS[sport].flat when set.
         ratio_hilly: Overrides MAX_SPEED_RATIO_BOUNDS[sport].hilly when set.
         hilly_verticality: curve_selection.HILLY_VERTICALITY.
@@ -85,13 +94,14 @@ class PacingParams:
         flat_equivalent_band_mps: curve_selection.FLAT_EQUIVALENT_BAND_MPS.
         verticality_band: curve_selection.VERTICALITY_BAND.
         tobler_weight: Pins the Minetti/Tobler blend instead of resolving it,
-            which is how stage one sweeps an activity's empirical optimum.
+            which is how `sweep` finds the blend one activity wanted.
         max_speed_ratio: Pins the speed-swing bound the same way.
     """
     gradient_window_m: float = GRADIENT_WINDOW_M
     curve_reference_grade: float = CURVE_REFERENCE_GRADE
     uphill_fill: float = UPHILL_FILL
     downhill_fill: float = DOWNHILL_FILL
+    minetti_downhill_cost_slope: float = MINETTI_DOWNHILL_COST_SLOPE
     ratio_flat: float | None = None
     ratio_hilly: float | None = None
     hilly_verticality: float = HILLY_VERTICALITY
@@ -104,12 +114,44 @@ class PacingParams:
     max_speed_ratio: float | None = None
 
 
+_PARAM_NAMES = frozenset(param.name for param in fields(PacingParams))
+
+
+@dataclass(frozen=True)
+class ParamsBySport:
+    """Constants shared by every sport, plus per-sport overrides on top.
+
+    `core/` ships one value of most constants for all sports, but `fit` fits
+    some of them per sport (the fills, the speed bounds) to show whether the
+    sports really disagree. This carries both, so `fit`'s `proposed.json` can
+    be fed back into any command and run exactly as it was fitted.
+
+    Attributes:
+        shared: What every sport runs with unless overridden.
+        per_sport: sport -> {PacingParams field: value}, applied over `shared`.
+    Raises:
+        ValueError: If an override names a field PacingParams doesn't have.
+    """
+    shared: PacingParams = field(default_factory=PacingParams)
+    per_sport: Mapping[SportType, Mapping[str, float]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        for sport, overrides in self.per_sport.items():
+            unknown = set(overrides) - _PARAM_NAMES
+            if unknown:
+                raise ValueError(f"Unknown constant(s) for {sport.value}: {', '.join(sorted(unknown))}.")
+
+    def for_sport(self, sport: SportType) -> PacingParams:
+        """The complete constants one sport runs with."""
+        return replace(self.shared, **self.per_sport.get(sport, {}))
+
+
 @dataclass(frozen=True)
 class ResolvedSettings:
     """What the model decided for one workout, plus the features it decided from.
 
-    The features are what stage two regresses the constants against, so they're
-    reported rather than recomputed.
+    The features are what the resolvers read, so they're reported rather than
+    recomputed.
 
     Attributes:
         tobler_weight: The Minetti/Tobler blend, 0.0 pure Minetti to 1.0 pure Tobler.
@@ -143,34 +185,32 @@ class TrackModel:
     it was built for, and callers reusing one across a search must check it (as
     `compare.ActivityContext` does).
 
+    `minetti_downhill_cost_slope` changes the raw Minetti curve too, but not
+    the gradients, so the Minetti values are computed once per slope on first
+    use and kept (`raw_minetti`, `flat_equivalent_mps`).
+
     Attributes:
         gradient_window_m: The window the gradients were smoothed over.
         gradients: Per-leg gradient, as `calculate_gradient` returns it.
         leg_distances: Per-leg distance in metres.
         uphill: Per-leg mask, True where the gradient is positive — the branch
             `gradient._soften` takes between its two exponents.
-        raw_minetti: Per-leg Minetti speed at exponent 1.0, relative to flat.
-        raw_tobler: The same for Tobler.
+        raw_tobler: Per-leg Tobler speed at exponent 1.0, relative to flat.
         total_distance_m: Sum of `leg_distances`.
         verticality: curve_selection._verticality. 0.0 for a track with no
             distance, where core's version would divide by zero; every caller
             guards that case anyway, but a feature printed in every table
             shouldn't be able to raise.
-        flat_equivalent_distance_m: Σ leg_distance / probe_speed, the numerator
-            of `resolve_tobler_weight`'s first criterion. The probe is Minetti
-            at its own default exponents, exactly as core does: it is only a
-            difficulty normalizer there, so the answer must not depend on the
-            bound being fitted.
     """
     gradient_window_m: float
     gradients: np.ndarray
     leg_distances: np.ndarray
     uphill: np.ndarray
-    raw_minetti: np.ndarray
     raw_tobler: np.ndarray
     total_distance_m: float
     verticality: float
-    flat_equivalent_distance_m: float
+    # downhill cost slope -> (raw Minetti speeds, flat-equivalent distance).
+    _minetti: dict[float, tuple[np.ndarray, float]] = field(default_factory=dict, repr=False, compare=False)
 
     @classmethod
     def build(cls, track: Track, gradient_window_m: float = GRADIENT_WINDOW_M) -> "TrackModel":
@@ -186,23 +226,39 @@ class TrackModel:
             for earlier, later in zip(track.points, track.points[1:])
         ]
         total_distance = sum(distances)
-        probe = minetti_speeds_from_gradients(gradients)
 
         return cls(
             gradient_window_m=gradient_window_m,
             gradients=np.asarray(gradients, dtype=float),
             leg_distances=np.asarray(distances, dtype=float),
             uphill=np.asarray(gradients, dtype=float) > 0,
-            raw_minetti=np.asarray(minetti_speeds_from_gradients(gradients, 1.0, 1.0), dtype=float),
             raw_tobler=np.asarray(tobler_speeds_from_gradients(gradients, 1.0, 1.0), dtype=float),
             total_distance_m=total_distance,
             verticality=_verticality(gradients, distances) if total_distance > 0 else 0.0,
-            flat_equivalent_distance_m=sum(
-                distance / speed for distance, speed in zip(distances, probe) if distance > 0 and speed > 0
-            ),
         )
 
-    def flat_equivalent_mps(self, active_seconds: float) -> float:
+    def _minetti_at(self, downhill_cost_slope: float) -> tuple[np.ndarray, float]:
+        """Core's Minetti values for one descent cost slope, computed on first use."""
+        cached = self._minetti.get(downhill_cost_slope)
+        if cached is None:
+            gradients = self.gradients.tolist()
+            distances = self.leg_distances.tolist()
+            raw = minetti_speeds_from_gradients(gradients, 1.0, 1.0, downhill_cost_slope=downhill_cost_slope)
+            # resolve_tobler_weight's probe: Minetti at its default exponents,
+            # exactly as core does, so the answer doesn't depend on the fitted bound.
+            probe = minetti_speeds_from_gradients(gradients, downhill_cost_slope=downhill_cost_slope)
+            flat_equivalent_distance = sum(
+                distance / speed for distance, speed in zip(distances, probe) if distance > 0 and speed > 0
+            )
+            cached = (np.asarray(raw, dtype=float), flat_equivalent_distance)
+            self._minetti[downhill_cost_slope] = cached
+        return cached
+
+    def raw_minetti(self, downhill_cost_slope: float) -> np.ndarray:
+        """Per-leg Minetti speed at exponent 1.0, relative to flat."""
+        return self._minetti_at(downhill_cost_slope)[0]
+
+    def flat_equivalent_mps(self, active_seconds: float, downhill_cost_slope: float) -> float:
         """The flat-ground speed that would have produced this moving time over this terrain.
 
         `resolve_tobler_weight`'s first criterion, exposed so it can be
@@ -212,7 +268,9 @@ class TrackModel:
         the moving time answers "how fast was this really, with the terrain
         divided out?".
         """
-        return self.flat_equivalent_distance_m / active_seconds if active_seconds > 0 else 0.0
+        if active_seconds <= 0:
+            return 0.0
+        return self._minetti_at(downhill_cost_slope)[1] / active_seconds
 
 
 def tobler_weight_for(
@@ -232,7 +290,7 @@ def tobler_weight_for(
         params.tobler_verticality if params.tobler_verticality is not None else thresholds.verticality
     )
 
-    equivalent = model.flat_equivalent_mps(active_seconds)
+    equivalent = model.flat_equivalent_mps(active_seconds, params.minetti_downhill_cost_slope)
     if equivalent <= 0:
         return 1.0 if sport == SportType.HIKING else 0.0
 
@@ -262,20 +320,36 @@ def max_speed_ratio_for(model: TrackModel, sport: SportType, params: PacingParam
     return flat + (hilly - flat) * hilliness
 
 
-def curve_shape_for(max_speed_ratio: float, params: PacingParams) -> CurveShape:
-    """curve_selection.resolve_curve_shape, with the reference grade and fills as parameters."""
-    log_limit = math.log(max_speed_ratio)
-    reference = [params.curve_reference_grade, -params.curve_reference_grade]
-    minetti_up, minetti_down = minetti_speeds_from_gradients(reference, uphill_exponent=1.0, downhill_exponent=1.0)
-    tobler_up, tobler_down = tobler_speeds_from_gradients(reference, uphill_exponent=1.0, downhill_exponent=1.0)
+@functools.cache
+def _minetti_swings(reference_grade: float, downhill_cost_slope: float) -> tuple[float, float]:
+    """curve_selection._reference_swings of the raw Minetti curve, kept per knob pair."""
+    return _reference_swings(
+        lambda grades: minetti_speeds_from_gradients(grades, 1.0, 1.0, downhill_cost_slope=downhill_cost_slope),
+        reference_grade,
+    )
 
-    def fitted(raw_uphill: float, raw_downhill: float) -> CurveExponents:
+
+@functools.cache
+def _tobler_swings(reference_grade: float) -> tuple[float, float]:
+    """curve_selection._reference_swings of the raw Tobler curve, kept per reference grade."""
+    return _reference_swings(lambda grades: tobler_speeds_from_gradients(grades, 1.0, 1.0), reference_grade)
+
+
+def curve_shape_for(max_speed_ratio: float, params: PacingParams) -> CurveShape:
+    """curve_selection.resolve_curve_shape, with the reference grade, fills and descent cost slope as parameters."""
+    log_limit = math.log(max_speed_ratio)
+
+    def fitted(swings: tuple[float, float]) -> CurveExponents:
+        uphill_swing, downhill_swing = swings
         return CurveExponents(
-            uphill=params.uphill_fill * log_limit / abs(math.log(raw_uphill)),
-            downhill=params.downhill_fill * log_limit / abs(math.log(raw_downhill)),
+            uphill=params.uphill_fill * log_limit / uphill_swing,
+            downhill=params.downhill_fill * log_limit / downhill_swing,
         )
 
-    return CurveShape(minetti=fitted(minetti_up, minetti_down), tobler=fitted(tobler_up, tobler_down))
+    return CurveShape(
+        minetti=fitted(_minetti_swings(params.curve_reference_grade, params.minetti_downhill_cost_slope)),
+        tobler=fitted(_tobler_swings(params.curve_reference_grade)),
+    )
 
 
 def resolve(
@@ -289,11 +363,11 @@ def resolve(
         max_speed_ratio=ratio,
         curve_shape=curve_shape_for(ratio, params),
         verticality=model.verticality,
-        flat_equivalent_mps=model.flat_equivalent_mps(active_seconds),
+        flat_equivalent_mps=model.flat_equivalent_mps(active_seconds, params.minetti_downhill_cost_slope),
     )
 
 
-def _blended(model: TrackModel, tobler_weight: float, shape: CurveShape) -> np.ndarray:
+def _blended(model: TrackModel, raw_minetti: np.ndarray, tobler_weight: float, shape: CurveShape) -> np.ndarray:
     """gradient.blended_speeds_from_gradients over the precomputed raw curves.
 
     Each curve is softened as `gradient._soften` does (gradient == 0 takes the
@@ -307,10 +381,10 @@ def _blended(model: TrackModel, tobler_weight: float, shape: CurveShape) -> np.n
         return raw_speeds ** np.where(model.uphill, exponents.uphill, exponents.downhill)
 
     if tobler_weight == 0.0:
-        return softened(model.raw_minetti, shape.minetti)
+        return softened(raw_minetti, shape.minetti)
     if tobler_weight == 1.0:
         return softened(model.raw_tobler, shape.tobler)
-    minetti = softened(model.raw_minetti, shape.minetti)
+    minetti = softened(raw_minetti, shape.minetti)
     tobler = softened(model.raw_tobler, shape.tobler)
     return minetti ** (1.0 - tobler_weight) * tobler ** tobler_weight
 
@@ -376,7 +450,8 @@ def elapsed_from_model(
         raise ValueError(f"active_seconds must be positive, got {active_seconds}.")
 
     settings = resolve(model, sport, active_seconds, params)
-    speeds = _blended(model, settings.tobler_weight, settings.curve_shape)
+    raw_minetti = model.raw_minetti(params.minetti_downhill_cost_slope)
+    speeds = _blended(model, raw_minetti, settings.tobler_weight, settings.curve_shape)
     if multipliers is not None:
         if len(multipliers) != len(speeds):
             raise ValueError(f"Expected {len(speeds)} multipliers, got {len(multipliers)}.")

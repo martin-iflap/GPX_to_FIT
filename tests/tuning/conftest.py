@@ -24,8 +24,15 @@ _METERS_PER_DEGREE_LAT = 111320.0
 
 
 def rolling_elevation(index: int, base: float = 300.0, amplitude: float = 120.0, period: float = 45.0) -> float:
-    """A smooth hill profile with a shorter ripple on top, rounded to whole metres."""
-    return float(round(base + amplitude * math.sin(index / period) + 0.3 * amplitude * math.sin(index / 11.0)))
+    """A smooth hill profile with a shorter ripple on top.
+
+    Deliberately not rounded to whole metres. The athlete is timed on this
+    profile leg by leg, and on rounded legs (0% or +/-6.25% at 16 m) their
+    asymmetric response turns rounding noise into real slowness, which swamps
+    the near-flat bands. prepare_reference() still rounds what the model sees,
+    as a planned GPX would.
+    """
+    return base + amplitude * math.sin(index / period) + 0.3 * amplitude * math.sin(index / 11.0)
 
 
 def synthetic_activity(
