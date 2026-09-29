@@ -51,16 +51,19 @@ TURNING_POINT_MIN_WINDOW_M = 30.0
 _MINETTI_MAX_GRADIENT = 0.45
 
 # Extra cost per unit of descent added to Minetti's polynomial — see
-# _minetti_cost. It moves the fastest descent from about -18% to about -9%.
-_MINETTI_DOWNHILL_COST_SLOPE = 10.0
+# _minetti_cost. It decides where descents turn slower than flat: at 10
+# (Strava's HR-based GAP) the curve peaks at -9% and crosses flat at -17%; at 20
+# it is slower than flat on every descent, which is what the tuning corpus fits
+# best (2026-09-29). The fills only scale that shape, they can't move the crossing.
+MINETTI_DOWNHILL_COST_SLOPE = 20.0
 
 # Minetti's C(g) is an energy cost, so 1/cost swings harder than real pace
 # does (a 20% climb at 0.4x flat speed) — scaled to a slow real-world
 # activity, that pushes climbs below Strava's "resting" threshold (their time
 # vanishes from moving time). So relative speed is raised to these exponents
 # instead: 1.0 is the raw curve, lower is flatter. With these values a 10%
-# climb runs at ~0.74x flat speed, a 20% climb at ~0.58x, and the fastest
-# descent (about -9%) at ~1.07x (TestMinettiSoftening in test_gradient.py
+# climb runs at ~0.74x flat speed, a 20% climb at ~0.58x, a 10% descent at
+# ~0.93x and a 20% descent at ~0.79x (TestMinettiSoftening in test_gradient.py
 # pins these bands). Paced output doesn't use these defaults:
 # curve_selection.resolve_curve_shape fits both exponents per workout, and
 # these only survive as the defaults of resolve_tobler_weight's probe.
@@ -320,18 +323,19 @@ def tobler_speeds_from_gradients(
     return _soften(raw_speeds, gradients, uphill_exponent, downhill_exponent, "Tobler")
 
 
-def _minetti_cost(gradient: float) -> float:
+def _minetti_cost(gradient: float, downhill_cost_slope: float) -> float:
     """Minetti et al. (2002) energy-cost polynomial C(g) in J/(kg·m), for gradient g within its calibrated domain,
-    plus _MINETTI_DOWNHILL_COST_SLOPE * |g| on descents.
+    plus downhill_cost_slope * |g| on descents (see MINETTI_DOWNHILL_COST_SLOPE).
 
     Minetti's cost keeps falling down to about -18%, so its inverse has descents
     at twice flat speed. Nobody runs downhill at a constant metabolic cost, so
     that shape can't be fixed by softening, which scales the curve but keeps the
-    fastest point at -18%. The linear term moves it: Strava's heart-rate-based
-    grade-adjusted pace (reverse-engineered by Aaron Schroeder's `specialsauce`)
-    is fastest at -8 to -10% and 1.14x flat, and back to flat speed by about
-    -18%. The term matches those measurements within ~0.01 from -30% to 0%.
-    Climbs are left as Minetti's.
+    fastest point at -18%. The linear term moves it. At a slope of 10 it
+    matches Strava's heart-rate-based grade-adjusted pace (reverse-engineered by
+    Aaron Schroeder's `specialsauce`) within ~0.01 from -30% to 0%: fastest at
+    -8 to -10% and 1.14x flat, back to flat speed by about -18%. Above 19.5 (the
+    polynomial's own slope at 0%) every descent is slower than flat, which is
+    what the tuning corpus shows. Climbs are left as Minetti's.
     Returns:
         The cost of moving one kilogram of body mass one meter along a slope with the given gradient, which is
         inverse of speed.
@@ -343,14 +347,15 @@ def _minetti_cost(gradient: float) -> float:
         + 46.3 * (gradient ** 2)
         + 19.5 * gradient
         + 3.6
-        + _MINETTI_DOWNHILL_COST_SLOPE * max(0.0, -gradient)
+        + downhill_cost_slope * max(0.0, -gradient)
     )
 
 
-_MINETTI_FLAT_COST = _minetti_cost(0.0)
+# The descent term is zero on the flat, so this holds for every slope.
+_MINETTI_FLAT_COST = _minetti_cost(0.0, MINETTI_DOWNHILL_COST_SLOPE)
 
 
-def _raw_minetti_relative_speed(gradient: float) -> float:
+def _raw_minetti_relative_speed(gradient: float, downhill_cost_slope: float) -> float:
     """Un-softened Minetti speed as a multiple of flat-ground speed (C(0) / C(g),
     because the cost is inversely related to the speed).
 
@@ -360,15 +365,16 @@ def _raw_minetti_relative_speed(gradient: float) -> float:
 
     Args:
         gradient: Rise/run ratio for one leg, e.g. 0.1 for a 10% grade.
+        downhill_cost_slope: The descent term of _minetti_cost.
     Returns:
         Relative speed, or 0.0 if the cost is somehow non-positive within
         the domain (defensive only; it isn't for any gradient in [-0.45, 0.45]).
     """
     if abs(gradient) <= _MINETTI_MAX_GRADIENT:
-        cost = _minetti_cost(gradient)
+        cost = _minetti_cost(gradient, downhill_cost_slope)
         return _MINETTI_FLAT_COST / cost if cost > 0 else 0.0
     boundary = math.copysign(_MINETTI_MAX_GRADIENT, gradient)
-    boundary_speed = _MINETTI_FLAT_COST / _minetti_cost(boundary)
+    boundary_speed = _MINETTI_FLAT_COST / _minetti_cost(boundary, downhill_cost_slope)
     # Multiply the boundary speed by Tobler's shape ratio between the actual gradient
     # and the boundary, so the curve continues to fall off beyond the calibrated range.
     return boundary_speed * _tobler_shape(gradient) / _tobler_shape(boundary)
@@ -378,6 +384,7 @@ def minetti_speeds_from_gradients(
     gradients: list[float],
     uphill_exponent: float = MINETTI_UPHILL_EXPONENT,
     downhill_exponent: float = MINETTI_DOWNHILL_EXPONENT,
+    downhill_cost_slope: float = MINETTI_DOWNHILL_COST_SLOPE,
 ) -> list[float]:
     """Per-leg Minetti-based speeds for already-calculated gradients.
 
@@ -392,12 +399,17 @@ def minetti_speeds_from_gradients(
         gradients: Per-leg gradients, e.g. from calculate_gradient.
         uphill_exponent: Softening applied to legs with a positive gradient.
         downhill_exponent: Softening applied to legs with a negative gradient.
+        downhill_cost_slope: Extra cost per unit of descent, which sets where
+            descents turn slower than flat (see MINETTI_DOWNHILL_COST_SLOPE).
+            The app always uses the default; the tuning harness varies it.
     Returns:
         One speed per gradient, as a multiple of flat-ground speed.
     Raises:
-        ValueError: If either exponent isn't positive.
+        ValueError: If either exponent isn't positive, or downhill_cost_slope is negative.
     """
-    raw_speeds = [_raw_minetti_relative_speed(gradient) for gradient in gradients]
+    if downhill_cost_slope < 0:
+        raise ValueError(f"downhill_cost_slope must not be negative, got {downhill_cost_slope}.")
+    raw_speeds = [_raw_minetti_relative_speed(gradient, downhill_cost_slope) for gradient in gradients]
     return _soften(raw_speeds, gradients, uphill_exponent, downhill_exponent, "Minetti")
 
 

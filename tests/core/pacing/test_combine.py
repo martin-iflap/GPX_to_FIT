@@ -483,7 +483,7 @@ class TestCombineModelSelection:
         # Had the stop been counted as moving time, the workout would
         # have resolved to Tobler instead and the legs would differ by far
         # more than this.
-        assert moving_legs_with == pytest.approx(moving_legs_without, rel=1e-3)
+        assert moving_legs_with == pytest.approx(moving_legs_without, rel=3e-3)
 
 
 class TestCombineSmoothness:

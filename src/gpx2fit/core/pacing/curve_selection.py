@@ -6,6 +6,7 @@ is fitting an already-chosen curve to known anchor timestamps.
 """
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from gpx2fit.core.models import SportType
@@ -78,13 +79,17 @@ SMOOTHNESS_SCALES = {
     6: 0.8, 7: 0.62, 8: 0.46, 9: 0.32, 10: 0.2,
 }
 
-# How much of the speed-swing bound each curve may use at CURVE_REFERENCE_GRADE,
+# How much of the speed-swing bound each curve may use up to CURVE_REFERENCE_GRADE,
 # as a share of log(max_speed_ratio) — see resolve_curve_shape. Kept well under
 # 1.0 so ordinary terrain stays in tanh's near-linear range and only real
 # outliers get squashed. Descents get less because people ease off downhill.
 CURVE_REFERENCE_GRADE = 0.25
 UPHILL_FILL = 0.65
 DOWNHILL_FILL = 0.3
+
+# How many grades, evenly spaced from flat to ±CURVE_REFERENCE_GRADE, a
+# curve's swing is measured on (see _reference_swings). 0.5% apart.
+_REFERENCE_SAMPLES = 50
 
 
 def _smoothstep(value: float, center: float, half_width: float) -> float:
@@ -226,11 +231,33 @@ def resolve_max_speed_ratio(
     return (bounds.flat + (bounds.hilly - bounds.flat) * hilliness) ** scale
 
 
-def _fitted_exponents(raw_uphill: float, raw_downhill: float, log_limit: float) -> CurveExponents:
-    """Exponents that land one curve's raw reference-grade speeds on their fill share of `log_limit`."""
+def _reference_swings(
+    raw_speeds_of: Callable[[list[float]], list[float]], reference_grade: float
+) -> tuple[float, float]:
+    """A raw curve's largest |log speed| on climbs and on descents up to `reference_grade`.
+
+    For a curve that keeps moving away from flat speed as the grade steepens,
+    this is simply its value at ±reference_grade. A curve that peaks and turns
+    back toward flat speed is measured at its peak instead, so it can't read
+    as nearly flat when it happens to cross flat speed near the reference grade.
+
+    Args:
+        raw_speeds_of: gradients -> the curve's un-softened relative speeds.
+        reference_grade: How far from flat to look, e.g. CURVE_REFERENCE_GRADE.
+    Returns:
+        (uphill swing, downhill swing), both positive for any curve that isn't flat.
+    """
+    grades = [reference_grade * index / _REFERENCE_SAMPLES for index in range(1, _REFERENCE_SAMPLES + 1)]
+    uphill = raw_speeds_of(grades)
+    downhill = raw_speeds_of([-grade for grade in grades])
+    return max(abs(math.log(speed)) for speed in uphill), max(abs(math.log(speed)) for speed in downhill)
+
+
+def _fitted_exponents(uphill_swing: float, downhill_swing: float, log_limit: float) -> CurveExponents:
+    """Exponents that shrink one curve's reference swings to their fill share of `log_limit`."""
     return CurveExponents(
-        uphill=UPHILL_FILL * log_limit / abs(math.log(raw_uphill)),
-        downhill=DOWNHILL_FILL * log_limit / abs(math.log(raw_downhill)),
+        uphill=UPHILL_FILL * log_limit / uphill_swing,
+        downhill=DOWNHILL_FILL * log_limit / downhill_swing,
     )
 
 
@@ -240,11 +267,12 @@ def resolve_curve_shape(max_speed_ratio: float) -> CurveShape:
     A lower max_speed_ratio alone would just squash a steep curve against the
     tanh bound in combine._compress_speed_toward_typical, and a long climb or
     descent then comes out as a flat plateau with a sharp edge into the next
-    one. So the curves themselves are flattened to fit: at ±CURVE_REFERENCE_GRADE
-    each curve's log-speed is exactly UPHILL_FILL / DOWNHILL_FILL of
-    log(max_speed_ratio), which leaves the bound to catch only the steeper
-    outliers. Because exponents scale log-speed linearly, the curve and the
-    bound always widen and narrow together.
+    one. So the curves themselves are flattened to fit: between flat and
+    ±CURVE_REFERENCE_GRADE, each curve's largest log-speed is exactly
+    UPHILL_FILL / DOWNHILL_FILL of log(max_speed_ratio) (see _reference_swings),
+    which leaves the bound to catch only the steeper outliers. Because
+    exponents scale log-speed linearly, the curve and the bound always widen
+    and narrow together.
 
     Args:
         max_speed_ratio: This workout's bound, from resolve_max_speed_ratio. Must be > 1.
@@ -252,12 +280,11 @@ def resolve_curve_shape(max_speed_ratio: float) -> CurveShape:
         The exponents for pacing.gradient.blended_speeds_from_gradients.
     """
     log_limit = math.log(max_speed_ratio)
-    reference = [CURVE_REFERENCE_GRADE, -CURVE_REFERENCE_GRADE]
-    minetti_up, minetti_down = minetti_speeds_from_gradients(reference, uphill_exponent=1.0, downhill_exponent=1.0)
-    tobler_up, tobler_down = tobler_speeds_from_gradients(reference, uphill_exponent=1.0, downhill_exponent=1.0)
+    minetti = _reference_swings(lambda grades: minetti_speeds_from_gradients(grades, 1.0, 1.0), CURVE_REFERENCE_GRADE)
+    tobler = _reference_swings(lambda grades: tobler_speeds_from_gradients(grades, 1.0, 1.0), CURVE_REFERENCE_GRADE)
     return CurveShape(
-        minetti=_fitted_exponents(minetti_up, minetti_down, log_limit),
-        tobler=_fitted_exponents(tobler_up, tobler_down, log_limit),
+        minetti=_fitted_exponents(*minetti, log_limit),
+        tobler=_fitted_exponents(*tobler, log_limit),
     )
 
 

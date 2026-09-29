@@ -10,11 +10,13 @@ from gpx2fit.core.pacing.curve_selection import (
     MAX_SPEED_RATIO_BOUNDS,
     TOBLER_THRESHOLDS,
     UPHILL_FILL,
+    _reference_swings,
     resolve_curve_shape,
     resolve_max_speed_ratio,
     resolve_tobler_weight,
 )
 from gpx2fit.core.pacing.gradient import (
+    MINETTI_DOWNHILL_COST_SLOPE,
     blended_speeds_from_gradients,
     calculate_gradient,
     minetti_speeds_from_gradients,
@@ -214,12 +216,14 @@ class TestResolveCurveShape:
 
     @pytest.mark.parametrize("ratio", RATIOS)
     @pytest.mark.parametrize("tobler_weight", [0.0, 1.0])
-    def test_reference_grade_lands_on_its_fill_share_of_the_bound(self, ratio, tobler_weight):
-        up, down = blended_speeds_from_gradients(
-            [CURVE_REFERENCE_GRADE, -CURVE_REFERENCE_GRADE], tobler_weight, resolve_curve_shape(ratio)
-        )
-        assert abs(math.log(up)) == pytest.approx(UPHILL_FILL * math.log(ratio))
-        assert abs(math.log(down)) == pytest.approx(DOWNHILL_FILL * math.log(ratio))
+    def test_largest_swing_within_the_reference_grade_is_its_fill_share_of_the_bound(self, ratio, tobler_weight):
+        shape = resolve_curve_shape(ratio)
+
+        def largest_swing(grades: list[float]) -> float:
+            return max(abs(math.log(s)) for s in blended_speeds_from_gradients(grades, tobler_weight, shape))
+
+        assert largest_swing(_up_to(CURVE_REFERENCE_GRADE)) == pytest.approx(UPHILL_FILL * math.log(ratio))
+        assert largest_swing(_up_to(-CURVE_REFERENCE_GRADE)) == pytest.approx(DOWNHILL_FILL * math.log(ratio))
 
     def test_curve_narrows_together_with_the_bound(self):
         # The point of the relation: a tighter bound flattens the curve itself,
@@ -279,15 +283,68 @@ class TestResolveCurveShape:
             for on_flat, on_hilly in zip(flat, hilly):
                 assert abs(math.log(on_hilly)) >= abs(math.log(on_flat))
 
-    @pytest.mark.parametrize("speeds_fn", [minetti_speeds_from_gradients, tobler_speeds_from_gradients])
-    def test_descent_reference_grade_is_clearly_off_flat_speed(self, speeds_fn):
-        # The downhill exponent divides by |log(raw speed at -CURVE_REFERENCE_GRADE)|.
-        # Neither curve is monotonic downhill: both peak on a gentle descent and
-        # cross back through flat speed further down. If a curve change moved
-        # that crossing near the reference grade, the exponent would blow up.
-        [down] = speeds_fn([-CURVE_REFERENCE_GRADE], uphill_exponent=1.0, downhill_exponent=1.0)
-        assert abs(math.log(down)) > 0.15
-
     def test_tobler_is_softened_rather_than_raw(self):
         shape = resolve_curve_shape(MAX_SPEED_RATIO_BOUNDS[SportType.HIKING].hilly)
         assert shape.tobler.uphill < 1.0 and shape.tobler.downhill < 1.0
+
+
+def _up_to(grade: float, samples: int = 1000) -> list[float]:
+    """Grades evenly spaced from flat to `grade`, both ends included."""
+    return [grade * index / samples for index in range(samples + 1)]
+
+
+def _raw_minetti_at(slope: float):
+    """gradients -> raw Minetti speeds with this descent cost slope."""
+    return lambda grades: minetti_speeds_from_gradients(grades, 1.0, 1.0, downhill_cost_slope=slope)
+
+
+def _slope_back_at_flat_on_the_reference_grade() -> float:
+    """The descent cost slope at which raw Minetti is exactly flat speed at -CURVE_REFERENCE_GRADE.
+
+    Found by bisection: a steeper slope only ever slows descents.
+    """
+    low, high = 0.0, 40.0
+    for _ in range(60):
+        middle = (low + high) / 2
+        [speed] = _raw_minetti_at(middle)([-CURVE_REFERENCE_GRADE])
+        low, high = (middle, high) if speed > 1.0 else (low, middle)
+    return (low + high) / 2
+
+
+class TestReferenceSwings:
+    """How far a raw curve swings from flat speed, which resolve_curve_shape divides each fill by."""
+
+    @pytest.mark.parametrize("raw_speeds_of", [_raw_minetti_at(MINETTI_DOWNHILL_COST_SLOPE), tobler_speeds_from_gradients])
+    def test_shipped_curves_are_measured_at_the_reference_grade(self, raw_speeds_of):
+        up, down = raw_speeds_of([CURVE_REFERENCE_GRADE, -CURVE_REFERENCE_GRADE])
+        assert _reference_swings(raw_speeds_of, CURVE_REFERENCE_GRADE) == pytest.approx(
+            (abs(math.log(up)), abs(math.log(down)))
+        )
+
+    def test_a_curve_back_at_flat_speed_on_the_reference_grade_is_measured_at_its_peak(self):
+        raw_speeds_of = _raw_minetti_at(_slope_back_at_flat_on_the_reference_grade())
+        [at_reference] = raw_speeds_of([-CURVE_REFERENCE_GRADE])
+        assert at_reference == pytest.approx(1.0)  # premise: no swing at the reference grade itself
+
+        peak = max(abs(math.log(s)) for s in raw_speeds_of(_up_to(-CURVE_REFERENCE_GRADE)))
+        _, downhill_swing = _reference_swings(raw_speeds_of, CURVE_REFERENCE_GRADE)
+        assert downhill_swing == pytest.approx(peak, rel=0.01)
+
+    @pytest.mark.parametrize("slope", [
+        0.0,
+        pytest.param(_slope_back_at_flat_on_the_reference_grade(), id="back-at-flat"),
+        10.0,
+        MINETTI_DOWNHILL_COST_SLOPE,
+        40.0,
+    ])
+    def test_softened_descents_stay_within_their_fill_share_at_any_descent_cost_slope(self, slope):
+        # What resolve_curve_shape does with the swing, for a Minetti curve of any shape.
+        log_limit = math.log(MAX_SPEED_RATIO_BOUNDS[SportType.RUNNING].hilly)
+        _, downhill_swing = _reference_swings(_raw_minetti_at(slope), CURVE_REFERENCE_GRADE)
+        exponent = DOWNHILL_FILL * log_limit / downhill_swing
+
+        softened = minetti_speeds_from_gradients(
+            _up_to(-CURVE_REFERENCE_GRADE), 1.0, exponent, downhill_cost_slope=slope
+        )
+        largest = max(abs(math.log(s)) for s in softened)
+        assert largest == pytest.approx(DOWNHILL_FILL * log_limit, rel=0.01)

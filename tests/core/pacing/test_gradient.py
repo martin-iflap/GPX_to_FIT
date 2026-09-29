@@ -3,6 +3,7 @@ import pytest
 from gpx2fit.core.models import Track
 from gpx2fit.core.pacing.gradient import (
     GRADIENT_WINDOW_M,
+    MINETTI_DOWNHILL_COST_SLOPE,
     TURNING_POINT_MIN_WINDOW_M,
     CurveExponents,
     CurveShape,
@@ -21,8 +22,8 @@ def _track(legs: list[tuple[float, float]]) -> Track:
     return Track(points=[point(elevation=ele, distance_from_start=dist) for ele, dist in legs])
 
 
-def _minetti_cost(gradient: float) -> float:
-    """Minetti et al. (2002) energy-cost polynomial plus the 10·|g| descent term,
+def _minetti_cost(gradient: float, downhill_cost_slope: float = MINETTI_DOWNHILL_COST_SLOPE) -> float:
+    """Minetti et al. (2002) energy-cost polynomial plus the slope·|g| descent term,
     computed independently of the implementation."""
     return (
         155.4 * gradient ** 5
@@ -31,7 +32,7 @@ def _minetti_cost(gradient: float) -> float:
         + 46.3 * gradient ** 2
         + 19.5 * gradient
         + 3.6
-        + 10.0 * max(0.0, -gradient)
+        + downhill_cost_slope * max(0.0, -gradient)
     )
 
 
@@ -272,10 +273,12 @@ class TestMinettiRawCurve:
     def test_flat_ground_is_the_models_unit_speed(self):
         assert _raw_minetti([0.0]) == pytest.approx([1.0])
 
-    def test_matches_inverted_cost_formula_on_moderate_uphill_and_downhill(self):
-        assert _raw_minetti([0.1, -0.1]) == pytest.approx([
-            _minetti_cost(0.0) / _minetti_cost(0.1),
-            _minetti_cost(0.0) / _minetti_cost(-0.1),
+    @pytest.mark.parametrize("slope", [0.0, 10.0, MINETTI_DOWNHILL_COST_SLOPE, 40.0])
+    def test_matches_inverted_cost_formula_on_moderate_uphill_and_downhill(self, slope):
+        speeds = minetti_speeds_from_gradients([0.1, -0.1], 1.0, 1.0, downhill_cost_slope=slope)
+        assert speeds == pytest.approx([
+            _minetti_cost(0.0, slope) / _minetti_cost(0.1, slope),
+            _minetti_cost(0.0, slope) / _minetti_cost(-0.1, slope),
         ])
 
     def test_gradient_beyond_calibrated_domain_uses_scaled_tobler_not_a_clamp(self):
@@ -358,8 +361,10 @@ class TestMinettiSoftening:
         assert _relative_to_flat(minetti_speeds_from_gradients, 0.2) <= 0.6
         assert _relative_to_flat(minetti_speeds_from_gradients, 0.3) <= 0.5
 
-    def test_moderate_descents_are_still_faster_than_flat(self):
-        assert _relative_to_flat(minetti_speeds_from_gradients, -0.1) >= 1.05
+    def test_moderate_descents_stay_close_to_flat(self):
+        # The raw curve is below flat on every descent (see TestMinettiDescentShape);
+        # the probe softens that to a gentle slowdown.
+        assert 0.9 <= _relative_to_flat(minetti_speeds_from_gradients, -0.1) < 1.0
 
     def test_descent_speed_gain_is_well_below_raw_minettis_doubling(self):
         peak = max(_relative_to_flat(minetti_speeds_from_gradients, -g / 100) for g in range(0, 46))
@@ -367,24 +372,22 @@ class TestMinettiSoftening:
 
 
 class TestMinettiDescentShape:
-    """The raw curve's descents follow Strava's heart-rate-based grade-adjusted
-    pace rather than Minetti's constant-metabolic-cost doubling (see
-    gradient._minetti_cost). The bands come from Strava's measured factors."""
+    """The raw curve's descents follow the tuning corpus rather than Minetti's
+    constant-metabolic-cost doubling (see gradient._minetti_cost and
+    MINETTI_DOWNHILL_COST_SLOPE). The corpus is one runner who is slow
+    downhill, so these bands pin today's curve, not a population's."""
 
-    def test_fastest_descent_is_a_gentle_one(self):
-        grades = [-g / 1000 for g in range(0, 451)]
-        speeds = _raw_minetti(grades)
-        fastest = grades[speeds.index(max(speeds))]
-        assert -0.11 <= fastest <= -0.07
-        assert 1.10 <= max(speeds) <= 1.20
+    def test_no_descent_is_faster_than_flat(self):
+        speeds = _raw_minetti([-g / 1000 for g in range(1, 451)])
+        assert max(speeds) < 1.0
 
-    def test_steep_descents_are_slower_than_flat(self):
-        assert _relative_to_flat(_raw_minetti, -0.15) > 1.0
-        assert _relative_to_flat(_raw_minetti, -0.2) < 1.0
-        assert _relative_to_flat(_raw_minetti, -0.3) == pytest.approx(0.67, abs=0.03)
+    def test_descent_slowdown_matches_the_corpus(self):
+        assert _relative_to_flat(_raw_minetti, -0.03) >= 0.95
+        assert _relative_to_flat(_raw_minetti, -0.1) == pytest.approx(0.87, abs=0.03)
+        assert _relative_to_flat(_raw_minetti, -0.3) == pytest.approx(0.43, abs=0.03)
 
-    def test_descents_keep_slowing_past_the_fastest_grade(self):
-        gradients = [-0.1, -0.15, -0.2, -0.3, -0.4, -0.44, -0.46, -0.6]
+    def test_descents_keep_slowing_as_they_steepen(self):
+        gradients = [-0.01, -0.05, -0.1, -0.15, -0.2, -0.3, -0.4, -0.44, -0.46, -0.6]
         speeds = _raw_minetti(gradients)
         assert all(later < earlier for earlier, later in zip(speeds, speeds[1:]))
 
@@ -420,6 +423,35 @@ class TestMinettiDescentShape:
     def test_non_positive_exponent_raises(self, kwargs):
         with pytest.raises(ValueError):
             minetti_speeds_from_gradients([0.1], **kwargs)
+
+
+class TestMinettiDownhillCostSlope:
+    """The descent term's slope, which the tuning harness varies; the app uses the default."""
+
+    # Including grades past the calibrated domain, where the curve follows scaled Tobler.
+    CLIMBS = [0.0, 0.05, 0.2, 0.44, 0.6]
+    DESCENTS = [-0.03, -0.1, -0.25, -0.44, -0.6]
+    SLOPES = sorted({0.0, 10.0, MINETTI_DOWNHILL_COST_SLOPE, 40.0})
+
+    def test_the_default_is_the_shipped_slope(self):
+        gradients = self.CLIMBS + self.DESCENTS
+        assert minetti_speeds_from_gradients(gradients) == minetti_speeds_from_gradients(
+            gradients, downhill_cost_slope=MINETTI_DOWNHILL_COST_SLOPE
+        )
+
+    def test_climbs_and_flat_ground_ignore_the_slope(self):
+        speeds = [minetti_speeds_from_gradients(self.CLIMBS, 1.0, 1.0, downhill_cost_slope=s) for s in self.SLOPES]
+        for other in speeds[1:]:
+            assert other == speeds[0]
+
+    def test_a_steeper_slope_slows_every_descent(self):
+        speeds = [minetti_speeds_from_gradients(self.DESCENTS, 1.0, 1.0, downhill_cost_slope=s) for s in self.SLOPES]
+        for gentler, steeper in zip(speeds, speeds[1:]):
+            assert all(slow < fast for slow, fast in zip(steeper, gentler))
+
+    def test_negative_slope_raises(self):
+        with pytest.raises(ValueError):
+            minetti_speeds_from_gradients([-0.1], downhill_cost_slope=-1.0)
 
 
 class TestToblerSpeeds:

@@ -330,8 +330,8 @@ flowchart TD
   cg --> tp
   cg --> ea
 
-  ms["minetti_speeds_from_gradients(g, up_exp, down_exp)"]
-  rm["_raw_minetti_relative_speed(g)"] --> mc["_minetti_cost(g)<br/>Minetti 2002 polynomial<br/>+ 10·|g| on descents"]
+  ms["minetti_speeds_from_gradients(g, up_exp, down_exp, downhill_cost_slope = 20)"]
+  rm["_raw_minetti_relative_speed(g, slope)"] --> mc["_minetti_cost(g, slope)<br/>Minetti 2002 polynomial<br/>+ slope·|g| on descents"]
   ms --> rm
   ts["tobler_speeds_from_gradients(g, up_exp, down_exp)"] --> tsh["_tobler_shape(g)<br/>exp(-3.5·|g + 0.05|)"]
   ms --> so["_soften(raw, g, up, down)<br/>speed ** exponent"]
@@ -352,6 +352,9 @@ flowchart TD
   each segment to its duration.
 - **Softening.** `speed ** exponent` scales log-speed linearly. That's why
   `curve_selection` can fit the exponents directly to a log-space bound.
+- **Descent cost slope.** `MINETTI_DOWNHILL_COST_SLOPE` sets where Minetti's
+  descents turn slower than flat. The app always uses the default; the
+  `downhill_cost_slope` argument exists so the tuning harness can fit it.
 
 ### 5.7 `pacing/curve_selection.py`: three per-workout decisions
 
@@ -377,15 +380,15 @@ flowchart LR
   rtw --> v["_verticality · _smoothstep"]
   rtw --> probe["minetti_speeds_from_gradients<br/>(default exponents, probe)"]
   rmr --> v
-  rcs --> raw["both curves at ±25 %<br/>exponent 1.0"]
+  rcs --> raw["_reference_swings<br/>both curves' largest |log speed| within ±25 %, exponent 1.0"]
   rcs --> fe["_fitted_exponents<br/>UPHILL_FILL 0.65 · DOWNHILL_FILL 0.3"]
 ```
 
-| Decision                                                      | Inputs                                    | How                                                                                                                                                                                                                                                                                                                                                                                    |
-|---------------------------------------------------------------|-------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **Tobler weight** (how much walking curve to mix in)          | flat-equivalent speed, verticality, sport | Flat-equivalent speed = `Σ(leg_distance / minetti_speed) / active_seconds`, i.e. the speed with the terrain divided out. Verticality is the distance-weighted mean `                                   \|gradient\|`. Each is ramped through a `_smoothstep` band around the sport's `TOBLER_THRESHOLDS`, and the result is the `max()` of the two. Minetti is always the probe curve. |
-| **Max speed ratio** (how far a leg may swing from the median) | verticality, sport, smoothness            | Ramps from `MAX_SPEED_RATIO_BOUNDS[sport].flat` to `.hilly` around `HILLY_VERTICALITY` (0.06 ± 0.04), then raised to `SMOOTHNESS_SCALES[level]`. Level 5 leaves it unchanged.                                                                                                                                                                                                          |
-| **Curve shape** (exponents for both curves)                   | max speed ratio                           | Exponents are chosen so that at ±25% grade each curve's log-speed equals `FILL × log(ratio)`. The curve and the bound therefore always narrow together, and the soft clamp only has to catch outliers.                                                                                                                                                                                 |
+| Decision                                                      | Inputs                                    | How                                                                                                                                                                                                                                                                                                                                                                                                  |
+|---------------------------------------------------------------|-------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Tobler weight** (how much walking curve to mix in)          | flat-equivalent speed, verticality, sport | Flat-equivalent speed = `Σ(leg_distance / minetti_speed) / active_seconds`, i.e. the speed with the terrain divided out. Verticality is the distance-weighted mean `                                   \|gradient\|`. Each is ramped through a `_smoothstep` band around the sport's `TOBLER_THRESHOLDS`, and the result is the `max()` of the two. Minetti is always the probe curve.               |
+| **Max speed ratio** (how far a leg may swing from the median) | verticality, sport, smoothness            | Ramps from `MAX_SPEED_RATIO_BOUNDS[sport].flat` to `.hilly` around `HILLY_VERTICALITY` (0.06 ± 0.04), then raised to `SMOOTHNESS_SCALES[level]`. Level 5 leaves it unchanged.                                                                                                                                                                                                                        |
+| **Curve shape** (exponents for both curves)                   | max speed ratio                           | Exponents are chosen so that each curve's largest log-speed between flat and ±25% grade equals `FILL × log(ratio)`. For a curve that keeps slowing, that is its value at ±25%; a curve that peaks and turns back is measured at the peak, so crossing flat speed near 25% can't blow the exponent up. The curve and the bound always narrow together, and the soft clamp only has to catch outliers. |
 
 All three are first-guess constants that the tuning harness is calibrating.
 
