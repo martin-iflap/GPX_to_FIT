@@ -359,7 +359,7 @@ def combine(
     ]
     tobler_weight = resolve_tobler_weight(gradients, leg_distances, active_seconds, sport)
     max_speed_ratio = resolve_max_speed_ratio(gradients, leg_distances, sport, smoothness)
-    curve_shape = resolve_curve_shape(max_speed_ratio)
+    curve_shape = resolve_curve_shape(max_speed_ratio, sport)
 
     for i in range(len(anchors) - 1):
         segment_points = track.points[anchor_indexes[i]: anchor_indexes[i + 1] + 1]

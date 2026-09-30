@@ -538,7 +538,11 @@ class TestCombineSmoothness:
         # changed. If the bound moved but the curve didn't follow, a smoother
         # level would squash the steep legs harder than the gentle ones and
         # flatten them into plateaus.
-        track = rolling_track(distance=5000.0, climb_per_km=100.0)
+        # 60 m/km (about ±12%) rather than steeper: running's fitted descents
+        # slow nearly as much as its climbs by ±20%, so a steeper sawtooth
+        # paces almost evenly and leaves nothing to scale.
+        climb_per_km = 60.0
+        track = rolling_track(distance=5000.0, climb_per_km=climb_per_km)
         factor = (
             math.log(resolved_max_speed_ratio(track, SportType.RUNNING, smoothness=level))
             / math.log(resolved_max_speed_ratio(track, SportType.RUNNING))
@@ -548,9 +552,9 @@ class TestCombineSmoothness:
             mean = statistics.fmean(logs)
             return [value - mean for value in logs]
 
-        default = centred(self._log_leg_speeds(self._paced(DEFAULT_SMOOTHNESS)))
-        scaled = centred(self._log_leg_speeds(self._paced(level)))
-        assert max(abs(value) for value in default) > 0.15  # premise: the default really swings
+        default = centred(self._log_leg_speeds(self._paced(DEFAULT_SMOOTHNESS, climb_per_km)))
+        scaled = centred(self._log_leg_speeds(self._paced(level, climb_per_km)))
+        assert max(abs(value) for value in default) > 0.1  # premise: the default really swings
         for got, reference in zip(scaled, default):
             assert got == pytest.approx(factor * reference, abs=0.01)
 

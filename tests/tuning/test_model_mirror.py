@@ -93,8 +93,8 @@ class TestMirrorMatchesCombine:
         core_ratio = resolve_max_speed_ratio(gradients, distances, sport)
         assert max_speed_ratio_for(model, sport, params) == pytest.approx(core_ratio)
 
-        mine = curve_shape_for(core_ratio, params)
-        theirs = resolve_curve_shape(core_ratio)
+        mine = curve_shape_for(core_ratio, sport, params)
+        theirs = resolve_curve_shape(core_ratio, sport)
         assert mine.minetti.uphill == pytest.approx(theirs.minetti.uphill)
         assert mine.minetti.downhill == pytest.approx(theirs.minetti.downhill)
         assert mine.tobler.uphill == pytest.approx(theirs.tobler.uphill)

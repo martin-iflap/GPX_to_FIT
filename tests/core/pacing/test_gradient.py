@@ -402,8 +402,9 @@ class TestMinettiDescentShape:
         # Downhill pace is limited by footing and braking rather than
         # metabolic cost, so the energy model overstates descent speed more
         # than it overstates climb slowdown. This is the default (probe)
-        # exponents only; in paced output the same idea is DOWNHILL_FILL vs
-        # UPHILL_FILL, which the tuning harness measures rather than a test pins.
+        # exponents only; in paced output the same idea is CURVE_FILLS'
+        # downhill vs uphill share, which the tuning harness measures rather
+        # than a test pins.
         def retained_share(gradient: float) -> float:
             soft = _relative_to_flat(minetti_speeds_from_gradients, gradient)
             raw = _relative_to_flat(_raw_minetti, gradient)

@@ -17,7 +17,7 @@ from io import TextIOWrapper
 from pathlib import Path
 
 from gpx2fit.core.models import SportType
-from gpx2fit.core.pacing.curve_selection import MAX_SPEED_RATIO_BOUNDS
+from gpx2fit.core.pacing.curve_selection import CURVE_FILLS, MAX_SPEED_RATIO_BOUNDS
 from tuning.cache import DEFAULT_CACHE_DIR, content_key, decoded_activity, warm_cache
 from tuning.compare import DEFAULT_BUCKET_M, compare
 from tuning.elevation import DEFAULT_CACHE_DIR as DEM_CACHE_DIR
@@ -400,8 +400,11 @@ def command_fit(args: argparse.Namespace) -> int:
             print(f"  {name:<24}{before:>9.4f}{after:>10.4f}")
 
     for sport, values in sorted(result.sport_params.items(), key=lambda item: item[0].value):
-        bounds = MAX_SPEED_RATIO_BOUNDS[sport]
-        shipped = {"ratio_flat": bounds.flat, "ratio_hilly": bounds.hilly}
+        bounds, fills = MAX_SPEED_RATIO_BOUNDS[sport], CURVE_FILLS[sport]
+        shipped = {
+            "uphill_fill": fills.uphill, "downhill_fill": fills.downhill,
+            "ratio_flat": bounds.flat, "ratio_hilly": bounds.hilly,
+        }
         print()
         print(f"  {sport.value:<12} constant      before     after")
         print("  " + "-" * 44)
@@ -409,9 +412,6 @@ def command_fit(args: argparse.Namespace) -> int:
             before = getattr(base.for_sport(sport), name)
             before = before if before is not None else shipped[name]
             print(f"  {name:<24}{before:>9.4f}{after:>10.4f}")
-    print()
-    print("  The fills are fitted per sport, but core/ has one UPHILL_FILL and one")
-    print("  DOWNHILL_FILL. If the sports disagree, shipping both needs a per-sport table there.")
 
     hits = result.boundary_hits()
     if hits:

@@ -29,18 +29,18 @@ Contents
 
 ## 1. Rules
 
-| Rule                                                                                                                                                                | Why                                                                                                                                                                        |
-|---------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **Dev tooling, not part of the converter.** It lives at the repo root, reads files, prints, and makes network calls. Nothing from `tuning/` goes in `backendFiles`. | `core/`'s no-I/O rule exists for Pyodide. The harness never runs in a browser.                                                                                             |
-| **numpy here, never in `core/`.** numpy is in the `dev` dependency group only.                                                                                      | Pyodide would have to download it for every user. The harness evaluates the same tracks thousands of times, so it needs the speed.                                         |
-| **`core/` is never changed to suit the harness.**                                                                                                                   | The harness measures the model the app runs. It borrows `core/`'s public functions and restates only what it has to (§8).                                                  |
-| **The mirror test must pass.** `tests/tuning/test_model_mirror.py` checks that `model.elapsed_from_model` reproduces `combine()` exactly.                           | Without it the harness silently calibrates a model the app no longer runs.                                                                                                 |
-| **Only the shape is measured.**                                                                                                                                     | With only a start and an end anchor, `combine()` matches the total time by construction, whatever the constants. The objective scores the residuals minus their mean (§9). |
-| **One definition of the score.** The report and the search both go through `compare._evaluate`.                                                                     | The number a fit minimises is, by construction, the number a report prints.                                                                                                |
-| **Cache raw numbers, never judgements.** Only `decode_fit_bytes` output is cached.                                                                                  | Changing a quality gate takes effect on the next run without anyone clearing a cache.                                                                                      |
-| **Nothing is guessed.** A sport the file can't map is rejected unless the caller overrides it. A bad file is skipped with a printed reason.                         | A silently mislabelled or silently dropped activity poisons the corpus without anyone noticing.                                                                            |
-| **No new tests for `tuning/`**, except keeping the mirror test current.                                                                                             | Its output is a proposal a human reads, not a FIT file a user gets.                                                                                                        |
-| **Corpus and output stay out of git.** `corpus/`, `tuning_out/` and `*.fit` are gitignored.                                                                         | Real activities contain home GPS positions and heart rate. The decode and DEM caches hold the same positions.                                                              |
+| Rule                                                                                                                                                              | Why                                                                                                                                                                        |
+|-------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Dev tooling, not part of the converter.** It lives at the repo root, reads files, prints, and makes network calls. Nothing from `tuning/` goes in `CORE_FILES`. | `core/`'s no-I/O rule exists for Pyodide. The harness never runs in a browser.                                                                                             |
+| **numpy here, never in `core/`.** numpy is in the `dev` dependency group only.                                                                                    | Pyodide would have to download it for every user. The harness evaluates the same tracks thousands of times, so it needs the speed.                                         |
+| **`core/` is never changed to suit the harness.**                                                                                                                 | The harness measures the model the app runs. It borrows `core/`'s public functions and restates only what it has to (§8).                                                  |
+| **The mirror test must pass.** `tests/tuning/test_model_mirror.py` checks that `model.elapsed_from_model` reproduces `combine()` exactly.                         | Without it the harness silently calibrates a model the app no longer runs.                                                                                                 |
+| **Only the shape is measured.**                                                                                                                                   | With only a start and an end anchor, `combine()` matches the total time by construction, whatever the constants. The objective scores the residuals minus their mean (§9). |
+| **One definition of the score.** The report and the search both go through `compare._evaluate`.                                                                   | The number a fit minimises is, by construction, the number a report prints.                                                                                                |
+| **Cache raw numbers, never judgements.** Only `decode_fit_bytes` output is cached.                                                                                | Changing a quality gate takes effect on the next run without anyone clearing a cache.                                                                                      |
+| **Nothing is guessed.** A sport the file can't map is rejected unless the caller overrides it. A bad file is skipped with a printed reason.                       | A silently mislabelled or silently dropped activity poisons the corpus without anyone noticing.                                                                            |
+| **No new tests for `tuning/`**, except keeping the mirror test current.                                                                                           | Its output is a proposal a human reads, not a FIT file a user gets.                                                                                                        |
+| **Corpus and output stay out of git.** `corpus/`, `tuning_out/` and `*.fit` are gitignored.                                                                       | Real activities contain home GPS positions and heart rate. The decode and DEM caches hold the same positions.                                                              |
 
 ---
 
@@ -256,9 +256,10 @@ own sport's fitted fills and ratios, exactly as `fit` scored them, and `fit
 --params tuning_out/proposed.json` resumes from where the last fit stopped.
 An override naming a field `PacingParams` doesn't have is rejected on load.
 
-Per-sport values exist only in the harness. `core/` ships one `UPHILL_FILL`
-and one `DOWNHILL_FILL` for all sports. Fitting them per sport shows whether
-the sports really disagree, and which constants could share one value.
+`core/` ships the fills and the speed bounds per sport too
+(`curve_selection.CURVE_FILLS`, `MAX_SPEED_RATIO_BOUNDS`), so a
+`PacingParams` leaves all four unset to mean "this sport's shipped value",
+and a per-sport fit maps onto them one to one.
 
 ---
 
@@ -641,7 +642,7 @@ flowchart TD
   fc --> ev["_Evaluator(activities, base)<br/>one ActivityContext per activity, score memo"]
   ev --> gbs["group_by_shape(activities, evaluator.shapes())<br/>same-route groups"]
   gbs --> sc["split_corpus → train, test<br/>per sport, groups moved whole"]
-  sc --> init["start values: base.for_sport(sport) fills;<br/>ratios from there or MAX_SPEED_RATIO_BOUNDS"]
+  sc --> init["start values: base.for_sport(sport),<br/>else CURVE_FILLS / MAX_SPEED_RATIO_BOUNDS"]
   init --> before["train_before, test_before"]
   before --> rounds{{"round 1..rounds"}}
   rounds --> st1["'curve shape': uphill_fill × downhill_fill<br/>per sport, on that sport's train set"]
@@ -763,11 +764,10 @@ flowchart LR
 | `check`   | `compare` once per activity                         | overall before → after, regressed activities                                                                                                                                     | `baseline.json` on first run or with `--write-baseline` (path from `--baseline`) | 1 if overall worsened by more than `--tolerance` (0.002) |
 
 All four return 1 with "No usable activities." if nothing survived loading.
-`fit` output is a proposal, not a patch: the fills are fitted per sport, but
-`core/` has one `UPHILL_FILL` and one `DOWNHILL_FILL`. If the sports come
-out close, the per-sport values can collapse into the one shared constant.
-If they don't, shipping both would need a per-sport table in
-`curve_selection.py`.
+`fit` output is a proposal, not a patch: shipping it means copying the
+per-sport fills into `CURVE_FILLS` and the ratios into
+`MAX_SPEED_RATIO_BOUNDS` by hand, after reading the plateaus. A refit at the
+shipped values should then report nothing moved.
 
 Surface multipliers: `compare`, `ActivityContext` and `elapsed_from_model`
 all accept them, but no command passes any yet. Tuning the surface weights

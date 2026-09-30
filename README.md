@@ -15,6 +15,8 @@ client-side through [Pyodide](https://pyodide.org/) (Python compiled to
 WebAssembly). There is no backend, no account, and your files never leave
 your device.
 
+**Try it: <https://gpx-to-fit.pages.dev>**
+
 ---
 
 ## Features
@@ -46,7 +48,7 @@ your device.
   generated speed or pace over time or distance, with stops marked. Hovering
   the chart highlights the point on the map.
 - **Strava-ready output.** Records, laps, session summary and timer events.
-- **Device picker.** Choose a watch Strava recognises (it shows a device
+- **Device picker.** Choose a watch Strava recognizes (it shows a device
   only for manufacturer and product IDs it knows, never for a typed name),
   enter custom IDs, or leave the file without a device.
 - **Keyboard shortcuts** for the main actions, and light and dark themes.
@@ -80,7 +82,7 @@ GPX file ──▶ parse route ──▶ gradient per leg (smoothed over 70 m)
    flat ground. That speed is multiplied by the surface factor, then pulled
    smoothly toward the typical pace, so no single leg comes out implausibly
    fast or slow.
-4. **Fitting.** Between every pair of anchors, the modelled times are scaled
+4. **Fitting.** Between every pair of anchors, the modeled times are scaled
    so that the segment takes exactly the known time, with any stop time
    inside it removed first.
 5. **Output.** Every point gets a timestamp. The FIT file gets records, timer
@@ -101,11 +103,11 @@ Everything runs in the browser, so the GPX file, photos and generated FIT
 file are never uploaded anywhere. The app makes three kinds of outbound
 requests:
 
-| Request | What it sends | When |
-|---|---|---|
-| Thunderforest map tiles | Which map area is being viewed | While the map is shown |
-| Valhalla `trace_attributes` | The route's coordinates only (no times, photos or file name) | On conversion, if surface lookup is on (it can be turned off) |
-| CDNs (Pyodide, Leaflet, exifr, PyPI packages) | Nothing user-specific | On page load |
+| Request                                       | What it sends                                                | When                                                          |
+|-----------------------------------------------|--------------------------------------------------------------|---------------------------------------------------------------|
+| Thunderforest map tiles                       | Which map area is being viewed                               | While the map is shown                                        |
+| Valhalla `trace_attributes`                   | The route's coordinates only (no times, photos or file name) | On conversion, if surface lookup is on (it can be turned off) |
+| CDNs (Pyodide, Leaflet, exifr, PyPI packages) | Nothing user-specific                                        | On page load                                                  |
 
 The in-app About page (`about.html#privacy`) lists every request in detail.
 
@@ -125,23 +127,29 @@ python -m http.server          # from the repository root
 
 Then open <http://localhost:8000/src/gpx2fit/gui/index.html>.
 
-Serve the **repository root**, not the `gui/` folder. The browser fetches the
-Python sources from `/src/gpx2fit/core/…` at startup, so opening
-`index.html` directly from disk (`file://`) won't work. The first load takes
-a few seconds while Pyodide and the Python packages download.
+Serve a folder that contains both `gui/` and `core/` (the repository root or
+`src/gpx2fit/`), not the `gui/` folder alone. At startup the browser fetches
+the Python sources from `../../core/…`, relative to `gui/js/`. That is also
+why opening `index.html` directly from disk (`file://`) won't work. The first
+load takes a few seconds while Pyodide and the Python packages download.
+
+You don't need to run it yourself to use it: the hosted version at
+<https://gpx-to-fit.pages.dev> is the same code, always up to date. Running
+locally is for development.
 
 ## Development
 
-| Task | Command |
-|---|---|
-| Python tests | `uv run pytest` |
-| Type check | `uv run pyrefly check` |
-| JS tests (Node + jsdom) | `npm install`, then `npm test` |
-| JS lint | `npm run lint` |
-| Tune pacing constants | `uv run python -m tuning compare\|sweep\|fit\|check <corpus dir>` |
+| Task                    | Command                                                           |
+|-------------------------|-------------------------------------------------------------------|
+| Python tests            | `uv run pytest`                                                   |
+| Type check              | `uv run pyrefly check`                                            |
+| JS tests (Node + jsdom) | `npm install`, then `npm test`                                    |
+| JS lint                 | `npm run lint`                                                    |
+| Tune pacing constants   | `uv run python -m tuning compare\|sweep\|fit\|check <corpus dir>` |
 
 There is no build step. The frontend is plain ES modules, and the Python is
-loaded into the browser as source.
+loaded into the browser as source. `gpxpy` and `fit-tool` are pinned in
+`pyodideBridge.js` to the `uv.lock` versions, so bump them together.
 
 The tuning harness needs a corpus of your own recorded `.fit` files (it's
 gitignored, because real activities contain home locations and heart rate).

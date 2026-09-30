@@ -17,6 +17,28 @@ const VALHALLA_TRACE_ATTRIBUTES_URL = 'https://valhalla1.openstreetmap.de/trace_
 // as "no surface data" rather than blocking the whole conversion on it.
 const VALHALLA_FETCH_TIMEOUT_MS = 30_000;
 
+// Pinned to uv.lock, so a new upstream release can't change the live site
+// without a deploy. Bump these together with the lock file.
+const GPXPY_VERSION = '1.6.2';
+const FIT_TOOL_VERSION = '0.9.16';
+
+// Every core/ file the browser runtime needs, relative to core/. A module
+// missing here simply doesn't exist inside Pyodide.
+const CORE_FILES = [
+  'models.py',
+  'gpx_reader.py',
+  'fit_writer.py',
+  'activity_profile.py',
+  'pacing/anchors.py',
+  'pacing/photo_anchors.py',
+  'pacing/gradient.py',
+  'pacing/curve_selection.py',
+  'pacing/surface.py',
+  'pacing/surface_weights.json',
+  'pacing/combine.py',
+  'pacing/stops.py',
+];
+
 let pyodidePromise = null;
 let pyodide = null;
 
@@ -76,14 +98,18 @@ async function ensurePyodide() {
 
     await runtime.runPythonAsync(`
     import micropip
-    await micropip.install('gpxpy')
-    await micropip.install('fit-tool')
+    await micropip.install('gpxpy==${GPXPY_VERSION}')
+    await micropip.install('fit-tool==${FIT_TOOL_VERSION}')
     `);
 
-    const fetchText = async (path) => {
-      const response = await fetch(path);
+    // Resolved against this module's own URL, not the site root, so the app
+    // works both from a repo-root dev server (/src/gpx2fit/gui/...) and from a
+    // deploy that uploads src/gpx2fit/ alone (/gui/...).
+    const fetchCoreFile = async (relativePath) => {
+      const url = new URL(`../../core/${relativePath}`, import.meta.url);
+      const response = await fetch(url);
       if (!response.ok) {
-        throw new Error(`Failed to load ${path}: ${response.status} ${response.statusText}`);
+        throw new Error(`Failed to load ${url}: ${response.status} ${response.statusText}`);
       }
       return response.text();
     };
@@ -92,19 +118,10 @@ async function ensurePyodide() {
       ['src/gpx2fit/__init__.py', ''],
       ['src/gpx2fit/core/__init__.py', ''],
       ['src/gpx2fit/core/pacing/__init__.py', ''],
-      ['src/gpx2fit/core/models.py', await fetchText('/src/gpx2fit/core/models.py')],
-      ['src/gpx2fit/core/gpx_reader.py', await fetchText('/src/gpx2fit/core/gpx_reader.py')],
-      ['src/gpx2fit/core/fit_writer.py', await fetchText('/src/gpx2fit/core/fit_writer.py')],
-      ['src/gpx2fit/core/activity_profile.py', await fetchText('/src/gpx2fit/core/activity_profile.py')],
-      ['src/gpx2fit/core/pacing/anchors.py', await fetchText('/src/gpx2fit/core/pacing/anchors.py')],
-      ['src/gpx2fit/core/pacing/photo_anchors.py', await fetchText('/src/gpx2fit/core/pacing/photo_anchors.py')],
-      ['src/gpx2fit/core/pacing/gradient.py', await fetchText('/src/gpx2fit/core/pacing/gradient.py')],
-      ['src/gpx2fit/core/pacing/curve_selection.py', await fetchText('/src/gpx2fit/core/pacing/curve_selection.py')],
-      ['src/gpx2fit/core/pacing/surface.py', await fetchText('/src/gpx2fit/core/pacing/surface.py')],
-      ['src/gpx2fit/core/pacing/surface_weights.json', await fetchText('/src/gpx2fit/core/pacing/surface_weights.json')],
-      ['src/gpx2fit/core/pacing/combine.py', await fetchText('/src/gpx2fit/core/pacing/combine.py')],
-      ['src/gpx2fit/core/pacing/stops.py', await fetchText('/src/gpx2fit/core/pacing/stops.py')],
     ];
+    for (const relativePath of CORE_FILES) {
+      backendFiles.push([`src/gpx2fit/core/${relativePath}`, await fetchCoreFile(relativePath)]);
+    }
 
     runtime.globals.set('backend_files_json', JSON.stringify(backendFiles));
 

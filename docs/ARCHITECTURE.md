@@ -105,7 +105,7 @@ flowchart TB
   CDN["jsdelivr / unpkg / PyPI<br/>Pyodide, Leaflet, exifr,<br/>gpxpy, fit-tool"] -. "page load" .-> Browser
   TF["Thunderforest tiles"] -. "map.js" .-> ui
   VH["Valhalla trace_attributes<br/>(optional)"] <-. "convert(): route shape → edges" .-> bridge
-  Static["static file server<br/>(repo root)"] -. "fetch /src/gpx2fit/core/*.py" .-> bridge
+  Static["static file server<br/>(repo root)"] -. "fetch ../../core/*.py" .-> bridge
 
   subgraph Offline["Developer machine only"]
     tuning["tuning/ harness<br/>(TUNING_ARCHITECTURE.md)"] --> core2["gpx2fit.core<br/>(imported directly)"]
@@ -367,7 +367,7 @@ flowchart LR
 
   rtw["resolve_tobler_weight<br/>→ 0..1"]
   rmr["resolve_max_speed_ratio<br/>→ ratio > 1"]
-  rcs["resolve_curve_shape(ratio)<br/>→ CurveShape"]
+  rcs["resolve_curve_shape(ratio, sport)<br/>→ CurveShape"]
 
   g --> rtw
   a --> rtw
@@ -376,21 +376,24 @@ flowchart LR
   s --> rmr
   sm --> rmr
   rmr --> rcs
+  s --> rcs
 
   rtw --> v["_verticality · _smoothstep"]
   rtw --> probe["minetti_speeds_from_gradients<br/>(default exponents, probe)"]
   rmr --> v
   rcs --> raw["_reference_swings<br/>both curves' largest |log speed| within ±25 %, exponent 1.0"]
-  rcs --> fe["_fitted_exponents<br/>UPHILL_FILL 0.65 · DOWNHILL_FILL 0.3"]
+  rcs --> fe["_fitted_exponents<br/>CURVE_FILLS[sport]: running 0.85 / 0.79, hiking 0.45 / 0.17"]
 ```
 
-| Decision                                                      | Inputs                                    | How                                                                                                                                                                                                                                                                                                                                                                                                  |
-|---------------------------------------------------------------|-------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **Tobler weight** (how much walking curve to mix in)          | flat-equivalent speed, verticality, sport | Flat-equivalent speed = `Σ(leg_distance / minetti_speed) / active_seconds`, i.e. the speed with the terrain divided out. Verticality is the distance-weighted mean `                                   \|gradient\|`. Each is ramped through a `_smoothstep` band around the sport's `TOBLER_THRESHOLDS`, and the result is the `max()` of the two. Minetti is always the probe curve.               |
-| **Max speed ratio** (how far a leg may swing from the median) | verticality, sport, smoothness            | Ramps from `MAX_SPEED_RATIO_BOUNDS[sport].flat` to `.hilly` around `HILLY_VERTICALITY` (0.06 ± 0.04), then raised to `SMOOTHNESS_SCALES[level]`. Level 5 leaves it unchanged.                                                                                                                                                                                                                        |
-| **Curve shape** (exponents for both curves)                   | max speed ratio                           | Exponents are chosen so that each curve's largest log-speed between flat and ±25% grade equals `FILL × log(ratio)`. For a curve that keeps slowing, that is its value at ±25%; a curve that peaks and turns back is measured at the peak, so crossing flat speed near 25% can't blow the exponent up. The curve and the bound always narrow together, and the soft clamp only has to catch outliers. |
+| Decision                                                      | Inputs                                    | How                                                                                                                                                                                                                                                                                                                                                                                                                             |
+|---------------------------------------------------------------|-------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Tobler weight** (how much walking curve to mix in)          | flat-equivalent speed, verticality, sport | Flat-equivalent speed = `Σ(leg_distance / minetti_speed) / active_seconds`, i.e. the speed with the terrain divided out. Verticality is the distance-weighted mean `                                   \|gradient\|`. Each is ramped through a `_smoothstep` band around the sport's `TOBLER_THRESHOLDS`, and the result is the `max()` of the two. Minetti is always the probe curve.                                          |
+| **Max speed ratio** (how far a leg may swing from the median) | verticality, sport, smoothness            | Ramps from `MAX_SPEED_RATIO_BOUNDS[sport].flat` to `.hilly` around `HILLY_VERTICALITY` (0.06 ± 0.04), then raised to `SMOOTHNESS_SCALES[level]`. Level 5 leaves it unchanged.                                                                                                                                                                                                                                                   |
+| **Curve shape** (exponents for both curves)                   | max speed ratio, sport                    | Exponents are chosen so that each curve's largest log-speed between flat and ±25% grade equals the sport's `CURVE_FILLS` share `× log(ratio)`. For a curve that keeps slowing, that is its value at ±25%; a curve that peaks and turns back is measured at the peak, so crossing flat speed near 25% can't blow the exponent up. The curve and the bound always narrow together, and the soft clamp only has to catch outliers. |
 
-All three are first-guess constants that the tuning harness is calibrating.
+`CURVE_FILLS`, `MAX_SPEED_RATIO_BOUNDS` and `HILLY_VERTICALITY` are fitted by
+the tuning harness (2026-09-29). `TOBLER_THRESHOLDS` and the band widths are
+still first guesses.
 
 ### 5.8 `pacing/surface.py`
 
@@ -508,12 +511,15 @@ Three mechanisms keep the bridge working:
 1. **Lazy startup (`ensurePyodide`).** The first call does all the
    setup:
    - `loadPyodide` from jsdelivr
-   - `micropip.install('gpxpy')` and `micropip.install('fit-tool')`
-   - fetch every file in `backendFiles` over HTTP from `/src/gpx2fit/...`
+   - `micropip.install` `gpxpy` and `fit-tool`, pinned to the `uv.lock`
+     versions (`GPXPY_VERSION`, `FIT_TOOL_VERSION`)
+   - fetch every file in `CORE_FILES` over HTTP from `../../core/`, resolved
+     against the bridge module's own URL (`import.meta.url`), so the site
+     works whether the repo root or `src/gpx2fit/` is served
    - write them into `/workspace/src` in Pyodide's virtual filesystem, and
      prepend that directory to `sys.path`
 
-   **A `core/` file that isn't in `backendFiles` doesn't exist in the
+   **A `core/` file that isn't in `CORE_FILES` doesn't exist in the
    browser**, and nothing warns about it until an import fails there.
 2. **One shared namespace.** Every `runPythonAsync` call runs in the same
    `__main__`. JS passes inputs through `runtime.globals.set(...)`, Python
@@ -866,7 +872,7 @@ It touches the app in exactly three places:
 
 - It imports `core/` directly (`gpx_reader`, `gradient`, `curve_selection`,
   `combine`, `anchors`, `models`) and never modifies it. Nothing from
-  `tuning/` goes in `backendFiles`.
+  `tuning/` goes in `CORE_FILES`.
 - `tuning/model.py` restates `combine._pace_segment` with the constants as
   arguments. `tests/tuning/test_model_mirror.py` asserts the two produce
   identical timestamps, so a change to `_pace_segment` or the resolvers in
@@ -890,7 +896,7 @@ It touches the app in exactly three places:
 ## 12. Change checklists
 
 **Adding a module under `core/`**
-- Add it to `backendFiles` in `pyodideBridge.js`.
+- Add it to `CORE_FILES` in `pyodideBridge.js`.
 - Keep it free of I/O and native extensions.
 - Use `models.py` types.
 

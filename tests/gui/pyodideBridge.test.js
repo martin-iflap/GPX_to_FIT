@@ -91,6 +91,18 @@ describe('convert surfaceLookup', () => {
     delete globalThis.loadPyodide;
   });
 
+  // Must stay the first convert() in this file: the runtime is loaded (and
+  // core/ fetched) only once, on the first call.
+  it('loads core/ next to the bridge module and pins the micropip packages', async () => {
+    await convert(convertArgs);
+    const coreUrls = fetchedUrls.filter((url) => url.includes('/core/'));
+    const expected = new URL('../../src/gpx2fit/core/models.py', import.meta.url).href;
+    assert.ok(coreUrls.includes(expected), `expected ${expected} among ${coreUrls.join(', ')}`);
+    const installScript = fakeRuntime.scripts.find((source) => source.includes('micropip.install'));
+    assert.match(installScript, /micropip\.install\('gpxpy==[\d.]+'\)/);
+    assert.match(installScript, /micropip\.install\('fit-tool==[\d.]+'\)/);
+  });
+
   it('asks Valhalla for surfaces by default', async () => {
     await convert(convertArgs);
     assert.ok(fetchedUrls.some((url) => url.includes(VALHALLA_HOST)));

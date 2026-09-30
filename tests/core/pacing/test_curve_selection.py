@@ -4,12 +4,11 @@ import pytest
 
 from gpx2fit.core.models import SportType, Track
 from gpx2fit.core.pacing.curve_selection import (
+    CURVE_FILLS,
     CURVE_REFERENCE_GRADE,
     DEFAULT_SMOOTHNESS,
-    DOWNHILL_FILL,
     MAX_SPEED_RATIO_BOUNDS,
     TOBLER_THRESHOLDS,
-    UPHILL_FILL,
     _reference_swings,
     resolve_curve_shape,
     resolve_max_speed_ratio,
@@ -214,38 +213,55 @@ class TestResolveCurveShape:
 
     RATIOS = [1.8, 2.0, 2.6, 2.8]
 
+    @pytest.mark.parametrize("sport", list(SportType))
     @pytest.mark.parametrize("ratio", RATIOS)
     @pytest.mark.parametrize("tobler_weight", [0.0, 1.0])
-    def test_largest_swing_within_the_reference_grade_is_its_fill_share_of_the_bound(self, ratio, tobler_weight):
-        shape = resolve_curve_shape(ratio)
+    def test_largest_swing_within_the_reference_grade_is_its_fill_share_of_the_bound(self, sport, ratio, tobler_weight):
+        shape = resolve_curve_shape(ratio, sport)
+        fills = CURVE_FILLS[sport]
 
         def largest_swing(grades: list[float]) -> float:
             return max(abs(math.log(s)) for s in blended_speeds_from_gradients(grades, tobler_weight, shape))
 
-        assert largest_swing(_up_to(CURVE_REFERENCE_GRADE)) == pytest.approx(UPHILL_FILL * math.log(ratio))
-        assert largest_swing(_up_to(-CURVE_REFERENCE_GRADE)) == pytest.approx(DOWNHILL_FILL * math.log(ratio))
+        assert largest_swing(_up_to(CURVE_REFERENCE_GRADE)) == pytest.approx(fills.uphill * math.log(ratio))
+        assert largest_swing(_up_to(-CURVE_REFERENCE_GRADE)) == pytest.approx(fills.downhill * math.log(ratio))
 
-    def test_curve_narrows_together_with_the_bound(self):
+    def test_the_sports_differ_only_in_how_much_of_the_bound_they_use(self):
+        # Same curves, same bound: each exponent is just its sport's fill share
+        # scaled, so the two sports' exponents stand in the ratio of their fills.
+        running = resolve_curve_shape(2.4, SportType.RUNNING)
+        hiking = resolve_curve_shape(2.4, SportType.HIKING)
+        run_fills, hike_fills = CURVE_FILLS[SportType.RUNNING], CURVE_FILLS[SportType.HIKING]
+        for curve in ("minetti", "tobler"):
+            ran, hiked = getattr(running, curve), getattr(hiking, curve)
+            assert ran.uphill / hiked.uphill == pytest.approx(run_fills.uphill / hike_fills.uphill)
+            assert ran.downhill / hiked.downhill == pytest.approx(run_fills.downhill / hike_fills.downhill)
+
+    @pytest.mark.parametrize("sport", list(SportType))
+    def test_curve_narrows_together_with_the_bound(self, sport):
         # The point of the relation: a tighter bound flattens the curve itself,
         # so its share of the bound — and so how hard tanh squashes it — stays put.
         gradients = [-0.3, -0.15, 0.15, 0.3, 0.4]
         shares = [
-            [abs(math.log(s)) / math.log(ratio) for s in blended_speeds_from_gradients(gradients, 0.5, resolve_curve_shape(ratio))]
+            [abs(math.log(s)) / math.log(ratio) for s in blended_speeds_from_gradients(gradients, 0.5, resolve_curve_shape(ratio, sport))]
             for ratio in self.RATIOS
         ]
         for share in shares[1:]:
             assert share == pytest.approx(shares[0])
 
-    def test_steep_climbs_are_not_pinned_to_a_plateau(self):
+    @pytest.mark.parametrize("sport", list(SportType))
+    def test_steep_climbs_are_not_pinned_to_a_plateau(self, sport):
         # A 40% climb, well past the reference grade, must still sit where tanh
         # has a real slope (d tanh(x)/dx = 1 - tanh(x)²), so a long steep climb
         # keeps following the terrain rather than flattening against the bound.
+        # Running's fitted uphill fill (0.85) leaves a 40% climb at a slope of
+        # about 0.23 on Tobler, so the floor sits just under that.
         for ratio in self.RATIOS:
-            shape = resolve_curve_shape(ratio)
+            shape = resolve_curve_shape(ratio, sport)
             for weight in (0.0, 1.0):
                 [steep] = blended_speeds_from_gradients([0.4], weight, shape)
                 share = abs(math.log(steep)) / math.log(ratio)
-                assert 1 - math.tanh(share) ** 2 > 0.35
+                assert 1 - math.tanh(share) ** 2 > 0.2
 
     # Every curve combine() can actually pace on at the default smoothness: each
     # sport at both ends of its bound, on either end of the Minetti/Tobler blend.
@@ -262,29 +278,31 @@ class TestResolveCurveShape:
         # are there to be retuned, and the tuning harness, not this test, is what
         # judges realism, so the bands are wide enough to admit every fill it
         # has proposed so far (uphill 0.30 to 0.95, which put a +20% climb
-        # anywhere from 0.87x down to 0.44x). They catch a broken curve: one
-        # that goes the wrong way, collapses to even pacing, or runs away.
+        # anywhere from 0.87x down to 0.44x; running's downhill 0.79, which puts
+        # a -20% descent at 0.57x, as slow as the corpus's one runner). They
+        # catch a broken curve: one that goes the wrong way, collapses to even
+        # pacing, or runs away.
         climb_10, climb_20, climb_30, descent_10, descent_20 = blended_speeds_from_gradients(
-            [0.1, 0.2, 0.3, -0.1, -0.2], tobler_weight, resolve_curve_shape(ratio)
+            [0.1, 0.2, 0.3, -0.1, -0.2], tobler_weight, resolve_curve_shape(ratio, sport)
         )
         assert 1.0 > climb_10 > climb_20 > climb_30
         assert 0.4 <= climb_20 <= 0.9
         assert climb_30 >= 0.25
         assert max(descent_10, descent_20) <= 1.5
-        assert descent_20 >= 0.6
+        assert descent_20 >= 0.5
 
     @pytest.mark.parametrize("sport", list(SportType))
     def test_hilly_bound_never_gives_a_flatter_curve_than_the_flat_bound(self, sport):
         bounds = MAX_SPEED_RATIO_BOUNDS[sport]
         gradients = [0.1, 0.2, -0.2]
         for weight in (0.0, 1.0):
-            flat = blended_speeds_from_gradients(gradients, weight, resolve_curve_shape(bounds.flat))
-            hilly = blended_speeds_from_gradients(gradients, weight, resolve_curve_shape(bounds.hilly))
+            flat = blended_speeds_from_gradients(gradients, weight, resolve_curve_shape(bounds.flat, sport))
+            hilly = blended_speeds_from_gradients(gradients, weight, resolve_curve_shape(bounds.hilly, sport))
             for on_flat, on_hilly in zip(flat, hilly):
                 assert abs(math.log(on_hilly)) >= abs(math.log(on_flat))
 
     def test_tobler_is_softened_rather_than_raw(self):
-        shape = resolve_curve_shape(MAX_SPEED_RATIO_BOUNDS[SportType.HIKING].hilly)
+        shape = resolve_curve_shape(MAX_SPEED_RATIO_BOUNDS[SportType.HIKING].hilly, SportType.HIKING)
         assert shape.tobler.uphill < 1.0 and shape.tobler.downhill < 1.0
 
 
@@ -340,11 +358,12 @@ class TestReferenceSwings:
     def test_softened_descents_stay_within_their_fill_share_at_any_descent_cost_slope(self, slope):
         # What resolve_curve_shape does with the swing, for a Minetti curve of any shape.
         log_limit = math.log(MAX_SPEED_RATIO_BOUNDS[SportType.RUNNING].hilly)
+        downhill_fill = CURVE_FILLS[SportType.RUNNING].downhill
         _, downhill_swing = _reference_swings(_raw_minetti_at(slope), CURVE_REFERENCE_GRADE)
-        exponent = DOWNHILL_FILL * log_limit / downhill_swing
+        exponent = downhill_fill * log_limit / downhill_swing
 
         softened = minetti_speeds_from_gradients(
             _up_to(-CURVE_REFERENCE_GRADE), 1.0, exponent, downhill_cost_slope=slope
         )
         largest = max(abs(math.log(s)) for s in softened)
-        assert largest == pytest.approx(DOWNHILL_FILL * log_limit, rel=0.01)
+        assert largest == pytest.approx(downhill_fill * log_limit, rel=0.01)

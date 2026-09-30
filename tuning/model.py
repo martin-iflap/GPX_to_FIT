@@ -43,14 +43,13 @@ import numpy as np
 from gpx2fit.core.models import SportType, Track
 from gpx2fit.core.pacing.combine import _MIN_SURFACE_MULTIPLIER
 from gpx2fit.core.pacing.curve_selection import (
+    CURVE_FILLS,
     CURVE_REFERENCE_GRADE,
-    DOWNHILL_FILL,
     FLAT_EQUIVALENT_BAND_MPS,
     HILLY_VERTICALITY,
     HILLY_VERTICALITY_BAND,
     MAX_SPEED_RATIO_BOUNDS,
     TOBLER_THRESHOLDS,
-    UPHILL_FILL,
     VERTICALITY_BAND,
     _reference_swings,
     _smoothstep,
@@ -79,8 +78,8 @@ class PacingParams:
             here, this one changes the gradients themselves, so a TrackModel
             built for one value can't be reused with another — see TrackModel.
         curve_reference_grade: curve_selection.CURVE_REFERENCE_GRADE.
-        uphill_fill: curve_selection.UPHILL_FILL.
-        downhill_fill: curve_selection.DOWNHILL_FILL.
+        uphill_fill: Overrides CURVE_FILLS[sport].uphill when set.
+        downhill_fill: Overrides CURVE_FILLS[sport].downhill when set.
         minetti_downhill_cost_slope: gradient.MINETTI_DOWNHILL_COST_SLOPE.
             Changes the raw Minetti curve, which TrackModel keeps per value.
         ratio_flat: Overrides MAX_SPEED_RATIO_BOUNDS[sport].flat when set.
@@ -99,8 +98,8 @@ class PacingParams:
     """
     gradient_window_m: float = GRADIENT_WINDOW_M
     curve_reference_grade: float = CURVE_REFERENCE_GRADE
-    uphill_fill: float = UPHILL_FILL
-    downhill_fill: float = DOWNHILL_FILL
+    uphill_fill: float | None = None
+    downhill_fill: float | None = None
     minetti_downhill_cost_slope: float = MINETTI_DOWNHILL_COST_SLOPE
     ratio_flat: float | None = None
     ratio_hilly: float | None = None
@@ -335,15 +334,18 @@ def _tobler_swings(reference_grade: float) -> tuple[float, float]:
     return _reference_swings(lambda grades: tobler_speeds_from_gradients(grades, 1.0, 1.0), reference_grade)
 
 
-def curve_shape_for(max_speed_ratio: float, params: PacingParams) -> CurveShape:
+def curve_shape_for(max_speed_ratio: float, sport: SportType, params: PacingParams) -> CurveShape:
     """curve_selection.resolve_curve_shape, with the reference grade, fills and descent cost slope as parameters."""
     log_limit = math.log(max_speed_ratio)
+    fills = CURVE_FILLS[sport]
+    uphill_fill = params.uphill_fill if params.uphill_fill is not None else fills.uphill
+    downhill_fill = params.downhill_fill if params.downhill_fill is not None else fills.downhill
 
     def fitted(swings: tuple[float, float]) -> CurveExponents:
         uphill_swing, downhill_swing = swings
         return CurveExponents(
-            uphill=params.uphill_fill * log_limit / uphill_swing,
-            downhill=params.downhill_fill * log_limit / downhill_swing,
+            uphill=uphill_fill * log_limit / uphill_swing,
+            downhill=downhill_fill * log_limit / downhill_swing,
         )
 
     return CurveShape(
@@ -361,7 +363,7 @@ def resolve(
     return ResolvedSettings(
         tobler_weight=weight,
         max_speed_ratio=ratio,
-        curve_shape=curve_shape_for(ratio, params),
+        curve_shape=curve_shape_for(ratio, sport, params),
         verticality=model.verticality,
         flat_equivalent_mps=model.flat_equivalent_mps(active_seconds, params.minetti_downhill_cost_slope),
     )

@@ -73,7 +73,7 @@ def resolved_max_speed_ratio(track: Track, sport: SportType, smoothness: int = D
 
 def resolved_curve_shape(track: Track, sport: SportType, smoothness: int = DEFAULT_SMOOTHNESS) -> CurveShape:
     """The curve exponents combine() fits to this workout's speed-swing bound."""
-    return resolve_curve_shape(resolved_max_speed_ratio(track, sport, smoothness))
+    return resolve_curve_shape(resolved_max_speed_ratio(track, sport, smoothness), sport)
 
 
 def haversine_m(lat_a: float, lon_a: float, lat_b: float, lon_b: float) -> float:

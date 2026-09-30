@@ -56,9 +56,10 @@ class SpeedRatioBounds:
     hilly: float
 
 
-# Terrain dominates here and sport only nudges it
+# Terrain dominates here and sport only nudges it.
+# These are the best guesses from the current data available (2026-09-29).
 MAX_SPEED_RATIO_BOUNDS = {
-    SportType.RUNNING: SpeedRatioBounds(flat=2.0, hilly=2.8),
+    SportType.RUNNING: SpeedRatioBounds(flat=2.1, hilly=2.7),
     SportType.HIKING: SpeedRatioBounds(flat=1.8, hilly=2.6),
 }
 
@@ -79,13 +80,35 @@ SMOOTHNESS_SCALES = {
     6: 0.8, 7: 0.62, 8: 0.46, 9: 0.32, 10: 0.2,
 }
 
-# How much of the speed-swing bound each curve may use up to CURVE_REFERENCE_GRADE,
-# as a share of log(max_speed_ratio) — see resolve_curve_shape. Kept well under
-# 1.0 so ordinary terrain stays in tanh's near-linear range and only real
-# outliers get squashed. Descents get less because people ease off downhill.
 CURVE_REFERENCE_GRADE = 0.25
-UPHILL_FILL = 0.65
-DOWNHILL_FILL = 0.3
+
+
+@dataclass(frozen=True)
+class CurveFills:
+    """How much of the speed-swing bound a curve may use up to CURVE_REFERENCE_GRADE — see resolve_curve_shape.
+
+    Each is a share of log(max_speed_ratio). Below 1.0, ordinary terrain stays in
+    tanh's near-linear range and only real outliers get squashed.
+    Attributes:
+        uphill: The share climbs may use.
+        downhill: The share descents may use.
+    """
+    uphill: float
+    downhill: float
+
+
+# Keyed by the declared sport: the curves themselves are
+# shared, but how hard the terrain pushes pace within the bound is not.
+
+# Fitted by the tuning harness on the whole corpus (2026-09-29, `fit --holdout 0`;
+# held-out splits agree within each value's plateau). Hikers barely change pace
+# with grade compared to runners: hiking is paced on Tobler, whose raw swing is
+# already large, and the corpus's hikes want well under half of it. Running's
+# downhill share is biased towards slower speeds by the corpus available.
+CURVE_FILLS = {
+    SportType.RUNNING: CurveFills(uphill=0.85, downhill=0.79),
+    SportType.HIKING: CurveFills(uphill=0.45, downhill=0.17),
+}
 
 # How many grades, evenly spaced from flat to ±CURVE_REFERENCE_GRADE, a
 # curve's swing is measured on (see _reference_swings). 0.5% apart.
@@ -253,38 +276,42 @@ def _reference_swings(
     return max(abs(math.log(speed)) for speed in uphill), max(abs(math.log(speed)) for speed in downhill)
 
 
-def _fitted_exponents(uphill_swing: float, downhill_swing: float, log_limit: float) -> CurveExponents:
+def _fitted_exponents(
+    uphill_swing: float, downhill_swing: float, log_limit: float, fills: CurveFills
+) -> CurveExponents:
     """Exponents that shrink one curve's reference swings to their fill share of `log_limit`."""
     return CurveExponents(
-        uphill=UPHILL_FILL * log_limit / uphill_swing,
-        downhill=DOWNHILL_FILL * log_limit / downhill_swing,
+        uphill=fills.uphill * log_limit / uphill_swing,
+        downhill=fills.downhill * log_limit / downhill_swing,
     )
 
 
-def resolve_curve_shape(max_speed_ratio: float) -> CurveShape:
+def resolve_curve_shape(max_speed_ratio: float, sport: SportType) -> CurveShape:
     """Fit both speed curves' exponents to this workout's speed-swing bound.
 
     A lower max_speed_ratio alone would just squash a steep curve against the
     tanh bound in combine._compress_speed_toward_typical, and a long climb or
     descent then comes out as a flat plateau with a sharp edge into the next
     one. So the curves themselves are flattened to fit: between flat and
-    ±CURVE_REFERENCE_GRADE, each curve's largest log-speed is exactly
-    UPHILL_FILL / DOWNHILL_FILL of log(max_speed_ratio) (see _reference_swings),
+    ±CURVE_REFERENCE_GRADE, each curve's largest log-speed is exactly the
+    sport's CURVE_FILLS share of log(max_speed_ratio) (see _reference_swings),
     which leaves the bound to catch only the steeper outliers. Because
     exponents scale log-speed linearly, the curve and the bound always widen
     and narrow together.
 
     Args:
         max_speed_ratio: This workout's bound, from resolve_max_speed_ratio. Must be > 1.
+        sport: Sport type, which picks the fills (see CURVE_FILLS).
     Returns:
         The exponents for pacing.gradient.blended_speeds_from_gradients.
     """
     log_limit = math.log(max_speed_ratio)
+    fills = CURVE_FILLS[sport]
     minetti = _reference_swings(lambda grades: minetti_speeds_from_gradients(grades, 1.0, 1.0), CURVE_REFERENCE_GRADE)
     tobler = _reference_swings(lambda grades: tobler_speeds_from_gradients(grades, 1.0, 1.0), CURVE_REFERENCE_GRADE)
     return CurveShape(
-        minetti=_fitted_exponents(*minetti, log_limit),
-        tobler=_fitted_exponents(*tobler, log_limit),
+        minetti=_fitted_exponents(*minetti, log_limit, fills),
+        tobler=_fitted_exponents(*tobler, log_limit, fills),
     )
 
 
@@ -295,7 +322,8 @@ def resolve_curve_shape(max_speed_ratio: float) -> CurveShape:
 # watch: at 0.14 a sustained 16% climb resolves to ~0.9 Tobler even at an
 # elite pace, because the two criteria are OR'd.
 
-# MAX_SPEED_RATIO_BOUNDS, the HILLY_VERTICALITY band and the two FILL shares are
-# also first guesses, as is SMOOTHNESS_SCALES. The smoothness slider only moves
-# max_speed_ratio: resolve_curve_shape already moves the exponents with it. The
-# FILLs are the knob for how hard climbs vs. descents push within that bound.
+# CURVE_FILLS, MAX_SPEED_RATIO_BOUNDS and HILLY_VERTICALITY are fitted by the
+# tuning harness (2026-09-29) on limited and slightly biased data;
+# the HILLY_VERTICALITY band and SMOOTHNESS_SCALES are still first
+# guesses. The smoothness slider only moves max_speed_ratio: resolve_curve_shape
+# already moves the exponents with it.

@@ -38,7 +38,7 @@ import random
 from dataclasses import dataclass, fields, replace
 
 from gpx2fit.core.models import SportType
-from gpx2fit.core.pacing.curve_selection import MAX_SPEED_RATIO_BOUNDS
+from gpx2fit.core.pacing.curve_selection import CURVE_FILLS, MAX_SPEED_RATIO_BOUNDS
 from tuning.compare import DEFAULT_BUCKET_M, ActivityContext, objective_of, report_of
 from tuning.model import PacingParams, ParamsBySport, TrackModel
 from tuning.prepare import PreparedActivity
@@ -686,13 +686,14 @@ def fit_constants(
     sport_values: dict[SportType, dict[str, float]] = {}
     for sport in sports:
         start = base.for_sport(sport)
-        # A PacingParams leaves the ratios unset to mean "the sport's shipped
-        # bounds", so fill those in explicitly: the search needs a number to
-        # start from.
+        # A PacingParams leaves the fills and ratios unset to mean "the sport's
+        # shipped values", so fill those in explicitly: the search needs a
+        # number to start from.
+        fills = CURVE_FILLS[sport]
         bounds = MAX_SPEED_RATIO_BOUNDS[sport]
         sport_values[sport] = {
-            "uphill_fill": start.uphill_fill,
-            "downhill_fill": start.downhill_fill,
+            "uphill_fill": start.uphill_fill if start.uphill_fill is not None else fills.uphill,
+            "downhill_fill": start.downhill_fill if start.downhill_fill is not None else fills.downhill,
             "ratio_flat": start.ratio_flat if start.ratio_flat is not None else bounds.flat,
             "ratio_hilly": start.ratio_hilly if start.ratio_hilly is not None else bounds.hilly,
         }
@@ -770,3 +771,5 @@ def fit_constants(
         history=history,
         route_groups=[[activity.name for activity in group] for group in groups if len(group) > 1],
     )
+
+# todo: add tuning for the knobs that are not fitted yet.
