@@ -1,7 +1,0 @@
-# Cloudflare Pages, deployed from Git. Only src/gpx2fit/ is published; tests,
-# tuning and docs stay out of the site. The build command that writes
-# gui/js/config.js is set in the dashboard, since Pages has no key for it
-# here.
-name = "gpx-to-fit"
-pages_build_output_dir = "src/gpx2fit"
-compatibility_date = "2026-09-01"
