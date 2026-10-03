@@ -308,7 +308,7 @@ class TestCombineUsesSmoothedWholeTrackGradient:
         ])
         anchors = [anchor(0.0, START), anchor(1000.0, START + timedelta(minutes=10))]
 
-        result = combine(track, anchors, SportType.RUNNING)
+        result = combine(track, anchors, SportType.RUNNING, vary_pace=False)
 
         half_window = GRADIENT_WINDOW_M / 2
         interior_paces = [
@@ -338,7 +338,7 @@ class TestCombineUsesSmoothedWholeTrackGradient:
         # Minetti — which keeps the expected speeds below a single curve.
         assert resolved_weight(track, (end_time - START).total_seconds(), SportType.RUNNING) == 0.0
 
-        result = combine(track, anchors, SportType.RUNNING)
+        result = combine(track, anchors, SportType.RUNNING, vary_pace=False)
 
         shape = resolved_curve_shape(track, SportType.RUNNING)
         speeds = minetti_speeds_from_gradients(whole_track_gradients, shape.minetti.uphill, shape.minetti.downhill)
@@ -494,9 +494,12 @@ class TestCombineSmoothness:
     def _paced(self, smoothness: int | None = None, climb_per_km: float = 100.0) -> Track:
         track = rolling_track(distance=5000.0, climb_per_km=climb_per_km)
         anchors = [anchor(0.0, START), anchor(track.total_distance, START + self.DURATION)]
+        # Variation off: these pin how the level scales the gradient swing. At
+        # level 10 that swing is narrow enough to count as steady and draw noise,
+        # which TestCombinePaceVariation covers.
         if smoothness is None:
-            return combine(track, anchors, SportType.RUNNING)
-        return combine(track, anchors, SportType.RUNNING, smoothness=smoothness)
+            return combine(track, anchors, SportType.RUNNING, vary_pace=False)
+        return combine(track, anchors, SportType.RUNNING, smoothness=smoothness, vary_pace=False)
 
     @staticmethod
     def _log_leg_speeds(track: Track) -> list[float]:
@@ -557,6 +560,72 @@ class TestCombineSmoothness:
         assert max(abs(value) for value in default) > 0.1  # premise: the default really swings
         for got, reference in zip(scaled, default):
             assert got == pytest.approx(factor * reference, abs=0.01)
+
+
+class TestCombinePaceVariation:
+    """Steady stretches get a natural wander in pace; terrain that already varies the pace gets none."""
+
+    DURATION = timedelta(minutes=100)
+
+    @staticmethod
+    def _flat(distance: float = 20_000.0) -> Track:
+        # Distinct coordinates, so the route has a seed of its own.
+        return Track(points=[
+            point(lat=46.0 + d * 1e-5, lon=14.0, distance_from_start=float(d)) for d in range(0, int(distance) + 1, 20)
+        ])
+
+    @staticmethod
+    def _log_speed_spread(track: Track) -> float:
+        logs = [
+            math.log((b.distance_from_start - a.distance_from_start) / seconds)
+            for seconds, a, b in zip(_leg_seconds(track.points), track.points, track.points[1:])
+            if b.distance_from_start > a.distance_from_start
+        ]
+        return statistics.pstdev(logs)
+
+    def _paced(self, track: Track, **kwargs) -> Track:
+        anchors = [anchor(0.0, START), anchor(track.total_distance, START + self.DURATION)]
+        return combine(track, anchors, SportType.RUNNING, **kwargs)
+
+    def test_a_flat_route_no_longer_paces_at_one_constant_speed(self):
+        assert self._log_speed_spread(self._paced(self._flat(), vary_pace=False)) < 1e-9  # premise
+        spread = self._log_speed_spread(self._paced(self._flat()))
+        assert 0.03 < spread < 0.09
+
+    def test_the_variation_is_the_same_every_time(self):
+        first = [p.timestamp for p in self._paced(self._flat()).points]
+        assert first == [p.timestamp for p in self._paced(self._flat()).points]
+
+    def test_rolling_terrain_is_left_exactly_as_the_gradient_paces_it(self):
+        def rolling() -> Track:
+            return rolling_track(distance=5000.0, climb_per_km=100.0)
+
+        varied = [p.timestamp for p in self._paced(rolling()).points]
+        assert varied == [p.timestamp for p in self._paced(rolling(), vary_pace=False).points]
+
+    def test_a_smoother_level_varies_less(self):
+        roughest = self._log_speed_spread(self._paced(self._flat(), smoothness=1))
+        smoothest = self._log_speed_spread(self._paced(self._flat(), smoothness=10))
+        assert smoothest < 0.3 * roughest
+
+    def test_anchors_and_stops_are_still_hit_exactly(self):
+        track = self._flat(10_000.0)
+        stop_index = 250  # the point at 5 km
+        stop_point = track.points[stop_index]
+        track.points.insert(stop_index + 1, point(
+            lat=stop_point.lat, lon=stop_point.lon, distance_from_start=stop_point.distance_from_start,
+        ))
+        mid_time = START + timedelta(minutes=12)
+        end_time = START + timedelta(minutes=60)
+        stop_duration = timedelta(minutes=5)
+        anchors = [anchor(0.0, START), anchor(2000.0, mid_time), anchor(10_000.0, end_time)]
+
+        result = combine(track, anchors, SportType.RUNNING, mode_a_stops=[ModeAStop(5000.0, stop_duration)])
+
+        by_distance = {p.distance_from_start: timestamp_of(p) for p in result.points}
+        assert by_distance[2000.0] == mid_time
+        assert result.points[-1].timestamp == end_time
+        assert timestamp_of(result.points[stop_index + 1]) - timestamp_of(result.points[stop_index]) == stop_duration
 
 
 class TestCombineInvalidAnchorMappingGuard:
@@ -654,7 +723,7 @@ class TestCombineModeAStops:
         ])
         anchors = [anchor(0.0, START), anchor(200.0, end_time)]
 
-        result = combine(track, anchors, SportType.RUNNING, mode_a_stops=[ModeAStop(100.0, duration)])
+        result = combine(track, anchors, SportType.RUNNING, mode_a_stops=[ModeAStop(100.0, duration)], vary_pace=False)
 
         active_time = timedelta(minutes=14)  # 20 min anchor time - 6 min stop
         arrival = START + active_time / 2
@@ -678,7 +747,7 @@ class TestCombineModeAStops:
         anchors = [anchor(0.0, START), anchor(1000.0, end_time)]
         mode_a_stops = [ModeAStop(300.0, first_duration), ModeAStop(600.0, second_duration)]
 
-        result = combine(track, anchors, SportType.RUNNING, mode_a_stops=mode_a_stops)
+        result = combine(track, anchors, SportType.RUNNING, mode_a_stops=mode_a_stops, vary_pace=False)
 
         active_time = timedelta(minutes=25)  # 40 min anchor time - 15 min of stops
         arrival1 = START + active_time * 0.3  # 300/1000 of the active time
@@ -707,7 +776,7 @@ class TestCombineModeAStops:
         anchors = [anchor(0.0, START), anchor(200.0, mid_time), anchor(400.0, end_time)]
         mode_a_stops = [ModeAStop(100.0, timedelta(minutes=5))]
 
-        result = combine(track, anchors, SportType.RUNNING, mode_a_stops=mode_a_stops)
+        result = combine(track, anchors, SportType.RUNNING, mode_a_stops=mode_a_stops, vary_pace=False)
 
         # Second segment is flat and evenly spaced, so its midpoint lands
         # exactly halfway through its own anchor-to-anchor duration,
@@ -735,7 +804,7 @@ class TestCombineModeAStops:
             anchor(400.0, end_time),
         ]
 
-        result = combine(track, anchors, SportType.RUNNING, mode_a_stops=[ModeAStop(250.0, mode_a_duration)])
+        result = combine(track, anchors, SportType.RUNNING, mode_a_stops=[ModeAStop(250.0, mode_a_duration)], vary_pace=False)
 
         active_time = timedelta(minutes=26)  # 30 min anchor time - 4 min stop
         natural_arrival_250 = departure + active_time / 2  # two equal 150m legs

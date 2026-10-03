@@ -12,7 +12,7 @@ What this module restates is exactly what can't be borrowed:
 - **The three per-workout decisions** (`tobler_weight_for`,
   `max_speed_ratio_for`, `curve_shape_for`). Their constants *are* the knobs
   being fitted, and core reads them as globals, so a core call would always
-  answer with the shipped values. The helpers underneath them — `_smoothstep`,
+  answer with the shipped values. The helpers underneath them — `smoothstep`,
   `_verticality`, the curve functions — are core's own, imported.
 - **The per-leg arithmetic** (softening, blending, compression, scaling), in
   numpy. A fit evaluates these thousands of times over the same tracks, where
@@ -45,14 +45,16 @@ from gpx2fit.core.pacing.combine import _MIN_SURFACE_MULTIPLIER
 from gpx2fit.core.pacing.curve_selection import (
     CURVE_FILLS,
     CURVE_REFERENCE_GRADE,
+    DEFAULT_SMOOTHNESS,
     FLAT_EQUIVALENT_BAND_MPS,
     HILLY_VERTICALITY,
     HILLY_VERTICALITY_BAND,
     MAX_SPEED_RATIO_BOUNDS,
+    SMOOTHNESS_SCALES,
     TOBLER_THRESHOLDS,
     VERTICALITY_BAND,
     _reference_swings,
-    _smoothstep,
+    smoothstep,
     _verticality,
 )
 from gpx2fit.core.pacing.gradient import (
@@ -64,6 +66,7 @@ from gpx2fit.core.pacing.gradient import (
     minetti_speeds_from_gradients,
     tobler_speeds_from_gradients,
 )
+from gpx2fit.core.pacing.variation import DEFAULT_VARIATION, _spread_windows, route_noise
 
 
 @dataclass(frozen=True)
@@ -95,6 +98,11 @@ class PacingParams:
         tobler_weight: Pins the Minetti/Tobler blend instead of resolving it,
             which is how `sweep` finds the blend one activity wanted.
         max_speed_ratio: Pins the speed-swing bound the same way.
+        variation_scale: Multiplies pacing.variation's noise on steady
+            stretches. 1.0 is what the app does; 0.0 paces on the gradient
+            model alone, for an A/B against a run without the variation. Not
+            a knob to fit: the noise is uncorrelated with real deviations, so
+            the search would always drive it to 0.
     """
     gradient_window_m: float = GRADIENT_WINDOW_M
     curve_reference_grade: float = CURVE_REFERENCE_GRADE
@@ -111,6 +119,7 @@ class PacingParams:
     verticality_band: float = VERTICALITY_BAND
     tobler_weight: float | None = None
     max_speed_ratio: float | None = None
+    variation_scale: float = 1.0
 
 
 _PARAM_NAMES = frozenset(param.name for param in fields(PacingParams))
@@ -200,6 +209,11 @@ class TrackModel:
             distance, where core's version would divide by zero; every caller
             guards that case anyway, but a feature printed in every table
             shouldn't be able to raise.
+        noise: Per-leg pacing.variation.route_noise. It depends only on the
+            route, and it is core's own, not restated.
+        spread_lo: Per-leg start of pacing.variation's spread window, as a
+            leg index (core's own _spread_windows).
+        spread_hi: Per-leg end of that window, exclusive.
     """
     gradient_window_m: float
     gradients: np.ndarray
@@ -208,6 +222,9 @@ class TrackModel:
     raw_tobler: np.ndarray
     total_distance_m: float
     verticality: float
+    noise: np.ndarray
+    spread_lo: np.ndarray
+    spread_hi: np.ndarray
     # downhill cost slope -> (raw Minetti speeds, flat-equivalent distance).
     _minetti: dict[float, tuple[np.ndarray, float]] = field(default_factory=dict, repr=False, compare=False)
 
@@ -225,6 +242,7 @@ class TrackModel:
             for earlier, later in zip(track.points, track.points[1:])
         ]
         total_distance = sum(distances)
+        spread_lo, spread_hi = _spread_windows(distances, DEFAULT_VARIATION.window_m)
 
         return cls(
             gradient_window_m=gradient_window_m,
@@ -234,6 +252,9 @@ class TrackModel:
             raw_tobler=np.asarray(tobler_speeds_from_gradients(gradients, 1.0, 1.0), dtype=float),
             total_distance_m=total_distance,
             verticality=_verticality(gradients, distances) if total_distance > 0 else 0.0,
+            noise=np.asarray(route_noise(track.points), dtype=float),
+            spread_lo=np.asarray(spread_lo, dtype=np.intp),
+            spread_hi=np.asarray(spread_hi, dtype=np.intp),
         )
 
     def _minetti_at(self, downhill_cost_slope: float) -> tuple[np.ndarray, float]:
@@ -293,8 +314,8 @@ def tobler_weight_for(
     if equivalent <= 0:
         return 1.0 if sport == SportType.HIKING else 0.0
 
-    slow_weight = 1.0 - _smoothstep(equivalent, flat_threshold, params.flat_equivalent_band_mps)
-    steep_weight = _smoothstep(model.verticality, steep_threshold, params.verticality_band)
+    slow_weight = 1.0 - smoothstep(equivalent, flat_threshold, params.flat_equivalent_band_mps)
+    steep_weight = smoothstep(model.verticality, steep_threshold, params.verticality_band)
     return max(slow_weight, steep_weight)
 
 
@@ -315,7 +336,7 @@ def max_speed_ratio_for(model: TrackModel, sport: SportType, params: PacingParam
     if model.total_distance_m <= 0:
         return flat
 
-    hilliness = _smoothstep(model.verticality, params.hilly_verticality, params.hilly_verticality_band)
+    hilliness = smoothstep(model.verticality, params.hilly_verticality, params.hilly_verticality_band)
     return flat + (hilly - flat) * hilliness
 
 
@@ -391,6 +412,39 @@ def _blended(model: TrackModel, raw_minetti: np.ndarray, tobler_weight: float, s
     return minetti ** (1.0 - tobler_weight) * tobler ** tobler_weight
 
 
+def _varied(model: TrackModel, speeds: np.ndarray, scale: float) -> np.ndarray:
+    """pacing.variation.pace_variation applied to `speeds`, over core's own noise and windows.
+
+    Restated in numpy, like the other per-leg arithmetic here: the local
+    log-speed spread from prefix sums over the precomputed windows, then
+    smoothstep's ramp to an amplitude.
+    """
+    if scale == 0.0:
+        return speeds
+    settings = DEFAULT_VARIATION
+    weights = np.where((model.leg_distances > 0) & (speeds > 0), model.leg_distances, 0.0)
+    total_weight = weights.sum()
+    spreads = np.zeros(len(speeds))
+    if total_weight > 0:
+        logs = np.zeros(len(speeds))
+        weighted = weights > 0
+        logs[weighted] = np.log(speeds[weighted])
+        centred = logs - (weights * logs).sum() / total_weight
+        prefix_weight = np.concatenate(([0.0], np.cumsum(weights)))
+        prefix_sum = np.concatenate(([0.0], np.cumsum(weights * centred)))
+        prefix_squares = np.concatenate(([0.0], np.cumsum(weights * centred * centred)))
+        window_weight = prefix_weight[model.spread_hi] - prefix_weight[model.spread_lo]
+        has_weight = window_weight > 0
+        safe_weight = np.where(has_weight, window_weight, 1.0)
+        mean = (prefix_sum[model.spread_hi] - prefix_sum[model.spread_lo]) / safe_weight
+        variance = (prefix_squares[model.spread_hi] - prefix_squares[model.spread_lo]) / safe_weight - mean * mean
+        spreads = np.where(has_weight, np.sqrt(np.maximum(variance, 0.0)), 0.0)
+
+    position = np.clip((spreads - settings.steady_spread) / (2 * settings.steady_band) + 0.5, 0.0, 1.0)
+    amplitude = settings.sigma * (1.0 - position * position * (3 - 2 * position))
+    return speeds * np.exp(scale * amplitude * model.noise)
+
+
 def _compressed(speeds: np.ndarray, max_ratio: float) -> np.ndarray:
     """combine._compress_speed_toward_typical over every leg, around the median positive speed.
 
@@ -458,6 +512,8 @@ def elapsed_from_model(
         if len(multipliers) != len(speeds):
             raise ValueError(f"Expected {len(speeds)} multipliers, got {len(multipliers)}.")
         speeds = speeds * np.maximum(multipliers, _MIN_SURFACE_MULTIPLIER)
+    # The harness always works at the default smoothness (see max_speed_ratio_for).
+    speeds = _varied(model, speeds, SMOOTHNESS_SCALES[DEFAULT_SMOOTHNESS] * params.variation_scale)
     speeds = _compressed(speeds, settings.max_speed_ratio)
 
     moving = speeds > 0

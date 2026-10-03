@@ -7,8 +7,8 @@ changes and this doesn't, the harness quietly starts tuning a model the app
 doesn't run, and nothing else would notice.
 
 So: at default PacingParams, elapsed_from_model must reproduce combine()'s
-timestamps exactly, for both sports and across flat, rolling and mountainous
-terrain.
+timestamps exactly, pace variation included, for both sports and across
+flat, gentle, rolling and mountainous terrain.
 """
 
 from datetime import timedelta
@@ -39,9 +39,12 @@ SPORTS = [SportType.RUNNING, SportType.HIKING]
 
 # Flat, gently rolling, and steep enough to push resolve_tobler_weight's
 # verticality criterion over — the three regimes the constants behave
-# differently in.
+# differently in. Plus "gentle", whose local speed spread sits inside
+# pacing.variation's steady-to-varied ramp, so the partial amplitudes are
+# compared too (flat gets the full one, the rest none).
 TERRAINS = {
     "flat": lambda: flat_track([i * 50.0 for i in range(81)]),
+    "gentle": lambda: rolling_track(4000.0, climb_per_km=8.0),
     "rolling": lambda: rolling_track(4000.0, climb_per_km=40.0),
     "mountain": lambda: rolling_track(4000.0, climb_per_km=250.0),
 }

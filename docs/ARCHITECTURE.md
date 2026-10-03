@@ -61,6 +61,7 @@ src/gpx2fit/
 │       ├── curve_selection.py    per-workout: Tobler weight, speed-swing bound, curve shape
 │       ├── surface.py            Valhalla response → per-leg surface multipliers
 │       ├── surface_weights.json  per-sport weight tables for surface.py
+│       ├── variation.py          deterministic pace wander on steady stretches
 │       └── combine.py            fits speeds to anchors, stamps timestamps
 └── gui/
     ├── index.html                app shell; loads Leaflet, Pyodide, exifr from CDNs
@@ -242,8 +243,10 @@ flowchart LR
   cs["pacing/curve_selection.py"] --> gradient
   surface["pacing/surface.py"] --> models
   surface -. "reads at import" .-> sw[("surface_weights.json")]
+  variation["pacing/variation.py"] --> cs
   combine["pacing/combine.py"] --> cs
   combine --> gradient
+  combine --> variation
   gpx -.-> gpxpy(["gpxpy"])
   fitw -.-> fittool(["fit-tool"])
 ```
@@ -378,7 +381,7 @@ flowchart LR
   rmr --> rcs
   s --> rcs
 
-  rtw --> v["_verticality · _smoothstep"]
+  rtw --> v["_verticality · smoothstep"]
   rtw --> probe["minetti_speeds_from_gradients<br/>(default exponents, probe)"]
   rmr --> v
   rcs --> raw["_reference_swings<br/>both curves' largest |log speed| within ±25 %, exponent 1.0"]
@@ -387,7 +390,7 @@ flowchart LR
 
 | Decision                                                      | Inputs                                    | How                                                                                                                                                                                                                                                                                                                                                                                                                             |
 |---------------------------------------------------------------|-------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **Tobler weight** (how much walking curve to mix in)          | flat-equivalent speed, verticality, sport | Flat-equivalent speed = `Σ(leg_distance / minetti_speed) / active_seconds`, i.e. the speed with the terrain divided out. Verticality is the distance-weighted mean `                                   \|gradient\|`. Each is ramped through a `_smoothstep` band around the sport's `TOBLER_THRESHOLDS`, and the result is the `max()` of the two. Minetti is always the probe curve.                                          |
+| **Tobler weight** (how much walking curve to mix in)          | flat-equivalent speed, verticality, sport | Flat-equivalent speed = `Σ(leg_distance / minetti_speed) / active_seconds`, i.e. the speed with the terrain divided out. Verticality is the distance-weighted mean `                                   \|gradient\|`. Each is ramped through a `smoothstep` band around the sport's `TOBLER_THRESHOLDS`, and the result is the `max()` of the two. Minetti is always the probe curve.                                           |
 | **Max speed ratio** (how far a leg may swing from the median) | verticality, sport, smoothness            | Ramps from `MAX_SPEED_RATIO_BOUNDS[sport].flat` to `.hilly` around `HILLY_VERTICALITY` (0.06 ± 0.04), then raised to `SMOOTHNESS_SCALES[level]`. Level 5 leaves it unchanged.                                                                                                                                                                                                                                                   |
 | **Curve shape** (exponents for both curves)                   | max speed ratio, sport                    | Exponents are chosen so that each curve's largest log-speed between flat and ±25% grade equals the sport's `CURVE_FILLS` share `× log(ratio)`. For a curve that keeps slowing, that is its value at ±25%; a curve that peaks and turns back is measured at the peak, so crossing flat speed near 25% can't blow the exponent up. The curve and the bound always narrow together, and the soft clamp only has to catch outliers. |
 
@@ -420,11 +423,46 @@ leg has a SAC scale, one of two things happens:
 A leg with no matched edge gets 1.0. The HTTP request itself is made in
 `pyodideBridge.js`.
 
-### 5.9 `pacing/combine.py`: fitting the model to the anchors
+### 5.9 `pacing/variation.py`: pace wander on steady stretches
 
 ```mermaid
 flowchart TD
-  C["combine(track, anchors, sport, multipliers?, mode_a_stops?, smoothness)"]
+  pv["pace_variation(leg_distances, base_speeds, noise, scale)<br/>→ one multiplier per leg"]
+  rn["route_noise(points)<br/>two Ornstein–Uhlenbeck processes stepped by distance"]
+  rs["route_seed(points)<br/>crc32 of the route's coordinates"]
+  ls["local_spread(leg_distances, speeds, window_m)<br/>RMS of log-speed around its local mean"]
+  sw["_spread_windows<br/>centred, slides inward at the ends"]
+  rn --> rs
+  pv --> ls
+  ls --> sw
+  pv --> ss["curve_selection.smoothstep"]
+  S[("VariationSettings<br/>DEFAULT_VARIATION")] --> pv
+```
+
+The gradient curves map terrain to speed, so a flat road or an even climb
+comes out at one constant speed. `combine()` builds these multipliers once,
+over the whole track, from the speeds `_pace_segment` starts from (the
+blended curve × surface). The steps:
+
+- `local_spread` measures how much those speeds vary within ±200 m.
+- Where they hold one value, a leg gets the full amplitude
+  (`sigma`, 0.06 in log-speed). It ramps to none across
+  `steady_spread ± steady_band`. Terrain that already varies the pace
+  gets no noise.
+- `scale` is the smoothness level's `SMOOTHNESS_SCALES` factor, the same
+  factor that scales the gradient swing.
+
+The noise is deterministic. It is seeded from the route's coordinates and
+stepped by distance. A zero-distance leg (a stop's duplicate point) keeps
+its value and draws nothing. So converting again, moving an anchor or adding
+a stop never reshuffles it, and its statistics don't depend on how densely
+the GPX is sampled.
+
+### 5.10 `pacing/combine.py`: fitting the model to the anchors
+
+```mermaid
+flowchart TD
+  C["combine(track, anchors, sport, multipliers?, mode_a_stops?, smoothness, vary_pace)"]
   C --> rab["_resolve_anchor_bounds(points, anchors)<br/>anchor → point index (bisect;<br/>a same-distance anchor pair takes the stop's two points)"]
   C --> bmas["_bucket_mode_a_stops(anchors, stops)<br/>Mode A stops per segment"]
   C --> cg["gradient.calculate_gradient(track)<br/>once, whole track"]
@@ -432,10 +470,12 @@ flowchart TD
   C --> r1["curve_selection.resolve_tobler_weight"]
   C --> r2["curve_selection.resolve_max_speed_ratio"]
   r2 --> r3["curve_selection.resolve_curve_shape"]
+  C --> wtv["_whole_track_variation<br/>variation.pace_variation, once, whole track"]
   C --> loop{{"for each consecutive anchor pair"}}
-  loop --> ps["_pace_segment(points, gradients, a, b,<br/>weight, ratio, shape, multipliers, stops)"]
+  loop --> ps["_pace_segment(points, gradients, a, b,<br/>weight, ratio, shape, multipliers, stops, variation)"]
   ps --> b["gradient.blended_speeds_from_gradients"]
   ps --> sf["× max(surface multiplier, 0.05)"]
+  ps --> pvm["× pace-variation multiplier"]
   ps --> cst["_compress_speed_toward_typical<br/>tanh in log space around the segment median"]
   ps --> sc["scale = (Δt − Mode A stop time) / Σ(d / v)"]
   ps --> st["stamp timestamps; add each Mode A<br/>stop's duration at its duplicate point"]
@@ -445,7 +485,8 @@ flowchart TD
 Within one segment, `_pace_segment` does the following, in order:
 
 1. Stamp the first and last points from the two anchors.
-2. `v_i` = blended curve speed × surface multiplier.
+2. `v_i` = blended curve speed × surface multiplier × pace-variation
+   multiplier (see §5.9; 1.0 wherever the pace already varies).
 3. Compress `v_i` toward the segment median with
    `median · exp(L · tanh(ln(v/median) / L))`, where `L = ln(max_ratio)`.
    This is a soft clamp, so it never produces a flat plateau.
@@ -455,12 +496,12 @@ Within one segment, `_pace_segment` does the following, in order:
    zero-distance leg, add the stop's duration to that point and every later
    point.
 
-Gradients are computed once for the whole track and then sliced per
-segment, so smoothing isn't cut off at an anchor.
+Gradients and the pace variation are computed once for the whole track and
+then sliced per segment, so neither is cut off at an anchor.
 `tests/tuning/test_model_mirror.py` pins this function's exact output. See
 [§10](#10-the-tuning-harness).
 
-### 5.10 `fit_writer.py`
+### 5.11 `fit_writer.py`
 
 ```
 write_fit(track) -> bytes
@@ -480,7 +521,7 @@ The per-point speed is recomputed here from the distance and time deltas.
 The timer events are what make Strava count stops as stopped rather than as
 slow moving time.
 
-### 5.11 `activity_profile.py`
+### 5.12 `activity_profile.py`
 
 ```
 build_activity_profile(track, max_samples=1000) -> [ProfileSample]

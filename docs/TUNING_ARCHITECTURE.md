@@ -105,7 +105,7 @@ flowchart TD
     models["models<br/>SportType, Track, TrackPoint"]
     gpxr["gpx_reader.parse_gpx_bytes"]
     grad["pacing.gradient<br/>calculate_gradient, minetti_/tobler_speeds_from_gradients,<br/>CurveShape, CurveExponents, GRADIENT_WINDOW_M"]
-    cs["pacing.curve_selection<br/>constants, _smoothstep, _verticality,<br/>MAX_SPEED_RATIO_BOUNDS"]
+    cs["pacing.curve_selection<br/>constants, smoothstep, _verticality,<br/>MAX_SPEED_RATIO_BOUNDS"]
     comb["pacing.combine<br/>_MIN_SURFACE_MULTIPLIER"]
     anc["pacing.anchors.distance_meters"]
   end
@@ -143,7 +143,7 @@ flowchart TD
   RA --> pr["prepare.prepare_reference"]
   pr --> PA["PreparedActivity<br/>track: parsed GPX, no timestamps<br/>reference_elapsed: real moving seconds per point"]
   PA --> tmb["model.TrackModel.build"]
-  tmb --> TM["TrackModel<br/>gradients, leg distances, raw curves,<br/>verticality, flat-equivalent distance"]
+  tmb --> TM["TrackModel<br/>gradients, leg distances, raw curves,<br/>verticality, flat-equivalent distance,<br/>route noise and spread windows"]
   PA --> acb["compare.ActivityContext.build"]
   TM --> acb
   acb --> AC["ActivityContext<br/>bucket layout, real seconds, scored mask"]
@@ -453,7 +453,9 @@ every constant taken from a `PacingParams` instead.
 | `curve_selection.resolve_tobler_weight`                         | `tobler_weight_for`                                                                                              | restated, thresholds from params                                    |
 | `curve_selection.resolve_max_speed_ratio`                       | `max_speed_ratio_for`                                                                                            | restated, bounds from params, no smoothness                         |
 | `curve_selection.resolve_curve_shape`                           | `curve_shape_for`                                                                                                | restated, fills, reference grade and descent cost slope from params |
-| `_smoothstep`, `_verticality`, `_reference_swings`              | imported                                                                                                         | borrowed                                                            |
+| `smoothstep`, `_verticality`, `_reference_swings`               | imported                                                                                                         | borrowed                                                            |
+| `variation.route_noise`, `variation._spread_windows`            | called once in `TrackModel.build` (`noise`, `spread_lo`, `spread_hi`)                                            | borrowed                                                            |
+| `variation.local_spread`, `variation.pace_variation`            | `_varied`, scaled by `params.variation_scale`                                                                    | restated in numpy                                                   |
 | `combine._compress_speed_toward_typical`                        | `_compressed`                                                                                                    | restated in numpy                                                   |
 | `combine._pace_segment` scaling                                 | `elapsed_from_model`                                                                                             | restated, single segment only                                       |
 
@@ -470,6 +472,7 @@ flowchart TD
   tmb["TrackModel.build(track, gradient_window_m)"] --> cg["core calculate_gradient"]
   tmb --> raw["core tobler_speeds_from_gradients<br/>at exponent 1.0 → raw_tobler"]
   tmb --> vert["core _verticality"]
+  tmb --> noise["core route_noise · _spread_windows<br/>→ noise, spread_lo, spread_hi"]
   mat["TrackModel._minetti_at(slope)<br/>first use per slope, then cached"] --> rawm["core minetti_speeds_from_gradients<br/>at exponent 1.0 → raw_minetti(slope)"]
   mat --> probe["core minetti_speeds_from_gradients<br/>at default exponents → flat_equivalent_mps"]
 
@@ -481,6 +484,7 @@ flowchart TD
   res --> RS["ResolvedSettings<br/>+ verticality, flat_equivalent_mps"]
   efm --> bl["_blended(model, raw_minetti, weight, shape)"]
   efm --> mul["× max(multipliers, _MIN_SURFACE_MULTIPLIER)"]
+  efm --> var["_varied(model, speeds, scale)<br/>pace wander on steady stretches"]
   efm --> cmpd["_compressed(speeds, ratio)<br/>tanh around the median"]
   efm --> scale["leg time = d / v, scaled so Σ = active_seconds,<br/>cumulative sum → elapsed per point"]
 ```
@@ -506,6 +510,15 @@ Minetti curve but not the gradients, so a `TrackModel` computes that curve
 Smoothness is absent on purpose. It's a user preference that scales the
 ratio, not something to calibrate, so the harness always works at level 5
 (scale 1.0).
+
+The app adds `variation.py`'s pace wander on steady stretches, so the mirror
+does too.
+- `variation_scale` (default 1.0) multiplies it, and `0.0` reproduces the
+  model from before the variation existed. Pass it through `--params` to
+  A/B the same corpus with and without it.
+- It is not a knob for `fit`. The noise is uncorrelated with the recorded
+  deviations, so the objective can only get worse with it, and a search
+  would always choose 0.
 
 ---
 
@@ -781,7 +794,7 @@ built.
 | File                   | Covers                                                                                                                                                                                                  |
 |------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `conftest.py`          | `synthetic_activity` / `synthetic_fit_bytes` build recordings on rolling terrain with a known gradient response, written through `core`'s own `fit_writer`; `with_standing_pause` adds an unpaused stop |
-| `test_model_mirror.py` | **load-bearing**: `elapsed_from_model` at default `PacingParams` equals `combine()`'s timestamps, and `resolve` equals core's resolvers, across both sports and three terrains                          |
+| `test_model_mirror.py` | **load-bearing**: `elapsed_from_model` at default `PacingParams` equals `combine()`'s timestamps, and `resolve` equals core's resolvers, across both sports and four terrains                           |
 | `test_fit_reader.py`   | sport mapping, round trip of a file this project wrote, pause extraction, rejections                                                                                                                    |
 | `test_prepare.py`      | resampling, elevation rounding, reference timing, stop removal, trimming, GPX round trip                                                                                                                |
 | `test_compare.py`      | a self-consistent activity scores zero, a planted uphill weakness shows up, bucketing and bands                                                                                                         |

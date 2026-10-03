@@ -72,6 +72,7 @@ HILLY_VERTICALITY_BAND = 0.04
 # (via resolve_curve_shape) every leg's log-speed swing, by the same factor, so
 # the level changes how much the pace varies but not its shape. Relative on
 # purpose: the terrain/sport adaptation above still applies at every level.
+# combine.py scales pacing.variation wander on steady stretches by the same factor.
 # The default is the automatic ratio itself; the rough end is kept short
 # because the automatic ratio already swings plenty.
 DEFAULT_SMOOTHNESS = 5
@@ -115,7 +116,7 @@ CURVE_FILLS = {
 _REFERENCE_SAMPLES = 50
 
 
-def _smoothstep(value: float, center: float, half_width: float) -> float:
+def smoothstep(value: float, center: float, half_width: float) -> float:
     """Ramp smoothly from 0.0 to 1.0 across `center` ± `half_width`.
 
     Flat at 0.0 below the band and 1.0 above it, joined with zero slope at
@@ -201,8 +202,8 @@ def resolve_tobler_weight(
         return default_weight
     flat_equivalent_mps = flat_equivalent_distance_m / active_seconds
 
-    slow_weight = 1.0 - _smoothstep(flat_equivalent_mps, thresholds.flat_equivalent_mps, FLAT_EQUIVALENT_BAND_MPS)
-    steep_weight = _smoothstep(verticality, thresholds.verticality, VERTICALITY_BAND)
+    slow_weight = 1.0 - smoothstep(flat_equivalent_mps, thresholds.flat_equivalent_mps, FLAT_EQUIVALENT_BAND_MPS)
+    steep_weight = smoothstep(verticality, thresholds.verticality, VERTICALITY_BAND)
     return max(slow_weight, steep_weight)
 
 
@@ -250,7 +251,7 @@ def resolve_max_speed_ratio(
     if sum(leg_distances) <= 0:
         return bounds.flat ** scale
 
-    hilliness = _smoothstep(_verticality(gradients, leg_distances), HILLY_VERTICALITY, HILLY_VERTICALITY_BAND)
+    hilliness = smoothstep(_verticality(gradients, leg_distances), HILLY_VERTICALITY, HILLY_VERTICALITY_BAND)
     return (bounds.flat + (bounds.hilly - bounds.flat) * hilliness) ** scale
 
 
@@ -325,5 +326,5 @@ def resolve_curve_shape(max_speed_ratio: float, sport: SportType) -> CurveShape:
 # CURVE_FILLS, MAX_SPEED_RATIO_BOUNDS and HILLY_VERTICALITY are fitted by the
 # tuning harness (2026-09-29) on limited and slightly biased data;
 # the HILLY_VERTICALITY band and SMOOTHNESS_SCALES are still first
-# guesses. The smoothness slider only moves max_speed_ratio: resolve_curve_shape
-# already moves the exponents with it.
+# guesses. The smoothness slider only moves max_speed_ratio (and the pace
+# variation's amplitude): resolve_curve_shape already moves the exponents with it.

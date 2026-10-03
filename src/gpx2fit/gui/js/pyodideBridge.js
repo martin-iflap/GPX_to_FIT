@@ -18,7 +18,7 @@ const VALHALLA_TRACE_ATTRIBUTES_URL = 'https://valhalla1.openstreetmap.de/trace_
 const VALHALLA_FETCH_TIMEOUT_MS = 30_000;
 
 // Pinned to uv.lock, so a new upstream release can't change the live site
-// without a deploy. Bump these together with the lock file.
+// without a deployment. Bump these together with the lock file.
 const GPXPY_VERSION = '1.6.2';
 const FIT_TOOL_VERSION = '0.9.16';
 
@@ -37,6 +37,7 @@ const CORE_FILES = [
   'pacing/surface_weights.json',
   'pacing/combine.py',
   'pacing/stops.py',
+  'pacing/variation.py',
 ];
 
 let pyodidePromise = null;
@@ -104,7 +105,7 @@ async function ensurePyodide() {
 
     // Resolved against this module's own URL, not the site root, so the app
     // works both from a repo-root dev server (/src/gpx2fit/gui/...) and from a
-    // deploy that uploads src/gpx2fit/ alone (/gui/...).
+    // deployment that uploads src/gpx2fit/ alone (/gui/...).
     const fetchCoreFile = async (relativePath) => {
       const url = new URL(`../../core/${relativePath}`, import.meta.url);
       const response = await fetch(url);
