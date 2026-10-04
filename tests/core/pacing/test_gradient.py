@@ -11,6 +11,7 @@ from gpx2fit.core.pacing.gradient import (
     _turning_points,
     blended_speeds_from_gradients,
     calculate_gradient,
+    elevation_gain,
     minetti_speeds_from_gradients,
     tobler_speeds_from_gradients,
 )
@@ -156,6 +157,39 @@ class TestGradientSmoothing:
         track = _track([(float(round(0.05 * d)), float(d)) for d in range(0, 405, 5)])
         first_leg = calculate_gradient(track)[0]
         assert abs(first_leg - 0.05) <= 1.0 / GRADIENT_WINDOW_M + 1e-9
+
+
+class TestElevationGain:
+    """Total climb, counted with the same hysteresis as the turning points so DEM rounding isn't climb."""
+
+    def test_empty_or_single_point_track_has_no_gain(self):
+        assert elevation_gain(Track(points=[])) == 0.0
+        assert elevation_gain(_track([(100.0, 0.0)])) == 0.0
+
+    def test_wiggles_on_a_flat_road_are_not_climb(self):
+        # Whole-metre DEM rounding flickering between 100 and 102 m: raw deltas
+        # would count 2 m per flicker, hundreds of metres over a long road.
+        track = _track([(100.0 + 2.0 * (i % 2), i * 10.0) for i in range(1001)])
+        assert sum(max(0.0, b.elevation - a.elevation) for a, b in zip(track.points, track.points[1:])) > 900.0
+        assert elevation_gain(track) == pytest.approx(0.0, abs=TURNING_POINT_MIN_RISE_M)
+
+    def test_a_clean_climb_counts_in_full(self):
+        track = _track([(100.0 + i, i * 10.0) for i in range(101)])
+        assert elevation_gain(track) == pytest.approx(100.0)
+
+    def test_climb_descent_climb_counts_only_the_climbs(self):
+        up_down_up = [0.0, 50.0, 100.0, 70.0, 40.0, 90.0, 140.0]  # +100, -60, +100
+        track = _track([(ele, i * 100.0) for i, ele in enumerate(up_down_up)])
+        assert elevation_gain(track) == pytest.approx(200.0)
+
+    def test_a_descent_only_route_has_no_gain(self):
+        track = _track([(500.0 - 10.0 * i, i * 50.0) for i in range(31)])
+        assert elevation_gain(track) == 0.0
+
+    def test_noisy_climb_counts_the_net_rise_not_the_noise(self):
+        # A 100 m climb with ±2 m jitter on every point.
+        track = _track([(100.0 + i + (2.0 if i % 2 else -2.0), i * 10.0) for i in range(101)])
+        assert elevation_gain(track) == pytest.approx(100.0, abs=TURNING_POINT_MIN_RISE_M)
 
 
 class TestTurningPoints:

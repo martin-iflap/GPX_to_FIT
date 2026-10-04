@@ -20,7 +20,7 @@ class TestSportMapping:
         assert _resolve_sport("x", Sport.RUNNING.value) == SportType.RUNNING
 
     def test_walking_and_hiking_both_map_to_hiking(self):
-        """The model has one gait for both; FIT distinguishes them and we don't need to."""
+        """The model has one gait for both; FIT distinguishes them, and we don't need to."""
         assert _resolve_sport("x", Sport.WALKING.value) == SportType.HIKING
         assert _resolve_sport("x", Sport.HIKING.value) == SportType.HIKING
 
@@ -36,7 +36,7 @@ class TestSportMapping:
 class TestReadReferenceActivity:
     def test_round_trips_a_file_this_project_wrote(self):
         track = synthetic_activity(point_count=200)
-        activity = read_reference_activity(write_fit(track), "probe")
+        activity = read_reference_activity(write_fit(track, resample=False), "probe")
 
         assert activity.name == "probe"
         assert activity.sport == SportType.HIKING
@@ -44,7 +44,7 @@ class TestReadReferenceActivity:
 
     def test_positions_and_elevations_survive_the_round_trip(self):
         track = synthetic_activity(point_count=120)
-        activity = read_reference_activity(write_fit(track), "probe")
+        activity = read_reference_activity(write_fit(track, resample=False), "probe")
 
         for original, decoded in zip(track.points, activity.track.points):
             assert decoded.lat == pytest.approx(original.lat, abs=1e-4)
@@ -53,7 +53,7 @@ class TestReadReferenceActivity:
 
     def test_timestamps_survive_to_the_second(self):
         track = synthetic_activity(point_count=120)
-        activity = read_reference_activity(write_fit(track), "probe")
+        activity = read_reference_activity(write_fit(track, resample=False), "probe")
 
         first, last = activity.track.points[0], activity.track.points[-1]
         assert first.timestamp is not None and last.timestamp is not None
@@ -83,7 +83,7 @@ class TestReadReferenceActivity:
             point.timestamp += timedelta(minutes=8)
         track.points.insert(71, paused)
 
-        activity = read_reference_activity(write_fit(track), "with-stop")
+        activity = read_reference_activity(write_fit(track, resample=False), "with-stop")
         assert len(activity.pauses) == 1
         assert activity.paused_seconds == pytest.approx(480.0, abs=1.0)
 
@@ -95,7 +95,7 @@ class TestReadReferenceActivity:
     def test_unpaused_standing_is_not_a_timer_pause(self):
         """Standing the watch never auto-paused leaves no timer event, by design."""
         track = with_standing_pause(synthetic_activity(point_count=200), at_index=90, seconds=120)
-        activity = read_reference_activity(write_fit(track), "standing")
+        activity = read_reference_activity(write_fit(track, resample=False), "standing")
         assert activity.paused_seconds == 0.0
 
     def test_session_totals_are_carried_through(self):

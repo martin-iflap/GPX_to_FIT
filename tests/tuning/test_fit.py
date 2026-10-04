@@ -21,7 +21,7 @@ from tests.tuning.conftest import synthetic_activity
 
 def _prepared(name: str, **kwargs):
     track = synthetic_activity(**kwargs)
-    return prepare_reference(read_reference_activity(write_fit(track), name))
+    return prepare_reference(read_reference_activity(write_fit(track, resample=False), name))
 
 
 @lru_cache(maxsize=1)

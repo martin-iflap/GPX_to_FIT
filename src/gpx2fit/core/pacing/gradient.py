@@ -208,6 +208,32 @@ def _turning_points(elevations: list[float], min_rise: float) -> list[int]:
     return turns
 
 
+def elevation_gain(track: Track, min_rise: float = TURNING_POINT_MIN_RISE_M) -> float:
+    """Total climb along the track, in metres, ignoring wiggles smaller than `min_rise`.
+
+    Summing every positive point-to-point delta counts whole-metre DEM rounding
+    as climb: hundreds of metres of it on a flat road. Instead, the route is cut
+    at its turning points (the same hysteresis calculate_gradient uses) and the
+    rises between them are summed. A climb or descent at either end of the
+    track that is shorter than `min_rise` still counts, since nothing follows it.
+
+    Args:
+        track: Track whose points have elevation set.
+        min_rise: Metres the route must move back from a hilltop or valley floor
+            for it to count (see TURNING_POINT_MIN_RISE_M).
+    Returns:
+        The total climb in metres, 0.0 for a track with fewer than two points.
+    """
+    elevations = [p.elevation for p in track.points]
+    if len(elevations) < 2:
+        return 0.0
+    extremes = [0, *_turning_points(elevations, min_rise), len(elevations) - 1]
+    return sum(
+        max(0.0, elevations[later] - elevations[earlier])
+        for earlier, later in zip(extremes, extremes[1:])
+    )
+
+
 def calculate_gradient(track: Track, window_m: float = GRADIENT_WINDOW_M) -> list[float]:
     """Calculate each leg's gradient, averaged over a distance window around the leg.
 

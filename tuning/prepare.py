@@ -271,7 +271,7 @@ def _check_quality(
             f"need at least {_MIN_MOVING_SECONDS:.0f} s."
         )
 
-    # Elevation: 0.0 is this project's "no data" sentinel (see gpx_reader).
+    # Elevation: 0.0 is the harness's per-point "no data" sentinel (see fit_reader._points_from_records).
     # Both failures are fixable by `--dem-elevation` (tuning/elevation.py),
     # which swaps in DEM heights before this gate ever sees the file.
     hint = " Pass --dem-elevation to take it from a DEM instead."

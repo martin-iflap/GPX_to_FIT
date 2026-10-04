@@ -56,12 +56,13 @@ class TestResolveToblerWeight:
         # Regression for deriving climb from the smoothed gradients rather
         # than from raw point-to-point deltas: this road is dead flat, but
         # whole-metre DEM rounding gives it ±1 m of jitter every 10 m, which
-        # Track.total_elevation_gain reads as hundreds of metres of climb.
+        # summed point-to-point deltas read as hundreds of metres of climb.
         track = Track(points=[
             point(elevation=float(index % 2), distance_from_start=float(index * 10))
             for index in range(1001)
         ])
-        assert track.total_elevation_gain > 400.0  # premise: the raw deltas really are that bad
+        raw_climb = sum(max(0.0, b.elevation - a.elevation) for a, b in zip(track.points, track.points[1:]))
+        assert raw_climb > 400.0  # premise: the raw deltas really are that bad
         assert self._weight(track, avg_speed_mps=3.5, sport=SportType.RUNNING) == 0.0
 
     def test_weight_rises_smoothly_as_the_workout_slows(self):

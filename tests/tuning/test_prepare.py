@@ -16,7 +16,7 @@ from tests.tuning.conftest import synthetic_activity, with_standing_pause
 def _prepared(track=None, **kwargs):
     """Read and prepare a synthetic activity in one step."""
     track = track if track is not None else synthetic_activity()
-    return prepare_reference(read_reference_activity(write_fit(track), "probe"), **kwargs)
+    return prepare_reference(read_reference_activity(write_fit(track, resample=False), "probe"), **kwargs)
 
 
 class TestResampling:
@@ -38,13 +38,13 @@ class TestResampling:
         assert sparse.distance_m == pytest.approx(dense.distance_m, rel=0.02)
 
     def test_resampling_selects_real_points_rather_than_interpolating(self):
-        """Every kept point must be one the athlete actually recorded, not a midpoint between two.
+        """Every kept point must be a one the athlete actually recorded, not a midpoint between two.
 
         Matched with a tolerance rather than exactly: FIT stores position in
         semicircles and the emulated GPX writes seven decimals, so a point
         survives the round trip to within centimetres, not bit-for-bit.
         """
-        activity = read_reference_activity(write_fit(synthetic_activity()), "probe")
+        activity = read_reference_activity(write_fit(synthetic_activity(), resample=False), "probe")
         prepared = prepare_reference(activity, spacing_m=40.0)
         recorded = sorted(point.lat for point in activity.track.points)
         # The recording steps 16 m per point, so anything interpolated would

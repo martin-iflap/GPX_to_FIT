@@ -171,6 +171,7 @@ export async function parseGpx(bytes) {
 
     await runtime.runPythonAsync(`
     from gpx2fit.core.gpx_reader import parse_gpx_bytes
+    from gpx2fit.core.pacing.gradient import elevation_gain
 
     _track = parse_gpx_bytes(bytes(gpx_bytes.to_py()))
 
@@ -180,7 +181,7 @@ export async function parseGpx(bytes) {
     ]
     route_summary = {
         "total_distance": _track.total_distance,
-        "total_elevation_gain": _track.total_elevation_gain,
+        "total_elevation_gain": elevation_gain(_track),
     }
     `);
 
@@ -486,6 +487,7 @@ export async function convert({
         device_product=None if device_product is None else int(device_product),
         device_serial=None if device_serial is None else int(device_serial),
         activity_name=_track.activity_name,
+        has_elevation=_track.has_elevation,
     )
 
     surface_multipliers = json.loads(surface_multipliers_json) if surface_multipliers_json else None

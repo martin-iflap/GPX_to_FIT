@@ -97,7 +97,7 @@ def synthetic_activity(
 
 def synthetic_fit_bytes(**kwargs) -> bytes:
     """`synthetic_activity` written out as a FIT file."""
-    return write_fit(synthetic_activity(**kwargs))
+    return write_fit(synthetic_activity(**kwargs), resample=False)
 
 
 def with_standing_pause(track: Track, at_index: int, seconds: float, record_every: float = 2.0) -> Track:

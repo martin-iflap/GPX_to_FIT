@@ -37,7 +37,7 @@ redesigning, not refactoring.
 | **One data contract.** Every module reads and writes the types in `core/models.py`.                                                                                | No module invents its own point or track shape. Stops and photos get their own input types, but they resolve down to `Anchor`/`TrackPoint` before pacing sees them.                                  |
 | **Start and end are anchors.** A known time at distance 0, at the end, at a summit, from a photo, or at a stop's arrival/departure all use the same `Anchor` type. | `combine()` has one code path: fit between consecutive anchors. The average-speed entry is also just another way to set the end anchor's time. It's converted in JS, and `core/` never sees a speed. |
 | **Two-stage inputs.** `RawAnchor → Anchor`, `RawStop → ResolvedStop \| ModeAStop`, `RawPhotoAnchor → ResolvedPhotoAnchor`.                                         | "Raw" is what the frontend can know (a click position, a distance). "Resolved" is pinned to a track point. Don't merge the two stages.                                                               |
-| **Derived values are computed, not cached.** `Track.total_distance`, `total_elevation_gain` and `start_time` are properties.                                       | Pacing mutates `points` in place. A cached total could silently go stale, and recomputing costs almost nothing at this data size.                                                                    |
+| **Derived values are computed, not cached.** `Track.total_distance` and `start_time` are properties.                                                               | Pacing mutates `points` in place. A cached total could silently go stale, and recomputing costs almost nothing at this data size.                                                                    |
 | **`SportType` is a closed enum and a dispatch key.**                                                                                                               | `curve_selection`, `surface` and `fit_writer` branch on it. Adding cycling needs a new pacing model, not just a new enum value.                                                                      |
 | **`InputError` is a user-facing contract.**                                                                                                                        | Raise it only for problems the user can fix, with a plain-language message. See [§9](#9-errors).                                                                                                     |
 | **Pacing is resolved per workout, fitted per segment.**                                                                                                            | Which curve to use, how much speed may swing, and the curve exponents are decided once from the whole track. Anchors only mark where a time is known, not where the terrain changes.                 |
@@ -138,9 +138,9 @@ classDiagram
     device_product: int?
     device_serial: int?
     activity_name: str?
+    has_elevation: bool
     start_time() datetime?
     total_distance() float
-    total_elevation_gain() float
   }
   class TrackPoint {
     lat, lon, elevation: float
@@ -212,8 +212,15 @@ Invariants that the rest of the code relies on:
 - `TrackPoint.distance_from_start` is the cumulative **3D** distance
   (gpxpy's `distance_3d`, falling back to 2D when there's no elevation). It
   never decreases. Gradients are therefore rise over slope distance.
-- A missing `<ele>` inherits the previous point's elevation, and the first
-  point defaults to `0.0`. `fit_writer` treats `0.0` as "no altitude".
+- A missing `<ele>`, or one outside −500…9000 m (a writer's "no data"
+  sentinel such as −32768), inherits the previous point's elevation. Points
+  before the first usable one take that first value. With no usable
+  elevation anywhere, every point gets `0.0` and `Track.has_elevation` is
+  False, which is what `fit_writer` and `activity_profile` check to leave
+  altitude out (a real `0.0` is sea level).
+- Climb totals (the FIT's `total_ascent`, the sidebar's Elevation stat) come
+  from `gradient.elevation_gain`, which ignores wiggles under 5 m. Summed raw
+  point deltas count DEM rounding as climb.
 - `timestamp` is `None` from parsing until `combine()` sets it.
 - A **stop** is a pair of points at the same distance: the original point
   and a duplicate inserted right after it. The zero-distance leg between
@@ -235,6 +242,7 @@ flowchart LR
   models["models.py"]
   gpx["gpx_reader.py"] --> models
   fitw["fit_writer.py"] --> models
+  fitw --> gradient
   prof["activity_profile.py"] --> models
   anchors["pacing/anchors.py"] --> models
   stops["pacing/stops.py"] --> anchors
@@ -264,9 +272,10 @@ the resulting multipliers to `combine()` as a plain list. `anchors.py`,
 ```
 parse_gpx_bytes(gpx_bytes, device=None) -> Track
   bytes ─decode utf-8─▶ gpxpy.parse ─▶ for track/segment/point:
-      cumulative distance_3d (→ distance_2d) , elevation carry-forward
-  ─▶ Track(points, device = device or <gpx creator>)
-  raises InputError: not UTF-8 · not GPX · no track points
+      cumulative distance_3d (→ distance_2d) ,
+      implausible elevation → missing, carry-forward, leading back-fill
+  ─▶ Track(points, device = device or <gpx creator>, has_elevation)
+  raises InputError: not UTF-8 · not GPX · no track points · one point · no length
 ```
 
 It reads only `<trk>` points. Route (`<rte>`) and waypoint elements are
@@ -280,6 +289,7 @@ flowchart TD
   np1["nearest_point_distance_from_start(track, lat, lon)<br/>→ float"] --> dm
   npc["nearest_point_candidates(track, lat, lon,<br/>radius 25 m, gap 50 m, max 4)<br/>→ [{distance_from_start, lat, lon}]"] --> dm
   ase["add_start_end_anchors(track, start, end|duration)<br/>→ [Anchor@0 'start', Anchor@total 'end']"]
+  ase -.-> lenerr["InputError: route has no length"]
   bua["build_user_anchors(track, raw_anchors, existing)<br/>→ sorted [Anchor]"] --> np1
   bua -.-> err["InputError: two anchors on one point"]
   bua --> recm["route_end_collision_message(what, source)<br/>names the start/finish, else None"]
@@ -332,6 +342,7 @@ flowchart TD
   ea["_elevation_at(distance)<br/>interpolated"]
   cg --> tp
   cg --> ea
+  eg["elevation_gain(track, min_rise 5 m)<br/>→ climb between turning points"] --> tp
 
   ms["minetti_speeds_from_gradients(g, up_exp, down_exp, downhill_cost_slope = 20)"]
   rm["_raw_minetti_relative_speed(g, slope)"] --> mc["_minetti_cost(g, slope)<br/>Minetti 2002 polynomial<br/>+ slope·|g| on descents"]
@@ -504,22 +515,31 @@ then sliced per segment, so neither is cut off at an anchor.
 ### 5.11 `fit_writer.py`
 
 ```
-write_fit(track) -> bytes
+write_fit(track, *, resample=True) -> bytes
   validate: every point has a timestamp, end > start
+  spans = _resample(points)         1 Hz grid of whole seconds, split at stops
+        | _per_point(points)        resample=False: one sample per point (tuning tests only)
   FileIdMessage (manufacturer/product = track.device_manufacturer/_product, or DEVELOPMENT/0 when None;
                  serial only if track.device_serial; product_name = track.device)
   SportMessage (RUNNING | WALKING for hiking)
   Event START
-  per point: [Event STOP_ALL + START if zero-distance leg took time]  RecordMessage(lat, lon, alt, distance, speed, ts)
+  per span: [Event STOP_ALL + START between spans]  per sample: RecordMessage(lat, lon, alt if has_elevation, distance, speed, ts)
   Event STOP_ALL
-  LapMessage + SessionMessage (elapsed, timer = elapsed − paused, distance, ascent, avg/max speed)
+  LapMessage + SessionMessage (elapsed, timer = elapsed − paused, distance, ascent = elevation_gain, avg/max speed)
   ActivityMessage
   → FitFileBuilder.build_bytes()
 ```
 
-The per-point speed is recomputed here from the distance and time deltas.
-The timer events are what make Strava count stops as stopped rather than as
-slow moving time.
+Records are on a 1 Hz grid, because FIT timestamps are whole seconds: a
+record per point would give a dense GPX several records on one second (a
+distance jump in no time) and a sparse one records 30+ s apart. Each record
+is interpolated in time inside the leg it falls in and carries that leg's
+paced speed. A stop splits the track into spans, and nothing is recorded
+while stopped. Span ends round to the nearest second, and a stop that rounds
+to no time isn't a pause. The records, timer events and summaries all use
+those rounded times. The timer events are what make Strava count stops as
+stopped rather than as slow moving time. 1 Hz costs one fit_tool record per
+second of activity, about 6 s for a 6 h hike in CPython.
 
 ### 5.12 `activity_profile.py`
 
@@ -795,7 +815,7 @@ sequenceDiagram
   Main->>B: parseGpx(bytes)
   B->>B: ensurePyodide() on first call:<br/>load runtime, micropip, fetch core/*.py
   B->>Py: _track = parse_gpx_bytes(bytes)
-  Py-->>Main: points + {total_distance, total_elevation_gain}
+  Py-->>Main: points + {total_distance, total_elevation_gain = elevation_gain(_track)}
   Main->>Main: reset anchors/stops/photos, hideProfile,<br/>renderRoute, refresh time toggle
   U->>Main: set start + duration/end/speed, place anchors/stops, drop photos
   Note over Main,Py: resolveAnchorCandidates / resolvePhotoAnchors (§7.3)
@@ -864,7 +884,7 @@ converts JSON and ISO strings into dataclasses first.
 3. `hard_anchors = sorted(boundary + mid_route)`
 4. `resolved_mode_b, mode_a_stops = resolve_stops(_track, raw_stops, hard_anchors)`
 5. `all_anchors = sorted(hard_anchors + stop_arrival/departure anchors)`
-6. `working_track = Track(expand_track_with_stops(_track.points, all_stops), sport, device, name)`,
+6. `working_track = Track(expand_track_with_stops(_track.points, all_stops), sport, device, name, has_elevation)`,
    where `device` is `device_name or _track.device` plus the three device IDs.
    They go on the working track, never on `_track`, so clearing the device
    between two conversions of one route really clears it

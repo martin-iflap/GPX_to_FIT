@@ -21,6 +21,11 @@ from gpx2fit.core.pacing.variation import pace_variation, route_noise
 # its gradient-modeled speed — see _pace_segment.
 _MIN_SURFACE_MULTIPLIER = 0.05
 
+# Relative speeds are floored here before compression — see _pace_segment.
+# Any positive value works: the compression bounds the leg to the segment's
+# median / max_speed_ratio however small it is.
+_MIN_RELATIVE_SPEED = 1e-9
+
 # Human-readable label for each Anchor.source, used only to make InputError
 # messages (contradictory anchor/stop times) point at a concrete, recognizable
 # entry rather than an opaque distance/timestamp pair.
@@ -176,23 +181,20 @@ def _pace_segment(
     if segment_variation is not None:
         speeds = [speed * variation for speed, variation in zip(speeds, segment_variation)]
 
+    # A curve can underflow to 0.0 on an absurd gradient.
+    # Floored, the compression below lifts it
+    # to the slowest speed the bound allows instead.
+    speeds = [max(speed, _MIN_RELATIVE_SPEED) for speed in speeds]
+
     # Pull each leg's speed toward this segment's own typical pace.
-    positive_speeds = [speed for speed in speeds if speed > 0]
-    if positive_speeds:
-        typical_speed = statistics.median(positive_speeds)
-        speeds = [
-            _compress_speed_toward_typical(speed, typical_speed, max_speed_ratio) if speed > 0 else speed
-            for speed in speeds
-        ]
+    typical_speed = statistics.median(speeds)
+    speeds = [_compress_speed_toward_typical(speed, typical_speed, max_speed_ratio) for speed in speeds]
 
     leg_distances = [
         curr.distance_from_start - prev.distance_from_start
         for prev, curr in zip(segment_points, segment_points[1:])
     ]
-    modeled_leg_times = [
-        (distance / speed) if speed > 0 else 0.0
-        for distance, speed in zip(leg_distances, speeds)
-    ]
+    modeled_leg_times = [distance / speed for distance, speed in zip(leg_distances, speeds)]
     modeled_total_time = sum(modeled_leg_times)
     if modeled_total_time <= 0:
         return

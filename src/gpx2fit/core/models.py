@@ -62,6 +62,10 @@ class Track:
             meaningful alongside `device_manufacturer`.
         device_serial: FIT serial number. Not shown by Strava; None omits it.
         activity_name: Cosmetic activity name, shown in Strava's feed.
+        has_elevation: False when the source had no usable elevation at all.
+            Every point's elevation is then 0.0 as a placeholder, which the
+            FIT file and the profile chart leave out instead of showing as
+            sea level.
     """
     points: list[TrackPoint]
     sport: SportType | None = None
@@ -70,6 +74,7 @@ class Track:
     device_product: int | None = None
     device_serial: int | None = None
     activity_name: str | None = None
+    has_elevation: bool = True
 
     @property
     def start_time(self) -> datetime | None:
@@ -84,16 +89,6 @@ class Track:
         if not self.points:
             return 0.0
         return self.points[-1].distance_from_start
-
-    @property
-    def total_elevation_gain(self) -> float:
-        """Return the total elevation gain of the track: the sum of every positive elevation delta between consecutive points (descents don't subtract)."""
-        gain = 0.0
-        for prev, curr in zip(self.points, self.points[1:]):
-            delta = curr.elevation - prev.elevation
-            if delta > 0:
-                gain += delta
-        return gain
 
 
 @dataclass

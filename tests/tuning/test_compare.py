@@ -21,7 +21,7 @@ from tests.tuning.conftest import synthetic_activity
 
 def _prepared(**kwargs):
     track = synthetic_activity(**kwargs)
-    return prepare_reference(read_reference_activity(write_fit(track), "probe"))
+    return prepare_reference(read_reference_activity(write_fit(track, resample=False), "probe"))
 
 
 def _self_consistent(prepared, params=None):

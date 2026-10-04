@@ -48,6 +48,20 @@ class TestCombineBasicPacing:
 
         assert all(p.timestamp is not None for p in result.points)
 
+    @pytest.mark.parametrize("sport", [SportType.HIKING, SportType.RUNNING])
+    def test_a_leg_whose_speed_underflows_still_takes_time(self, sport):
+        # A 99999 m elevation jump makes the gradient so steep that Tobler's
+        # exp(-3.5 * |g|) underflows to 0.0. That leg must not be crossed instantly.
+        distances = [i * 10.0 for i in range(21)]
+        track = Track(points=[
+            point(elevation=99999.0 if i == 10 else 100.0, distance_from_start=d) for i, d in enumerate(distances)
+        ])
+        anchors = [anchor(0.0, START), anchor(distances[-1], START + timedelta(hours=3))]
+
+        result = combine(track, anchors, sport)
+
+        assert all(seconds > 0 for seconds in _leg_seconds(result.points))
+
     def test_first_and_last_point_match_anchor_timestamps_exactly(self):
         track = Track(points=[point(elevation=0.0, distance_from_start=d) for d in (0.0, 100.0, 200.0, 300.0)])
         end_time = START + timedelta(minutes=2)

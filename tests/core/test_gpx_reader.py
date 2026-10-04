@@ -16,7 +16,7 @@ def _gpx(trkpts: str, creator: str | None = "Test Creator") -> bytes:
     return xml.encode("utf-8")
 
 
-def _trkpt(lat: float, lon: float, ele: float | None = None) -> str:
+def _trkpt(lat: float, lon: float, ele: float | str | None = None) -> str:
     if ele is None:
         return f'<trkpt lat="{lat}" lon="{lon}"></trkpt>'
     return f'<trkpt lat="{lat}" lon="{lon}"><ele>{ele}</ele></trkpt>'
@@ -55,6 +55,16 @@ class TestBasicParsing:
         with pytest.raises(InputError):
             parse_gpx_bytes(gpx_bytes)
 
+    def test_single_point_raises_input_error(self):
+        with pytest.raises(InputError, match="only one point"):
+            parse_gpx_bytes(_gpx(_trkpt(45.0, 7.0, 100.0)))
+
+    def test_route_without_length_raises_input_error(self):
+        # Every point in the same place: nothing to pace along.
+        gpx_bytes = _gpx(_trkpt(45.0, 7.0, 100.0) * 3)
+        with pytest.raises(InputError, match="no length"):
+            parse_gpx_bytes(gpx_bytes)
+
     def test_invalid_utf8_raises_input_error(self):
         with pytest.raises(InputError):
             parse_gpx_bytes(b"\xff\xfe\x00\x01")
@@ -64,28 +74,62 @@ class TestBasicParsing:
             parse_gpx_bytes(b"this is not gpx or xml at all")
 
 
+_TWO_POINTS = _trkpt(45.0, 7.0, 100.0) + _trkpt(45.001, 7.0, 100.0)
+
+
 class TestDevice:
     def test_falls_back_to_gpx_creator_when_no_device_given(self):
-        gpx_bytes = _gpx(_trkpt(45.0, 7.0, 100.0), creator="Garmin Connect")
+        gpx_bytes = _gpx(_TWO_POINTS, creator="Garmin Connect")
         track = parse_gpx_bytes(gpx_bytes)
         assert track.device == "Garmin Connect"
 
     def test_explicit_device_overrides_creator(self):
-        gpx_bytes = _gpx(_trkpt(45.0, 7.0, 100.0), creator="Garmin Connect")
+        gpx_bytes = _gpx(_TWO_POINTS, creator="Garmin Connect")
         track = parse_gpx_bytes(gpx_bytes, device="My Watch")
         assert track.device == "My Watch"
 
     def test_no_creator_and_no_device_is_none(self):
-        gpx_bytes = _gpx(_trkpt(45.0, 7.0, 100.0), creator=None)
+        gpx_bytes = _gpx(_TWO_POINTS, creator=None)
         track = parse_gpx_bytes(gpx_bytes)
         assert track.device is None
 
 
 class TestMissingElevation:
-    def test_first_point_missing_elevation_defaults_to_zero(self):
-        gpx_bytes = _gpx(_trkpt(45.0, 7.0, ele=None) + _trkpt(45.001, 7.0, 50.0))
+    def test_leading_missing_elevation_is_back_filled_from_the_first_known_value(self):
+        # Not 0.0, which would put a fake cliff where the real elevation starts.
+        gpx_bytes = _gpx(_trkpt(45.0, 7.0, ele=None) + _trkpt(45.001, 7.0, ele=None) + _trkpt(45.002, 7.0, 50.0))
         track = parse_gpx_bytes(gpx_bytes)
-        assert track.points[0].elevation == 0.0
+        assert [p.elevation for p in track.points] == [50.0, 50.0, 50.0]
+        assert track.has_elevation
+
+    def test_no_elevation_anywhere_is_zero_and_flagged(self):
+        gpx_bytes = _gpx(_trkpt(45.0, 7.0, ele=None) + _trkpt(45.001, 7.0, ele=None))
+        track = parse_gpx_bytes(gpx_bytes)
+        assert [p.elevation for p in track.points] == [0.0, 0.0]
+        assert not track.has_elevation
+
+    def test_sea_level_is_real_elevation(self):
+        gpx_bytes = _gpx(_trkpt(45.0, 7.0, 0.0) + _trkpt(45.001, 7.0, 0.0))
+        assert parse_gpx_bytes(gpx_bytes).has_elevation
+
+    @pytest.mark.parametrize("sentinel", [-32768.0, 99999.0, "nan"])
+    def test_implausible_elevation_is_treated_as_missing(self, sentinel):
+        # A -32768 / 99999 "no data" sentinel would otherwise read as a cliff
+        # steep enough to underflow the speed curves.
+        gpx_bytes = _gpx(
+            _trkpt(45.0, 7.0, 100.0) + _trkpt(45.001, 7.0, sentinel) + _trkpt(45.002, 7.0, 110.0)
+        )
+        track = parse_gpx_bytes(gpx_bytes)
+        assert [p.elevation for p in track.points] == [100.0, 100.0, 110.0]
+
+    def test_leading_implausible_elevation_is_back_filled(self):
+        gpx_bytes = _gpx(_trkpt(45.0, 7.0, -32768.0) + _trkpt(45.001, 7.0, 20.0))
+        track = parse_gpx_bytes(gpx_bytes)
+        assert [p.elevation for p in track.points] == [20.0, 20.0]
+
+    def test_only_implausible_elevations_count_as_no_elevation(self):
+        gpx_bytes = _gpx(_trkpt(45.0, 7.0, -32768.0) + _trkpt(45.001, 7.0, -32768.0))
+        assert not parse_gpx_bytes(gpx_bytes).has_elevation
 
     def test_missing_elevation_carries_forward_previous_point(self):
         gpx_bytes = _gpx(

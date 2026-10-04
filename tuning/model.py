@@ -41,7 +41,7 @@ from dataclasses import dataclass, field, fields, replace
 import numpy as np
 
 from gpx2fit.core.models import SportType, Track
-from gpx2fit.core.pacing.combine import _MIN_SURFACE_MULTIPLIER
+from gpx2fit.core.pacing.combine import _MIN_RELATIVE_SPEED, _MIN_SURFACE_MULTIPLIER
 from gpx2fit.core.pacing.curve_selection import (
     CURVE_FILLS,
     CURVE_REFERENCE_GRADE,
@@ -514,7 +514,7 @@ def elapsed_from_model(
         speeds = speeds * np.maximum(multipliers, _MIN_SURFACE_MULTIPLIER)
     # The harness always works at the default smoothness (see max_speed_ratio_for).
     speeds = _varied(model, speeds, SMOOTHNESS_SCALES[DEFAULT_SMOOTHNESS] * params.variation_scale)
-    speeds = _compressed(speeds, settings.max_speed_ratio)
+    speeds = _compressed(np.maximum(speeds, _MIN_RELATIVE_SPEED), settings.max_speed_ratio)
 
     moving = speeds > 0
     modeled = np.zeros(len(speeds))

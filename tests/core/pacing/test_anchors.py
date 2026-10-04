@@ -132,13 +132,20 @@ class TestAddStartEndAnchors:
         assert anchors[1].timestamp == end
 
     def test_neither_end_time_nor_duration_raises(self):
-        track = Track(points=[point(distance_from_start=0.0)])
-        with pytest.raises(ValueError):
+        track = Track(points=[point(distance_from_start=0.0), point(distance_from_start=1000.0)])
+        with pytest.raises(ValueError, match="end_time or duration"):
             add_start_end_anchors(track, datetime(2024, 1, 1, 8, 0, 0))
 
     def test_empty_track_raises(self):
         with pytest.raises(ValueError):
             add_start_end_anchors(Track(points=[]), datetime(2024, 1, 1, 8, 0, 0), duration=timedelta(minutes=1))
+
+    @pytest.mark.parametrize("distances", [(0.0,), (0.0, 0.0, 0.0)], ids=["single-point", "zero-length"])
+    def test_route_without_length_raises_input_error(self, distances):
+        # The end anchor would land on the start, so there is nothing to pace.
+        track = Track(points=[point(distance_from_start=d) for d in distances])
+        with pytest.raises(InputError, match="no length"):
+            add_start_end_anchors(track, datetime(2024, 1, 1, 8, 0, 0), duration=timedelta(minutes=30))
 
     def test_boundary_anchors_are_labelled_start_and_end(self):
         # So an error about them can say "the start" rather than "anchor at 0.00 km".

@@ -4,41 +4,6 @@ from gpx2fit.core.models import Track
 from tests.core.conftest import point
 
 
-class TestTotalElevationGain:
-    def test_empty_track_has_no_gain(self):
-        assert Track(points=[]).total_elevation_gain == 0.0
-
-    def test_single_point_has_no_gain(self):
-        assert Track(points=[point(elevation=100.0, distance_from_start=0.0)]).total_elevation_gain == 0.0
-
-    def test_flat_track_has_no_gain(self):
-        track = Track(points=[
-            point(elevation=100.0, distance_from_start=0.0),
-            point(elevation=100.0, distance_from_start=10.0),
-            point(elevation=100.0, distance_from_start=20.0),
-        ])
-        assert track.total_elevation_gain == 0.0
-
-    def test_sums_only_positive_deltas(self):
-        # +50, -30, +20, -10 -> only the two climbs (50 + 20) should count.
-        track = Track(points=[
-            point(elevation=100.0, distance_from_start=0.0),
-            point(elevation=150.0, distance_from_start=10.0),
-            point(elevation=120.0, distance_from_start=20.0),
-            point(elevation=140.0, distance_from_start=30.0),
-            point(elevation=130.0, distance_from_start=40.0),
-        ])
-        assert track.total_elevation_gain == 70.0
-
-    def test_pure_descent_has_no_gain(self):
-        track = Track(points=[
-            point(elevation=200.0, distance_from_start=0.0),
-            point(elevation=100.0, distance_from_start=10.0),
-            point(elevation=0.0, distance_from_start=20.0),
-        ])
-        assert track.total_elevation_gain == 0.0
-
-
 class TestStartTime:
     def test_empty_track_has_no_start_time(self):
         assert Track(points=[]).start_time is None

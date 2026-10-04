@@ -46,14 +46,12 @@ def build_activity_profile(track: Track, max_samples: int = DEFAULT_MAX_SAMPLES)
         return (p.timestamp - start_time).total_seconds()
 
     def sample(p: TrackPoint, speed: float, is_stop: bool = False) -> ProfileSample:
-        # 0.0 means "no elevation data" (gpx_reader's default for a point
-        # missing <ele>), the same convention fit_writer follows.
-        elevation = p.elevation if p.elevation != 0.0 else None
         return ProfileSample(
             distance_from_start=p.distance_from_start,
             elapsed_seconds=elapsed(p),
             speed_mps=speed,
-            elevation=elevation,
+            # Without elevation every point holds a 0.0 placeholder, not sea level.
+            elevation=p.elevation if track.has_elevation else None,
             lat=p.lat,
             lon=p.lon,
             is_stop=is_stop,

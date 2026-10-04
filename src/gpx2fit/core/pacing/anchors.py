@@ -149,9 +149,17 @@ def add_start_end_anchors(
     Raises:
         ValueError: If the track has no points, or if neither end_time nor
             duration is provided.
+        InputError: If the route has no length (one point, or every point in
+            the same place): the end anchor would sit on the start, leaving
+            nothing to pace.
     """
     if not track.points:
         raise ValueError("Track must contain points to build start/end anchors.")
+    if track.total_distance <= 0:
+        raise InputError(
+            "This route has no length (it's a single point, or every point is in the same place), "
+            "so there's nothing to pace. Load a GPX file with the full track."
+        )
 
     if end_time is not None:
         resolved_end_time = end_time

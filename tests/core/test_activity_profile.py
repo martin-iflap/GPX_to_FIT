@@ -66,12 +66,20 @@ class TestDownsampling:
         assert len(samples) == 2
         assert samples[1].speed_mps == pytest.approx(1.0)
 
-    def test_missing_elevation_becomes_none(self):
+    def test_track_without_elevation_gives_none(self):
+        track = constant_speed_track(2, 10.0, 5.0)
+        for p in track.points:
+            p.elevation = 0.0
+        track.has_elevation = False
+        samples = build_activity_profile(track)
+        assert all(s.elevation is None for s in samples)
+
+    def test_sea_level_is_kept_as_elevation(self):
+        # 0.0 is a real height on a track that has elevation.
         track = constant_speed_track(2, 10.0, 5.0)
         track.points[1].elevation = 0.0
         samples = build_activity_profile(track)
-        assert samples[0].elevation == 100.0
-        assert samples[1].elevation is None
+        assert [s.elevation for s in samples] == [100.0, 0.0, 100.0]
 
 
 class TestStops:

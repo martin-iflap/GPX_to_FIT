@@ -284,19 +284,20 @@ def _record_row(record: RecordMessage) -> list[float] | None:
 
     return [
         float(record.timestamp),
-        float(record.position_lat),
-        float(record.position_long),
-        math.nan if elevation is None else float(elevation),
-        math.nan if record.distance is None else float(record.distance),
+        record.position_lat,
+        record.position_long,
+        math.nan if elevation is None else elevation,
+        math.nan if record.distance is None else record.distance,
     ]
 
 
 def _points_from_records(records: np.ndarray) -> list[TrackPoint]:
     """Build the TrackPoints for a decoded activity.
 
-    Elevation falls back to 0.0, which is this project's sentinel for "no
-    elevation data" (see gpx_reader.parse_gpx_bytes); prepare.py's quality
-    gates reject a track that is mostly sentinel.
+    Elevation falls back to 0.0, the harness's per-point sentinel for "no
+    elevation data" (the app's gpx_reader back-fills instead and flags a
+    track with none via Track.has_elevation); prepare.py's quality gates
+    reject a track that is mostly sentinel.
     """
     return [
         TrackPoint(
