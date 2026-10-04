@@ -18,15 +18,16 @@ const VALHALLA_TRACE_ATTRIBUTES_URL = 'https://valhalla1.openstreetmap.de/trace_
 const VALHALLA_FETCH_TIMEOUT_MS = 30_000;
 
 // Pinned to uv.lock, so a new upstream release can't change the live site
-// without a deployment. Bump these together with the lock file.
+// without a deployment. Bump it together with the lock file. (FIT files are
+// written by core/fit_encoder.py; fit-tool is only a test dependency.)
 const GPXPY_VERSION = '1.6.2';
-const FIT_TOOL_VERSION = '0.9.16';
 
 // Every core/ file the browser runtime needs, relative to core/. A module
 // missing here simply doesn't exist inside Pyodide.
 const CORE_FILES = [
   'models.py',
   'gpx_reader.py',
+  'fit_encoder.py',
   'fit_writer.py',
   'activity_profile.py',
   'pacing/anchors.py',
@@ -100,7 +101,6 @@ async function ensurePyodide() {
     await runtime.runPythonAsync(`
     import micropip
     await micropip.install('gpxpy==${GPXPY_VERSION}')
-    await micropip.install('fit-tool==${FIT_TOOL_VERSION}')
     `);
 
     // Resolved against this module's own URL, not the site root, so the app

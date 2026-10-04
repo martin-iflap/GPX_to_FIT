@@ -248,7 +248,7 @@
 
           <label class="device-field device-field--wide">
             <span>Name embedded in file</span>
-            <!-- maxlength matches FitFileBuilder(min_string_size=50) in fit_writer.py -->
+            <!-- maxlength matches FitEncoder(min_string_size=50) in fit_writer.py (a longer UTF-8 name still fits: the field grows) -->
             <input type="text" class="text-input device-name-input" maxlength="50" placeholder="e.g. Garmin Forerunner 965" />
           </label>
           <p class="popover-hint">Strava ignores this name and shows the device from its IDs. Some other apps read it.</p>

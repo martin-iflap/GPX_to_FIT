@@ -100,7 +100,10 @@ describe('convert surfaceLookup', () => {
     assert.ok(coreUrls.includes(expected), `expected ${expected} among ${coreUrls.join(', ')}`);
     const installScript = fakeRuntime.scripts.find((source) => source.includes('micropip.install'));
     assert.match(installScript, /micropip\.install\('gpxpy==[\d.]+'\)/);
-    assert.match(installScript, /micropip\.install\('fit-tool==[\d.]+'\)/);
+    // core/fit_encoder.py writes the FIT bytes itself; fit_tool is only the tests' oracle now.
+    assert.doesNotMatch(installScript, /fit-tool/);
+    const encoder = new URL('../../src/gpx2fit/core/fit_encoder.py', import.meta.url).href;
+    assert.ok(coreUrls.includes(encoder), `expected ${encoder} among ${coreUrls.join(', ')}`);
   });
 
   it('asks Valhalla for surfaces by default', async () => {

@@ -94,7 +94,6 @@ name = "gpx-to-fit"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "fit-tool" },
     { name = "gpxpy" },
     { name = "pyrefly" },
     { name = "pytest-cov" },
@@ -102,13 +101,13 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "fit-tool" },
     { name = "numpy" },
     { name = "pytest" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "fit-tool", specifier = ">=0.9.16" },
     { name = "gpxpy", specifier = ">=1.6.2" },
     { name = "pyrefly", specifier = ">=0.60.0" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
@@ -116,6 +115,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "fit-tool", specifier = ">=0.9.16" },
     { name = "numpy", specifier = ">=2.5.3" },
     { name = "pytest", specifier = ">=9.1.1" },
 ]

@@ -148,8 +148,10 @@ locally is for development.
 | Tune pacing constants   | `uv run python -m tuning compare\|sweep\|fit\|check <corpus dir>` |
 
 There is no build step. The frontend is plain ES modules, and the Python is
-loaded into the browser as source. `gpxpy` and `fit-tool` are pinned in
-`pyodideBridge.js` to the `uv.lock` versions, so bump them together.
+loaded into the browser as source. `gpxpy` is pinned in `pyodideBridge.js`
+to the `uv.lock` version, so bump them together. The FIT file is written by
+the app's own encoder; `fit-tool` is only used by the tests and the tuning
+harness.
 
 The tuning harness needs a corpus of your own recorded `.fit` files (it's
 gitignored, because real activities contain home locations and heart rate).
@@ -185,11 +187,11 @@ The full pipeline works end to end in the browser. Known limitations:
 
 ## Tech stack
 
-Python 3.14 · [gpxpy](https://github.com/tkrajina/gpxpy) ·
-[fit-tool](https://pypi.org/project/fit-tool/) · Pyodide · Leaflet ·
+Python 3.14 · [gpxpy](https://github.com/tkrajina/gpxpy) · Pyodide · Leaflet ·
 [exifr](https://github.com/MikeKovarik/exifr) · Valhalla · vanilla
 JavaScript (ES modules, no framework, no bundler) · pytest · Node's test
-runner + jsdom · numpy (tuning harness only)
+runner + jsdom · [fit-tool](https://pypi.org/project/fit-tool/) and numpy
+(tests and tuning harness only)
 
 ## License
 
@@ -202,5 +204,5 @@ release your changes under the same license. That includes hosting a modified
 version as a website: its users must be able to get its full source code.
 
 The third-party libraries it uses keep their own licenses: gpxpy (Apache 2.0),
-fit-tool (BSD 3-Clause), Leaflet (BSD 2-Clause), exifr (MIT) and Pyodide
-(MPL 2.0).
+Leaflet (BSD 2-Clause), exifr (MIT) and Pyodide (MPL 2.0), plus fit-tool
+(BSD 3-Clause) in development only.

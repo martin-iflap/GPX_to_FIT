@@ -52,6 +52,7 @@ src/gpx2fit/
 │   ├── models.py                 data contract (all dataclasses + enums + InputError)
 │   ├── gpx_reader.py             GPX bytes → Track
 │   ├── fit_writer.py             paced Track → FIT bytes
+│   ├── fit_encoder.py            the FIT byte layout, packed by hand (stdlib only)
 │   ├── activity_profile.py       paced Track → ~1000 ProfileSamples for the chart
 │   └── pacing/
 │       ├── anchors.py            nearest-point lookup, boundary + user anchors
@@ -103,7 +104,7 @@ flowchart TB
     core --- track
   end
 
-  CDN["jsdelivr / unpkg / PyPI<br/>Pyodide, Leaflet, exifr,<br/>gpxpy, fit-tool"] -. "page load" .-> Browser
+  CDN["jsdelivr / unpkg / PyPI<br/>Pyodide, Leaflet, exifr,<br/>gpxpy"] -. "page load" .-> Browser
   TF["Thunderforest tiles"] -. "map.js" .-> ui
   VH["Valhalla trace_attributes<br/>(optional)"] <-. "convert(): route shape → edges" .-> bridge
   Static["static file server<br/>(repo root)"] -. "fetch ../../core/*.py" .-> bridge
@@ -256,7 +257,7 @@ flowchart LR
   combine --> gradient
   combine --> variation
   gpx -.-> gpxpy(["gpxpy"])
-  fitw -.-> fittool(["fit-tool"])
+  fitw --> enc["fit_encoder.py"]
 ```
 
 `models.py` also defines `InputError`, a subclass of `ValueError` (see
@@ -516,18 +517,20 @@ then sliced per segment, so neither is cut off at an anchor.
 
 ```
 write_fit(track, *, resample=True) -> bytes
-  validate: every point has a timestamp, end > start
-  spans = _resample(points)         1 Hz grid of whole seconds, split at stops
-        | _per_point(points)        resample=False: one sample per point (tuning tests only)
-  FileIdMessage (manufacturer/product = track.device_manufacturer/_product, or DEVELOPMENT/0 when None;
-                 serial only if track.device_serial; product_name = track.device)
-  SportMessage (RUNNING | WALKING for hiking)
-  Event START
-  per span: [Event STOP_ALL + START between spans]  per sample: RecordMessage(lat, lon, alt if has_elevation, distance, speed, ts)
-  Event STOP_ALL
-  LapMessage + SessionMessage (elapsed, timer = elapsed − paused, distance, ascent = elevation_gain, avg/max speed)
-  ActivityMessage
-  → FitFileBuilder.build_bytes()
+  _build_content(track) -> _FitContent      every value decided here
+    validate: every point has a timestamp, end > start
+    spans = _resample(points)         1 Hz grid of whole seconds, split at stops
+          | _per_point(points)        resample=False: one sample per point (tuning tests only)
+  _encode(content) -> bytes                 fit_encoder.FitEncoder
+    file_id (manufacturer/product = track.device_manufacturer/_product, or DEVELOPMENT/0 when None;
+             serial only if track.device_serial; product_name = track.device)
+    sport (RUNNING | WALKING for hiking)
+    event START
+    per span: [event STOP_ALL + START between spans]  add_many(record: ts, lat, lon, alt if has_elevation, distance, speed)
+    event STOP_ALL
+    lap + session (elapsed, timer = elapsed − paused, distance, ascent = elevation_gain, avg/max speed)
+    activity
+    → FitEncoder.to_bytes()
 ```
 
 Records are on a 1 Hz grid, because FIT timestamps are whole seconds: a
@@ -538,8 +541,27 @@ paced speed. A stop splits the track into spans, and nothing is recorded
 while stopped. Span ends round to the nearest second, and a stop that rounds
 to no time isn't a pause. The records, timer events and summaries all use
 those rounded times. The timer events are what make Strava count stops as
-stopped rather than as slow moving time. 1 Hz costs one fit_tool record per
-second of activity, about 6 s for a 6 h hike in CPython.
+stopped rather than as slow moving time.
+
+### 5.11a `fit_encoder.py`
+
+```
+crc16(data, crc=0) -> int              FIT's CRC-16 (CRC-16/ARC), byte table
+file_header(data_size) -> bytes        12 bytes, no header CRC
+encode_value(field, value) -> int      round((v + offset) * scale), int() if unscaled; ValueError if out of range
+encode_string(value, min_size)         UTF-8 + NUL, zero-padded
+FILE_ID, SPORT, EVENT, RECORD, LAP, SESSION, ACTIVITY   MessageSpec: global id + fields in profile order
+FitEncoder
+  add(spec, values)                    one message; None fields left out
+  add_many(spec, names, rows)          records: one definition check, one struct pack per row
+  to_bytes()                           header + messages + file CRC
+```
+
+It writes exactly the bytes fit_tool's `FitFileBuilder` wrote for the same
+messages, since Strava has accepted that layout: every message on local type
+0, re-defined whenever the message changes. fit_tool is now only the tests'
+oracle (`tests/core/fit_tool_reference.py`). A 7 h hike at 1 Hz takes about
+0.19 s in Pyodide, against about 10 s with fit_tool.
 
 ### 5.12 `activity_profile.py`
 
@@ -572,8 +594,8 @@ Three mechanisms keep the bridge working:
 1. **Lazy startup (`ensurePyodide`).** The first call does all the
    setup:
    - `loadPyodide` from jsdelivr
-   - `micropip.install` `gpxpy` and `fit-tool`, pinned to the `uv.lock`
-     versions (`GPXPY_VERSION`, `FIT_TOOL_VERSION`)
+   - `micropip.install` `gpxpy`, pinned to the `uv.lock` version
+     (`GPXPY_VERSION`)
    - fetch every file in `CORE_FILES` over HTTP from `../../core/`, resolved
      against the bridge module's own URL (`import.meta.url`), so the site
      works whether the repo root or `src/gpx2fit/` is served

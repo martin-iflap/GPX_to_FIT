@@ -3,7 +3,6 @@ name = "gpx-to-fit"
 version = "0.1.0"
 requires-python = ">=3.14"
 dependencies = [
-    "fit-tool>=0.9.16",
     "gpxpy>=1.6.2",
     "pyrefly>=0.60.0",
     "pytest-cov>=7.1.0",
@@ -20,6 +19,8 @@ package = true
 
 [dependency-groups]
 dev = [
+    # The tuning harness decodes FIT with it, and the tests hold core/fit_encoder.py to its bytes.
+    "fit-tool>=0.9.16",
     "numpy>=2.5.3",
     "pytest>=9.1.1",
 ]

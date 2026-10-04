@@ -158,6 +158,19 @@ class TestWriteFitOutput:
         file_id = next(r.message for r in decoded.records if isinstance(r.message, FileIdMessage))
         assert not file_id.product_name
 
+    def test_a_name_too_long_for_a_fit_string_is_cut_to_fit(self):
+        # The name can come from a GPX's creator attribute, which has no length
+        # limit; a FIT field holds at most 255 bytes, its NUL included.
+        decoded = FitFile.from_bytes(write_fit(self._build_track(SportType.RUNNING, device="x" * 300)))
+        file_id = next(r.message for r in decoded.records if isinstance(r.message, FileIdMessage))
+        assert file_id.product_name == "x" * 254
+
+    def test_a_long_multibyte_name_is_cut_between_characters(self):
+        # "✓" is 3 UTF-8 bytes: 84 of them (252 bytes) fit, an 85th wouldn't.
+        decoded = FitFile.from_bytes(write_fit(self._build_track(SportType.RUNNING, device="✓" * 100)))
+        file_id = next(r.message for r in decoded.records if isinstance(r.message, FileIdMessage))
+        assert file_id.product_name == "✓" * 84
+
     def _file_id(self, track: Track) -> FileIdMessage:
         decoded = FitFile.from_bytes(write_fit(track))
         return next(r.message for r in decoded.records if isinstance(r.message, FileIdMessage))

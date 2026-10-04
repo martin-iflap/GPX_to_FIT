@@ -4,22 +4,31 @@ import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from fit_tool.fit_file_builder import FitFileBuilder
-from fit_tool.profile.messages.activity_message import ActivityMessage
-from fit_tool.profile.messages.event_message import EventMessage
-from fit_tool.profile.messages.file_id_message import FileIdMessage
-from fit_tool.profile.messages.lap_message import LapMessage
-from fit_tool.profile.messages.record_message import RecordMessage
-from fit_tool.profile.messages.session_message import SessionMessage
-from fit_tool.profile.messages.sport_message import SportMessage
-from fit_tool.profile.profile_type import Activity, Event, EventType, FileType, Manufacturer, Sport
-
+from gpx2fit.core.fit_encoder import (
+    ACTIVITY,
+    ACTIVITY_TYPE_MANUAL,
+    EVENT,
+    EVENT_TIMER,
+    EVENT_TYPE_START,
+    EVENT_TYPE_STOP_ALL,
+    FILE_ID,
+    FILE_TYPE_ACTIVITY,
+    LAP,
+    MANUFACTURER_DEVELOPMENT,
+    MAX_STRING_BYTES,
+    RECORD,
+    SESSION,
+    SPORT,
+    SPORT_RUNNING,
+    SPORT_WALKING,
+    FitEncoder,
+)
 from gpx2fit.core.models import Track, TrackPoint
 from gpx2fit.core.pacing.gradient import elevation_gain
 
 
 def _fit_timestamp(value: datetime) -> int:
-    """Convert a datetime to a FIT timestamp (Unix epoch milliseconds), which fit-tool expects.
+    """Convert a datetime to Unix epoch milliseconds, the unit fit_encoder takes timestamps in.
 
     Args:
         value: A naive or timezone-aware datetime. A naive value is treated
@@ -160,15 +169,6 @@ def _per_point(points: list[TrackPoint]) -> list[list[_Sample]]:
     return spans
 
 
-def _timer_event(event_type: EventType, timestamp_ms: int) -> EventMessage:
-    """A timer START or STOP_ALL event at `timestamp_ms` (Unix epoch milliseconds)."""
-    event = EventMessage()
-    event.event = Event.TIMER
-    event.event_type = event_type
-    event.timestamp = timestamp_ms
-    return event
-
-
 def write_fit(track: Track, *, resample: bool = True) -> bytes:
     """Write a .fit file from a fully-paced track.
 
@@ -185,10 +185,8 @@ def write_fit(track: Track, *, resample: bool = True) -> bytes:
     here is elapsed time minus stops. Average speed is likewise over timer
     time. Every time in the file is on the same whole-second grid, so the
     records, timer events and summaries agree.
-    1 Hz costs one record per second of activity, and fit_tool builds each
-    record slowly (~0.3 ms in CPython, more in Pyodide): about 6 s for a 6 h
-    hike in CPython, against ~1.3 s for one record per point. If that's too
-    slow in the browser, a coarser grid is the first thing to try.
+    The bytes are packed by fit_encoder, which writes exactly what fit_tool
+    used to (tests/core/fit_tool_reference.py) at a fraction of the cost.
     Every point must already have a timestamp — this is the last step in the
     pipeline, run after pacing.combine has stamped them all. Per-record speed
     is the paced speed of the leg the record falls in, so that FIT readers
@@ -202,8 +200,8 @@ def write_fit(track: Track, *, resample: bool = True) -> bytes:
         resample: False writes one record per track point at its own time
             instead of the 1 Hz grid, the way a watches "smart recording" does.
             The app always resamples. The tuning harness's tests write their
-            synthetic recordings this way, since 1 Hz costs a record per second
-            of activity and fit_tool builds each one slowly.
+            synthetic recordings this way: they read them back with fit_tool,
+            which decodes slowly, and 1 Hz would mean hours of records each.
     Returns:
         The complete .fit file contents as bytes.
     Raises:
@@ -212,8 +210,35 @@ def write_fit(track: Track, *, resample: bool = True) -> bytes:
             than the first, or if any point in between is missing a
             timestamp.
     """
-    builder = FitFileBuilder(auto_define=True, min_string_size=50)
+    return _encode(_build_content(track, resample=resample))
 
+
+@dataclass(frozen=True)
+class _FitContent:
+    """Everything that goes in the file, decided; encoding it is all that's left.
+
+    Enum-valued fields hold the FIT profile's integer values. Times are Unix
+    epoch milliseconds, durations seconds, distances metres, speeds m/s.
+    """
+    sport: int
+    manufacturer: int
+    product: int
+    serial_number: int | None
+    product_name: str | None
+    has_elevation: bool
+    spans: list[list[_Sample]]
+    first_ms: int
+    last_ms: int
+    total_elapsed_seconds: float
+    total_timer_seconds: float
+    total_distance: float
+    total_ascent: int
+    avg_speed: float
+    max_speed: float
+
+
+def _build_content(track: Track, *, resample: bool) -> _FitContent:
+    """Validate the track and decide every value write_fit puts in the file (see write_fit)."""
     if not track.points:
         raise RuntimeError("Track must contain at least one point for fit file creation.")
 
@@ -229,90 +254,115 @@ def write_fit(track: Track, *, resample: bool = True) -> bytes:
     if any(point.timestamp is None for point in track.points):
         raise RuntimeError("Missing timestamp for fit file creation.")
 
-    sport = Sport.RUNNING
+    sport = SPORT_RUNNING
     if track.sport is not None and track.sport.value == "hiking":
-        sport = Sport.WALKING
+        sport = SPORT_WALKING
 
     spans = _resample(track.points) if resample else _per_point(track.points)
     first_ms = spans[0][0].timestamp_ms
     last_ms = spans[-1][-1].timestamp_ms
+    paused_ms = sum(
+        span[0].timestamp_ms - previous[-1].timestamp_ms for previous, span in zip(spans, spans[1:])
+    )
+    total_elapsed_seconds = (last_ms - first_ms) / 1000
+    total_timer_seconds = total_elapsed_seconds - paused_ms / 1000
 
-    file_id = FileIdMessage()
-    file_id.type = FileType.ACTIVITY
     # Strava names the device only from manufacturer + product, looked up in
     # its own table. Without a chosen device, "development" makes no claim
     # to be any real hardware.
     if track.device_manufacturer is None:
-        file_id.manufacturer = Manufacturer.DEVELOPMENT.value
-        file_id.product = 0
+        manufacturer, product = MANUFACTURER_DEVELOPMENT, 0
     else:
-        file_id.manufacturer = track.device_manufacturer
-        file_id.product = track.device_product or 0
-    if track.device_serial is not None:
-        file_id.serial_number = track.device_serial
-    file_id.time_created = first_ms
-    if track.device:
-        file_id.product_name = track.device
-    builder.add(file_id)
+        manufacturer, product = track.device_manufacturer, track.device_product or 0
 
-    sport_message = SportMessage()
-    sport_message.sport = sport
-    builder.add(sport_message)
+    return _FitContent(
+        sport=sport,
+        manufacturer=manufacturer,
+        product=product,
+        serial_number=track.device_serial,
+        product_name=_fit_string(track.device) or None,
+        # Without elevation every point holds a 0.0 placeholder, not sea level.
+        has_elevation=track.has_elevation,
+        spans=spans,
+        first_ms=first_ms,
+        last_ms=last_ms,
+        total_elapsed_seconds=total_elapsed_seconds,
+        total_timer_seconds=total_timer_seconds,
+        total_distance=track.total_distance,
+        total_ascent=round(elevation_gain(track)),
+        avg_speed=track.total_distance / total_timer_seconds if total_timer_seconds > 0 else 0.0,
+        max_speed=max((sample.speed for span in spans for sample in span), default=0.0),
+    )
 
-    paused_ms = 0
-    for index, span in enumerate(spans):
-        if index == 0:
-            builder.add(_timer_event(EventType.START, span[0].timestamp_ms))
+
+def _fit_string(value: str | None) -> str | None:
+    """`value` cut, between characters, to what a FIT string field holds.
+
+    The device name can be a GPX's creator attribute, which has no length
+    limit, and the name is cosmetic (Strava ignores it), so it's cut rather
+    than refused.
+    """
+    if value is None:
+        return None
+    return value.encode("utf-8")[:MAX_STRING_BYTES].decode("utf-8", errors="ignore")
+
+
+def _encode(content: _FitContent) -> bytes:
+    """Encode the decided content as a FIT file (see fit_encoder for the byte layout)."""
+    encoder = FitEncoder(min_string_size=50)
+
+    encoder.add(FILE_ID, {
+        "type": FILE_TYPE_ACTIVITY,
+        "manufacturer": content.manufacturer,
+        "product": content.product,
+        "serial_number": content.serial_number,
+        "time_created": content.first_ms,
+        "product_name": content.product_name,
+    })
+    encoder.add(SPORT, {"sport": content.sport})
+
+    record_fields = (
+        ("timestamp", "position_lat", "position_long", "altitude", "distance", "speed", "enhanced_speed")
+        if content.has_elevation else
+        ("timestamp", "position_lat", "position_long", "distance", "speed", "enhanced_speed")
+    )
+    for index, span in enumerate(content.spans):
+        if index > 0:
+            encoder.add(EVENT, _timer_event(EVENT_TYPE_STOP_ALL, content.spans[index - 1][-1].timestamp_ms))
+        encoder.add(EVENT, _timer_event(EVENT_TYPE_START, span[0].timestamp_ms))
+        if content.has_elevation:
+            rows = [(s.timestamp_ms, s.lat, s.lon, s.elevation, s.distance, s.speed, s.speed) for s in span]
         else:
-            previous_last = spans[index - 1][-1].timestamp_ms
-            builder.add(_timer_event(EventType.STOP_ALL, previous_last))
-            builder.add(_timer_event(EventType.START, span[0].timestamp_ms))
-            paused_ms += span[0].timestamp_ms - previous_last
+            rows = [(s.timestamp_ms, s.lat, s.lon, s.distance, s.speed, s.speed) for s in span]
+        encoder.add_many(RECORD, record_fields, rows)
+    encoder.add(EVENT, _timer_event(EVENT_TYPE_STOP_ALL, content.last_ms))
 
-        for sample in span:
-            record = RecordMessage()
-            record.position_lat = sample.lat
-            record.position_long = sample.lon
-            if track.has_elevation:
-                # Without elevation every point holds a 0.0 placeholder, not sea level.
-                record.altitude = sample.elevation
-            record.distance = sample.distance
-            record.speed = sample.speed
-            record.enhanced_speed = sample.speed
-            record.timestamp = sample.timestamp_ms
-            builder.add(record)
+    # the lap and the session carry the same values
+    summary = {
+        "start_time": content.first_ms,
+        "timestamp": content.last_ms,
+        "total_elapsed_time": content.total_elapsed_seconds,
+        "total_timer_time": content.total_timer_seconds,
+        "total_distance": content.total_distance,
+        "total_ascent": content.total_ascent,
+        "sport": content.sport,
+        "avg_speed": content.avg_speed,
+        "enhanced_avg_speed": content.avg_speed,
+        "max_speed": content.max_speed,
+        "enhanced_max_speed": content.max_speed,
+    }
+    encoder.add(LAP, summary)
+    encoder.add(SESSION, summary)
 
-    builder.add(_timer_event(EventType.STOP_ALL, last_ms))
-    total_elapsed_seconds = (last_ms - first_ms) / 1000
-    total_timer_seconds = total_elapsed_seconds - paused_ms / 1000
+    encoder.add(ACTIVITY, {
+        "timestamp": content.last_ms,
+        "total_timer_time": content.total_timer_seconds,
+        "num_sessions": 1,
+        "type": ACTIVITY_TYPE_MANUAL,
+    })
+    return encoder.to_bytes()
 
-    lap = LapMessage()
-    session = SessionMessage()
-    avg_speed = track.total_distance / total_timer_seconds if total_timer_seconds > 0 else 0.0
-    max_speed = max((sample.speed for span in spans for sample in span), default=0.0)
-    ascent = elevation_gain(track)
-    # assign the same values to both lap and session messages
-    for message in (lap, session):
-        message.start_time = first_ms
-        message.timestamp = last_ms
-        message.total_elapsed_time = total_elapsed_seconds
-        message.total_timer_time = total_timer_seconds
-        message.total_distance = track.total_distance
-        message.total_ascent = round(ascent)
-        message.sport = sport
-        message.avg_speed = avg_speed
-        message.enhanced_avg_speed = avg_speed
-        message.max_speed = max_speed
-        message.enhanced_max_speed = max_speed
 
-    builder.add(lap)
-    builder.add(session)
-
-    activity = ActivityMessage()
-    activity.timestamp = last_ms
-    activity.total_timer_time = total_timer_seconds
-    activity.num_sessions = 1
-    activity.type = Activity.MANUAL
-    builder.add(activity)
-
-    return builder.build_bytes()
+def _timer_event(event_type: int, timestamp_ms: int) -> dict[str, int]:
+    """A timer START or STOP_ALL event at `timestamp_ms` (Unix epoch milliseconds)."""
+    return {"event": EVENT_TIMER, "event_type": event_type, "timestamp": timestamp_ms}
