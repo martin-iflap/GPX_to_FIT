@@ -26,6 +26,14 @@ _MIN_SURFACE_MULTIPLIER = 0.05
 # median / max_speed_ratio however small it is.
 _MIN_RELATIVE_SPEED = 1e-9
 
+# A segment whose terrain-adjusted pace is this many times faster or slower
+# than the whole workout's is reported (see _implausible_pace_warnings).
+IMPLAUSIBLE_PACE_RATIO = 2.5
+
+# Segments shorter than this are never judged: anchor times are entered to the
+# minute, which on a short segment is a big share of its time.
+PLAUSIBILITY_MIN_SEGMENT_M = 300.0
+
 # Human-readable label for each Anchor.source, used only to make InputError
 # messages (contradictory anchor/stop times) point at a concrete, recognizable
 # entry rather than an opaque distance/timestamp pair.
@@ -90,7 +98,7 @@ def _pace_segment(
     segment_multipliers: list[float] | None = None,
     segment_mode_a_stops: list[ModeAStop] | None = None,
     segment_variation: list[float] | None = None,
-) -> None:
+) -> tuple[float, float] | None:
     """Assign timestamps to one anchor-to-anchor segment's points, in place.
 
     Computes a per-leg relative speed from the workout's blend of the Minetti
@@ -129,6 +137,13 @@ def _pace_segment(
             per leg, sliced from the whole track's (see pacing.variation).
             Applied before the compression, so its bound still holds.
 
+    Returns:
+        (active_seconds, modeled_time) for a segment it paced, or None when
+        it bailed out early (see Note). modeled_time is in flat-equivalent
+        metres, since the curves are normalized to 1.0 on the flat, so
+        active_seconds / modeled_time is the segment's terrain-adjusted pace
+        (see _implausible_pace_warnings).
+
     Note:
         Beyond the two boundary points (always stamped from the anchors
         themselves), leaves the segment's interior untouched if it has fewer
@@ -148,7 +163,7 @@ def _pace_segment(
     """
     segment_mode_a_stops = segment_mode_a_stops or []
     if len(segment_points) < 2:
-        return
+        return None
 
     # Stamped unconditionally, before any of the degenerate-model checks below can bail out early.
     segment_points[0].timestamp = start_anchor.timestamp
@@ -165,7 +180,7 @@ def _pace_segment(
 
     speeds = blended_speeds_from_gradients(segment_gradients, tobler_weight, curve_shape)
     if not speeds:
-        return
+        return None
 
     if segment_multipliers is not None:
         if len(segment_multipliers) != len(speeds):
@@ -197,7 +212,7 @@ def _pace_segment(
     modeled_leg_times = [distance / speed for distance, speed in zip(leg_distances, speeds)]
     modeled_total_time = sum(modeled_leg_times)
     if modeled_total_time <= 0:
-        return
+        return None
 
     total_stop_seconds = sum(s.duration.total_seconds() for s in segment_mode_a_stops)
     active_time = anchor_total_time - total_stop_seconds
@@ -228,6 +243,64 @@ def _pace_segment(
             stop_index += 1
 
         segment_points[index].timestamp = point_timestamp
+
+    return active_time, modeled_total_time
+
+
+def _implausible_pace_warnings(segments: list[tuple[Anchor, Anchor, float, float, float]]) -> list[str]:
+    """User-facing warnings for segments whose anchors imply an implausible pace.
+
+    Each entry is (start_anchor, end_anchor, distance, active_seconds,
+    modeled_time) for one paced segment. A segment's terrain-adjusted pace is
+    active_seconds / modeled_time (seconds per flat-equivalent metre), so a
+    slow climb doesn't count against it. It is compared with the whole
+    workout's, Σactive_seconds / Σmodeled_time. Typical cause: a photo whose
+    camera clock was in another timezone, still inside the activity window.
+
+    One wrong anchor makes the segment before it off one way and the one after
+    it off the other way. That pair is reported once, naming just the shared
+    anchor, since that is the time to check.
+    """
+    # A lone segment (start and end only) is the workout, at a ratio of exactly 1.
+    total_modeled = sum(modeled for *_, modeled in segments)
+    if total_modeled <= 0:
+        return []
+    workout_pace = sum(active for *_, active, _ in segments) / total_modeled
+
+    # (start_anchor, end_anchor, ratio) per flagged segment; ratio > 1 is faster than the workout.
+    flagged: list[tuple[Anchor, Anchor, float]] = []
+    for start_anchor, end_anchor, distance, active_seconds, modeled_time in segments:
+        if distance < PLAUSIBILITY_MIN_SEGMENT_M:
+            continue
+        ratio = workout_pace / (active_seconds / modeled_time)
+        if ratio > IMPLAUSIBLE_PACE_RATIO or ratio < 1 / IMPLAUSIBLE_PACE_RATIO:
+            flagged.append((start_anchor, end_anchor, ratio))
+
+    def how(rat: float) -> str:
+        return f"about {rat:.1f}× faster" if rat > 1 else f"about {1 / rat:.1f}× slower"
+
+    warnings = []
+    i = 0
+    while i < len(flagged):
+        start_anchor, end_anchor, ratio = flagged[i]
+        if i + 1 < len(flagged):
+            next_start, _, next_ratio = flagged[i + 1]
+            if next_start is end_anchor and (ratio > 1) != (next_ratio > 1):
+                warnings.append(
+                    f"The {_describe_anchor(end_anchor)} makes the pace before it come out {how(ratio)} and the "
+                    f"pace after it {how(next_ratio)} than the activity as a whole, even allowing for the terrain. "
+                    "Check its time: a photo whose camera clock was in another timezone, say."
+                )
+                i += 2
+                continue
+        hint = " If you took a long break there, add it as a stop instead." if ratio < 1 else ""
+        warnings.append(
+            f"Between the {_describe_anchor(start_anchor)} and the {_describe_anchor(end_anchor)}, the pace comes "
+            f"out {how(ratio)} than the activity as a whole, even allowing for the terrain. If one of those two "
+            f"times is off (a photo whose camera clock was in another timezone, say), fix it.{hint}"
+        )
+        i += 1
+    return warnings
 
 
 def _resolve_anchor_bounds(track_points: list[TrackPoint], anchors: list[Anchor]) -> list[int]:
@@ -320,6 +393,8 @@ def combine(
     mode_a_stops: list[ModeAStop] | None = None,
     smoothness: int = DEFAULT_SMOOTHNESS,
     vary_pace: bool = True,
+    *,
+    warnings: list[str] | None = None,
 ) -> Track:
     """Stamp every track point with a timestamp, paced to match the given anchors.
 
@@ -366,6 +441,11 @@ def combine(
             speed would otherwise stay constant (a flat road, a long even
             climb). Built once over the whole track and laid out by distance,
             like the gradients. False paces on the gradient model alone.
+        warnings: If given, a user-facing message is appended for each
+            segment of at least PLAUSIBILITY_MIN_SEGMENT_M whose anchors make
+            its terrain-adjusted pace more than IMPLAUSIBLE_PACE_RATIO times
+            faster or slower than the workout's. The pacing itself is the same
+            either way.
 
     Returns:
         The same track, with every point that falls inside a valid segment
@@ -407,16 +487,22 @@ def combine(
         else None
     )
 
+    paced_segments = []
     for i in range(len(anchors) - 1):
         lo, hi = anchor_indexes[i], anchor_indexes[i + 1]
-        _pace_segment(
+        fit = _pace_segment(
             track.points[lo: hi + 1], gradients[lo: hi], anchors[i], anchors[i + 1], tobler_weight, max_speed_ratio,
             curve_shape,
             multipliers[lo: hi] if multipliers is not None else None,
             buckets[i],
             variation[lo: hi] if variation is not None else None,
         )
+        if fit is not None:
+            distance = anchors[i + 1].distance_from_start - anchors[i].distance_from_start
+            paced_segments.append((anchors[i], anchors[i + 1], distance, *fit))
 
+    if warnings is not None:
+        warnings.extend(_implausible_pace_warnings(paced_segments))
     return track
 
 
@@ -434,3 +520,5 @@ def combine(
 
 # We also compute the blended_speeds_from_gradients twice per segment: once for the whole track in
 # _whole_track_variation, once inside _pace_segment.
+
+# Implausible pace ratio is a first guess.

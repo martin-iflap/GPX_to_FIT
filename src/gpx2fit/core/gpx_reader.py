@@ -10,6 +10,12 @@ from gpx2fit.core.models import InputError, Track, TrackPoint
 MIN_PLAUSIBLE_ELEVATION_M = -500.0
 MAX_PLAUSIBLE_ELEVATION_M = 9000.0
 
+# Successive <trk>/<trkseg>s are joined with a straight leg. A join longer than
+# this is reported to the user. A paused recording's export usually restarts
+# where it stopped, so a real gap is something else (a lift, a car, a missing
+# chunk). A first guess.
+SEGMENT_GAP_WARNING_M = 100.0
+
 
 def _usable_elevation(elevation: float | None) -> float | None:
     """The elevation if it's a plausible terrain height, otherwise None (missing)."""
@@ -20,13 +26,27 @@ def _usable_elevation(elevation: float | None) -> float | None:
     return elevation
 
 
-def parse_gpx_bytes(gpx_bytes: bytes, device: str | None = None) -> Track:
+def _gap_warning(gaps_m: list[float]) -> str:
+    count = len(gaps_m)
+    noun = "gap" if count == 1 else "gaps"
+    width = f"{max(gaps_m) / 1000:.2f} km wide" if count == 1 else f"the widest {max(gaps_m) / 1000:.2f} km"
+    joined = "It's" if count == 1 else "Each is"
+    return (
+        f"This GPX has {count} {noun} between its track segments, {width}. {joined} joined with a straight "
+        "line and paced like the rest of the route. If that's not where you went, fix the route before converting."
+    )
+
+
+def parse_gpx_bytes(gpx_bytes: bytes, device: str | None = None, *, warnings: list[str] | None = None) -> Track:
     """Parse GPX file contents into a Track.
 
     Args:
         gpx_bytes: Raw contents of a .gpx file.
         device: Device name to embed in the resulting Track. If not given,
             falls back to the GPX file's <creator> attribute.
+        warnings: If given, a user-facing message is appended when segments
+            are joined across a gap longer than SEGMENT_GAP_WARNING_M. The
+            parse itself is the same either way.
     Returns:
         A Track with one TrackPoint per GPX trackpoint, in file order, with
         distance_from_start computed as the cumulative 3D (falling back to
@@ -60,16 +80,21 @@ def parse_gpx_bytes(gpx_bytes: bytes, device: str | None = None) -> Track:
     cumulative_distance = 0.0
     last_elevation: float | None = None
     leading_missing = 0  # points before the first usable elevation
+    gaps_m: list[float] = []  # joins between segments wider than SEGMENT_GAP_WARNING_M
     device = device or gpx.creator
 
     for track in gpx.tracks:
         for segment in track.segments:
-            for point in segment.points:
+            for index, point in enumerate(segment.points):
                 if prev_point is not None:
                     segment_distance = prev_point.distance_3d(point)
                     if segment_distance is None:
                         segment_distance = prev_point.distance_2d(point) or 0.0
                     cumulative_distance += segment_distance
+                    if index == 0:
+                        gap_m = prev_point.distance_2d(point) or 0.0
+                        if gap_m > SEGMENT_GAP_WARNING_M:
+                            gaps_m.append(gap_m)
 
                 elevation = _usable_elevation(point.elevation)
                 if elevation is None:
@@ -104,5 +129,8 @@ def parse_gpx_bytes(gpx_bytes: bytes, device: str | None = None) -> Track:
         first_elevation = track_points[leading_missing].elevation
         for track_point in track_points[:leading_missing]:
             track_point.elevation = first_elevation
+
+    if gaps_m and warnings is not None:
+        warnings.append(_gap_warning(gaps_m))
 
     return Track(points=track_points, device=device, has_elevation=has_elevation)

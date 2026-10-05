@@ -78,6 +78,30 @@ export function classifyPyError(error) {
   return inputError;
 }
 
+/**
+ * The user-facing warning for a surface lookup that failed outright. The
+ * conversion goes ahead without surface multipliers either way; this only
+ * says why, since otherwise a dead server and a successful lookup would look
+ * the same to the user.
+ *
+ * @param {unknown} error - whatever `fetchSurfaceMultipliers` threw
+ * @returns {string}
+ */
+export function describeSurfaceFailure(error) {
+  let reason;
+  if (error?.name === 'AbortError') {
+    reason = `Valhalla took too long to answer (over ${VALHALLA_FETCH_TIMEOUT_MS / 1000} s)`;
+  } else if (error?.isValhallaHttpError) {
+    reason = error.message;
+  } else if (error instanceof TypeError) {
+    // What fetch() rejects with when the request never got an answer.
+    reason = "couldn't reach Valhalla; are you offline?";
+  } else {
+    reason = 'its answer could not be used';
+  }
+  return `Surface lookup failed (${reason}), so this file is paced on gradient alone.`;
+}
+
 function enqueue(task) {
   const runPromise = queueTail.then(task).catch((error) => {
     throw classifyPyError(error);
@@ -173,7 +197,8 @@ export async function parseGpx(bytes) {
     from gpx2fit.core.gpx_reader import parse_gpx_bytes
     from gpx2fit.core.pacing.gradient import elevation_gain
 
-    _track = parse_gpx_bytes(bytes(gpx_bytes.to_py()))
+    _parse_warnings = []
+    _track = parse_gpx_bytes(bytes(gpx_bytes.to_py()), warnings=_parse_warnings)
 
     route_points = [
         {"lat": p.lat, "lon": p.lon, "elevation": p.elevation, "distance": p.distance_from_start}
@@ -188,7 +213,8 @@ export async function parseGpx(bytes) {
     const toJsOpts = { create_proxies: false, dict_converter: Object.fromEntries };
     const points = runtime.globals.get('route_points').toJs(toJsOpts);
     const summary = runtime.globals.get('route_summary').toJs(toJsOpts);
-    return { points, summary };
+    const warnings = runtime.globals.get('_parse_warnings').toJs(toJsOpts);
+    return { points, summary, warnings };
   });
 }
 
@@ -328,7 +354,18 @@ async function fetchSurfaceMultipliers(sportEnumName, runtime) {
     clearTimeout(timeoutId);
   }
   if (!response.ok) {
-    throw new Error(`Valhalla trace_attributes request failed: ${response.status} ${response.statusText}`);
+    // Valhalla explains a rejection in its JSON body (e.g. a route over its
+    // distance or shape-point limit); that's the most useful thing to show.
+    let detail = '';
+    try {
+      const body = await response.json();
+      detail = typeof body?.error === 'string' ? `: ${body.error}` : '';
+    } catch {
+      // Not JSON (a proxy's error page, say); the status alone will do.
+    }
+    const httpError = new Error(`Valhalla answered ${response.status} ${response.statusText}${detail}`);
+    httpError.isValhallaHttpError = true;
+    throw httpError;
   }
   const valhallaResponse = await response.json();
 
@@ -338,7 +375,7 @@ async function fetchSurfaceMultipliers(sportEnumName, runtime) {
 
   from gpx2fit.core.pacing.surface import calculate_surface_multipliers
 
-  _surface_multipliers = calculate_surface_multipliers(_track, json.loads(valhalla_response_json), _surface_sport)
+  _surface_multipliers = calculate_surface_multipliers(_track, json.loads(valhalla_response_json), _surface_sport, warnings=_convert_warnings)
   `);
 
   return runtime.globals.get('_surface_multipliers').toJs({ create_proxies: false });
@@ -382,7 +419,11 @@ async function fetchSurfaceMultipliers(sportEnumName, runtime) {
  * @returns {Promise<{
  *   fitBytes: Uint8Array,
  *   profile: {distanceFromStart: number, elapsedSeconds: number, speedMps: number, elevation: number|null, lat: number, lon: number, isStop: boolean}[],
- * }>} the encoded FIT file, plus the paced activity's profile samples
+ *   warnings: string[],
+ * }>} the encoded FIT file, the paced activity's profile samples, and
+ *   user-facing warnings about a conversion that went through but may not be
+ *   what the user meant (a failed surface lookup, a segment whose anchors
+ *   imply an implausible pace)
  */
 export async function convert({
   startIso,
@@ -397,16 +438,24 @@ export async function convert({
   return enqueue(async () => {
     const runtime = await ensurePyodide();
 
+    // User-facing warnings from this conversion's Python steps (surface
+    // matching, pacing). Reset first, so a previous run's can't leak in.
+    await runtime.runPythonAsync(`
+    _convert_warnings = []
+    `);
+    const jsWarnings = [];
+
     // Surface multipliers are best-effort: a Valhalla outage or network
     // hiccup must not block the whole conversion, so any failure here just
-    // means the FIT file comes out without surface-based pacing. Opting out
-    // lands on that same no-multipliers path.
+    // means the FIT file comes out without surface-based pacing, and the
+    // user is told. Opting out lands on that same no-multipliers path, silently.
     let surfaceMultipliers = null;
     if (surfaceLookup) {
       try {
         surfaceMultipliers = await fetchSurfaceMultipliers(sportEnumName, runtime);
       } catch (err) {
         console.warn('Surface multiplier fetch failed; continuing without surface-based pacing.', err);
+        jsWarnings.push(describeSurfaceFailure(err));
       }
     }
 
@@ -497,7 +546,7 @@ export async function convert({
         else None
     )
 
-    combine(track=working_track, anchors=all_anchors, sport=sport, multipliers=working_multipliers, mode_a_stops=mode_a_stops, smoothness=int(smoothness))
+    combine(track=working_track, anchors=all_anchors, sport=sport, multipliers=working_multipliers, mode_a_stops=mode_a_stops, smoothness=int(smoothness), warnings=_convert_warnings)
     fit_bytes = write_fit(working_track)
 
     from gpx2fit.core.activity_profile import build_activity_profile
@@ -520,6 +569,7 @@ export async function convert({
     return {
       fitBytes: runtime.globals.get('fit_bytes').toJs({ create_proxies: false }),
       profile: runtime.globals.get('_profile_samples').toJs(toJsOpts),
+      warnings: [...jsWarnings, ...runtime.globals.get('_convert_warnings').toJs(toJsOpts)],
     };
   });
 }

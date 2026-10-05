@@ -271,13 +271,18 @@ the resulting multipliers to `combine()` as a plain list. `anchors.py`,
 ### 5.2 `gpx_reader.py`
 
 ```
-parse_gpx_bytes(gpx_bytes, device=None) -> Track
+parse_gpx_bytes(gpx_bytes, device=None, *, warnings=None) -> Track
   bytes ─decode utf-8─▶ gpxpy.parse ─▶ for track/segment/point:
       cumulative distance_3d (→ distance_2d) ,
-      implausible elevation → missing, carry-forward, leading back-fill
+      implausible elevation → missing, carry-forward, leading back-fill,
+      join to the previous segment wider than SEGMENT_GAP_WARNING_M (100 m) → noted
   ─▶ Track(points, device = device or <gpx creator>, has_elevation)
+  appends to warnings: one message if any segment join was a gap
   raises InputError: not UTF-8 · not GPX · no track points · one point · no length
 ```
+
+Segments are always concatenated, and a gap is joined with a straight leg
+that is paced like the rest. The warning only tells the user it happened.
 
 It reads only `<trk>` points. Route (`<rte>`) and waypoint elements are
 ignored.
@@ -310,13 +315,14 @@ flowchart TD
   rd["_resolve_distance(track, raw)"] --> np["anchors.nearest_point_distance_from_start"]
   rs --> rd
   rs -.-> err["InputError: stop on an anchor/stop ·<br/>departure ≤ arrival"]
-  ets["expand_track_with_stops(points, stops)<br/>→ new list, +1 duplicate point per stop"]
+  ets["expand_track_with_stops(points, stops)<br/>→ new list of copied points, +1 duplicate per stop"]
   ems["expand_multipliers_with_stops(points, mults, stops)<br/>→ new list, +1 duplicated multiplier per stop"]
 ```
 
 Both `expand_*` functions return new lists. `_track.points` is never
-changed structurally, because the bridge reuses `_track` for every
-conversion. A stop's distance must equal an existing point's distance
+changed, because the bridge reuses `_track` for every conversion: every
+point is copied, so `combine()` stamping the working track's timestamps
+never reaches `_track`. A stop's distance must equal an existing point's distance
 exactly. That's guaranteed because the GUI always sends a distance that
 Python itself returned.
 
@@ -415,7 +421,7 @@ still first guesses.
 ```mermaid
 flowchart TD
   btap["build_trace_attributes_payload(track, costing='pedestrian')<br/>→ dict (shape = every point, shape_match walk_or_snap)"]
-  csm["calculate_surface_multipliers(track, response, sport)<br/>→ one multiplier per leg"]
+  csm["calculate_surface_multipliers(track, response, sport, warnings)<br/>→ one multiplier per leg"]
   rpei["resolve_point_edge_indexes(response, n)<br/>point → matched edge index, gaps filled from neighbours"]
   lcm["_leg_category_multiplier(edges, 'surface'|'road_class'|'use')"] --> lwa["_length_weighted_average"]
   lsm["_leg_sac_scale_multiplier(edges)"]
@@ -432,8 +438,12 @@ leg has a SAC scale, one of two things happens:
   within 0.25 of `physical`.
 - Otherwise, it's blended in: `0.7·sac + 0.3·physical`.
 
-A leg with no matched edge gets 1.0. The HTTP request itself is made in
-`pyodideBridge.js`.
+A leg with no matched edge gets 1.0, and so does a leg whose matched edges
+run backwards (a matching glitch; it used to raise and cost the whole route
+its surfaces). When those legs add up to `SURFACE_FALLBACK_WARNING_SHARE`
+(10%) of the distance or more, a warning is appended. The HTTP request
+itself is made in `pyodideBridge.js`, which also turns a failed request into
+a warning (`describeSurfaceFailure`).
 
 ### 5.9 `pacing/variation.py`: pace wander on steady stretches
 
@@ -474,7 +484,7 @@ the GPX is sampled.
 
 ```mermaid
 flowchart TD
-  C["combine(track, anchors, sport, multipliers?, mode_a_stops?, smoothness, vary_pace)"]
+  C["combine(track, anchors, sport, multipliers?, mode_a_stops?, smoothness, vary_pace, warnings?)"]
   C --> rab["_resolve_anchor_bounds(points, anchors)<br/>anchor → point index (bisect;<br/>a same-distance anchor pair takes the stop's two points)"]
   C --> bmas["_bucket_mode_a_stops(anchors, stops)<br/>Mode A stops per segment"]
   C --> cg["gradient.calculate_gradient(track)<br/>once, whole track"]
@@ -492,6 +502,8 @@ flowchart TD
   ps --> sc["scale = (Δt − Mode A stop time) / Σ(d / v)"]
   ps --> st["stamp timestamps; add each Mode A<br/>stop's duration at its duplicate point"]
   ps -.-> err["InputError: time goes backwards ·<br/>stops exceed the segment's time"]
+  ps --> fitret["returns (active_seconds, modeled_time)"]
+  C --> ipw["_implausible_pace_warnings(paced segments)<br/>only if warnings is given"]
 ```
 
 Within one segment, `_pace_segment` does the following, in order:
@@ -510,6 +522,18 @@ Within one segment, `_pace_segment` does the following, in order:
 
 Gradients and the pace variation are computed once for the whole track and
 then sliced per segment, so neither is cut off at an anchor.
+
+Each segment is scaled on its own, so a misplaced anchor shows as a step in
+pace. That is inherent, so instead of smoothing it away `combine()` reports
+it. `modeled_time` is in flat-equivalent metres (the curves are 1.0 on the
+flat), which makes `active_seconds / modeled_time` a terrain-adjusted pace:
+- A segment of at least `PLAUSIBILITY_MIN_SEGMENT_M` (300 m) whose
+  terrain-adjusted pace is more than `IMPLAUSIBLE_PACE_RATIO` (2.5×) faster or
+  slower than the workout's (Σactive / Σmodeled) gets a warning naming its
+  two anchors. A slow climb doesn't count, since the terrain is divided out.
+- Two adjacent segments flagged in opposite directions get one warning,
+  naming just the anchor between them: that is the time to check.
+- The warning never changes the pacing.
 `tests/tuning/test_model_mirror.py` pins this function's exact output. See
 [§10](#10-the-tuning-harness).
 
@@ -578,16 +602,17 @@ here, in Python.
 
 ## 6. The bridge: `pyodideBridge.js`
 
-This is the only file that talks to Python. It exports four calls and one
-helper:
+This is the only file that talks to Python. It exports four calls and two
+helpers:
 
-| Export                                  | Python it runs                                 | Returns                                     |
-|-----------------------------------------|------------------------------------------------|---------------------------------------------|
-| `parseGpx(bytes)`                       | `_track = parse_gpx_bytes(...)`                | `{points, summary}` for the map and sidebar |
-| `resolveAnchorCandidates(lat, lon)`     | `nearest_point_candidates(_track, …)`          | 1–4 candidates                              |
-| `resolvePhotoAnchors(readings, window)` | `resolve_photo_anchors(_track, …)`             | status per photo                            |
-| `convert({...})`                        | the full pipeline ([§8.3](#83-inside-convert)) | `{fitBytes, profile}`                       |
-| `classifyPyError(err)`                  | none                                           | tags `InputError`s ([§9](#9-errors))        |
+| Export                                  | Python it runs                                 | Returns                                                   |
+|-----------------------------------------|------------------------------------------------|-----------------------------------------------------------|
+| `parseGpx(bytes)`                       | `_track = parse_gpx_bytes(...)`                | `{points, summary, warnings}` for the map and sidebar     |
+| `resolveAnchorCandidates(lat, lon)`     | `nearest_point_candidates(_track, …)`          | 1–4 candidates                                            |
+| `resolvePhotoAnchors(readings, window)` | `resolve_photo_anchors(_track, …)`             | status per photo                                          |
+| `convert({...})`                        | the full pipeline ([§8.3](#83-inside-convert)) | `{fitBytes, profile, warnings}`                           |
+| `classifyPyError(err)`                  | none                                           | tags `InputError`s ([§9](#9-errors))                      |
+| `describeSurfaceFailure(err)`           | none                                           | the warning for a failed surface lookup ([§9](#9-errors)) |
 
 Three mechanisms keep the bridge working:
 
@@ -836,8 +861,8 @@ sequenceDiagram
   U->>Main: drop GPX
   Main->>B: parseGpx(bytes)
   B->>B: ensurePyodide() on first call:<br/>load runtime, micropip, fetch core/*.py
-  B->>Py: _track = parse_gpx_bytes(bytes)
-  Py-->>Main: points + {total_distance, total_elevation_gain = elevation_gain(_track)}
+  B->>Py: _track = parse_gpx_bytes(bytes, warnings=_parse_warnings)
+  Py-->>Main: points + {total_distance, total_elevation_gain = elevation_gain(_track)} + warnings
   Main->>Main: reset anchors/stops/photos, hideProfile,<br/>renderRoute, refresh time toggle
   U->>Main: set start + duration/end/speed, place anchors/stops, drop photos
   Note over Main,Py: resolveAnchorCandidates / resolvePhotoAnchors (§7.3)
@@ -849,11 +874,11 @@ sequenceDiagram
     B->>V: POST trace_attributes (30 s timeout)
     V-->>B: edges + matched_points
     B->>Py: calculate_surface_multipliers(...)
-    Note over B: on any failure: warn, continue with no multipliers
+    Note over B: on any failure: describeSurfaceFailure → warning, continue with no multipliers
   end
   B->>Py: pipeline (§8.3)
-  Py-->>B: fit_bytes, _profile_samples
-  B-->>Main: {fitBytes, profile}
+  Py-->>B: fit_bytes, _profile_samples, _convert_warnings
+  B-->>Main: {fitBytes, profile, warnings}
   Main->>U: Blob → download link (name from GPX)
   Main->>PP: showProfile(profile, sport)
 ```
@@ -897,7 +922,9 @@ flowchart TD
 ### 8.3 Inside `convert()`
 
 This is the literal order of the Python that `convert()` runs. The bridge
-converts JSON and ISO strings into dataclasses first.
+converts JSON and ISO strings into dataclasses first. Before the surface
+fetch it resets `_convert_warnings = []`, which `calculate_surface_multipliers`
+and `combine` both append to.
 
 1. `boundary = add_start_end_anchors(_track, start, duration=…)`
 2. `mid_route = build_user_anchors(_track, raw_anchors, existing_anchors=boundary)`.
@@ -912,7 +939,7 @@ converts JSON and ISO strings into dataclasses first.
    between two conversions of one route really clears it
 7. `working_multipliers = expand_multipliers_with_stops(...)` (if surface
    data was fetched)
-8. `combine(working_track, all_anchors, sport, working_multipliers, mode_a_stops, smoothness)`
+8. `combine(working_track, all_anchors, sport, working_multipliers, mode_a_stops, smoothness, warnings=_convert_warnings)`
 9. `fit_bytes = write_fit(working_track)`
 10. `_profile_samples = build_activity_profile(working_track)`, converted
     to camelCase dicts
@@ -942,6 +969,26 @@ flowchart LR
 
 `combine._describe_anchor` formats an anchor for these messages, for
 example "photo anchor at 5.30 km (2026-09-13 14:02)".
+
+**Warnings** are the third channel: the conversion went through, but maybe
+not as the user meant. Same writing rules as an `InputError` message.
+- `parse_gpx_bytes`, `calculate_surface_multipliers` and `combine` take an
+  optional keyword `warnings: list[str]` and append to it. Their return
+  values don't change, so callers that don't care (tests, the tuning
+  harness) pass nothing.
+- The bridge returns them as `warnings` from `parseGpx` and `convert`.
+  `convert` puts its own JS-side ones first (`describeSurfaceFailure`: a
+  timeout, an HTTP error with Valhalla's own `error` text, no network).
+- `format.statusWithWarnings` appends them to the success message as kind
+  `'warning'`: amber (`.status-warning`) and, unlike `'input'`/`'error'`,
+  not cleared on a timer.
+
+| Warning                  | From                                                    |
+|--------------------------|---------------------------------------------------------|
+| Gap between segments     | `gpx_reader` (a join wider than 100 m)                  |
+| Surface lookup failed    | the bridge (the request failed outright)                |
+| Surface partly unmatched | `surface` (≥ 10% of the distance on the default 1.0)    |
+| Implausible pace         | `combine` (a segment ≥ 300 m off by more than 2.5×)     |
 
 ---
 

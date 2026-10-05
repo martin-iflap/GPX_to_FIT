@@ -242,15 +242,20 @@ class TestCalculateSurfaceMultipliers:
         multipliers = calculate_surface_multipliers(track, response, SportType.HIKING, default_multiplier=0.5)
         assert multipliers == [pytest.approx(0.5), pytest.approx(0.5)]
 
-    def test_out_of_order_edge_indexes_raise_value_error(self, monkeypatch):
-        _patch_tables(monkeypatch, surface={"a": 1.0, "b": 1.0})
-        track = _track([(0.0, 0.0), (1.0, 1.0)])
+    def test_a_backwards_leg_gets_the_default_and_its_neighbours_keep_their_surface(self, monkeypatch):
+        # A matching glitch on one leg used to raise and cost the whole route its surface pacing.
+        _patch_tables(monkeypatch, surface={"a": 0.5, "b": 0.5})
+        track = _track_with_legs([100.0, 100.0, 100.0])
         response = {
             "edges": [_edge(1.0, surface="a"), _edge(1.0, surface="b")],
-            "matched_points": [_matched(1), _matched(0)],
+            "matched_points": [_matched(0), _matched(1), _matched(0), _matched(1)],
         }
-        with pytest.raises(ValueError):
-            calculate_surface_multipliers(track, response, SportType.HIKING)
+
+        multipliers = calculate_surface_multipliers(track, response, SportType.HIKING, default_multiplier=1.0)
+
+        assert multipliers[1] == pytest.approx(1.0)
+        assert multipliers[0] == pytest.approx(multipliers[2])
+        assert multipliers[0] < 1.0
 
     def test_surface_road_class_and_use_are_combined_via_weighted_average(self, monkeypatch):
         _patch_tables(
@@ -404,3 +409,72 @@ class TestCalculateSurfaceMultipliers:
         [running_multiplier] = calculate_surface_multipliers(track, response, SportType.RUNNING)
         assert hiking_multiplier == pytest.approx(surface_share * 0.9 + (1 - surface_share))
         assert running_multiplier == pytest.approx(surface_share * 0.4 + (1 - surface_share))
+
+
+def _track_with_legs(leg_lengths: list[float]) -> Track:
+    """A Track whose legs have the given lengths (positions don't matter to surface.py's matching)."""
+    distances = [0.0]
+    for length in leg_lengths:
+        distances.append(distances[-1] + length)
+    return Track(points=[point(distance_from_start=d) for d in distances])
+
+
+class TestSurfaceFallbackWarning:
+    # Legs 0 and 2 match edge 0 → 1 normally; leg 1 runs backwards.
+    _BACKWARDS_MIDDLE = {
+        "edges": [_edge(1.0, surface="a"), _edge(1.0, surface="a")],
+        "matched_points": [_matched(0), _matched(1), _matched(0), _matched(1)],
+    }
+
+    def test_a_small_backwards_share_does_not_warn(self, monkeypatch):
+        _patch_tables(monkeypatch, surface={"a": 0.5})
+        warnings: list[str] = []
+
+        calculate_surface_multipliers(
+            _track_with_legs([100.0, 10.0, 100.0]), self._BACKWARDS_MIDDLE, SportType.HIKING, warnings=warnings,
+        )
+
+        assert warnings == []  # 10 of 210 m
+
+    def test_a_large_backwards_share_warns_with_its_percentage(self, monkeypatch):
+        _patch_tables(monkeypatch, surface={"a": 0.5})
+        warnings: list[str] = []
+
+        calculate_surface_multipliers(
+            _track_with_legs([100.0, 100.0, 100.0]), self._BACKWARDS_MIDDLE, SportType.HIKING, warnings=warnings,
+        )
+
+        assert len(warnings) == 1
+        assert "33%" in warnings[0]
+        assert "gradient alone" in warnings[0]
+
+    def test_the_share_is_by_distance_not_by_leg_count(self, monkeypatch):
+        _patch_tables(monkeypatch, surface={"a": 0.5})
+        warnings: list[str] = []
+
+        # One leg in three runs backwards, but it is 80% of the route.
+        calculate_surface_multipliers(
+            _track_with_legs([10.0, 80.0, 10.0]), self._BACKWARDS_MIDDLE, SportType.HIKING, warnings=warnings,
+        )
+
+        assert len(warnings) == 1
+        assert "80%" in warnings[0]
+
+    def test_a_fully_unmatched_response_warns_for_the_whole_route(self, monkeypatch):
+        _patch_tables(monkeypatch, surface={"a": 0.5})
+        response = {"edges": [_edge(1.0, surface="a")], "matched_points": [_matched(None)] * 3}
+        warnings: list[str] = []
+
+        calculate_surface_multipliers(_track_with_legs([50.0, 50.0]), response, SportType.HIKING, warnings=warnings)
+
+        assert len(warnings) == 1
+        assert "100%" in warnings[0]
+
+    def test_a_clean_match_does_not_warn(self, monkeypatch):
+        _patch_tables(monkeypatch, surface={"a": 0.5})
+        response = {"edges": [_edge(1.0, surface="a")], "matched_points": [_matched(0)] * 3}
+        warnings: list[str] = []
+
+        calculate_surface_multipliers(_track_with_legs([50.0, 50.0]), response, SportType.HIKING, warnings=warnings)
+
+        assert warnings == []

@@ -107,7 +107,7 @@ def resolve_stops(
 
 
 def expand_track_with_stops(points: list[TrackPoint], stops: list[ResolvedStop | ModeAStop]) -> list[TrackPoint]:
-    """Return a new point list with one duplicate point inserted per stop.
+    """Return a copy of the points with one duplicate point inserted per stop.
 
     Each stop's resolved distance must match an existing point's
     distance_from_start exactly (guaranteed by resolve_stops, since stops
@@ -116,19 +116,24 @@ def expand_track_with_stops(points: list[TrackPoint], stops: list[ResolvedStop |
     is inserted immediately after it, so combine() can stamp the original
     with the arrival time and the duplicate with the departure time.
 
+    Every point is copied, not just the duplicates: combine() stamps
+    timestamps onto the result in place, and `points` is typically the
+    bridge's persistent `_track`, which must stay untimed between conversions.
+
     Args:
-        points: The track's points, in route order. Not mutated.
+        points: The track's points, in route order. Not mutated, and shares
+            no point object with the result.
         stops: Resolved and/or pending stops, in any order.
 
     Returns:
-        A new list of points, one longer per stop.
+        A new list of new points, one longer per stop.
     Raises:
         ValueError: If a stop's distance matches no point in `points`.
     """
     pending = {s.distance_from_start: s for s in stops}
     result: list[TrackPoint] = []
     for point in points:
-        result.append(point)
+        result.append(replace(point))
         if pending.pop(point.distance_from_start, None) is not None:
             result.append(replace(point, timestamp=None))
     if pending:

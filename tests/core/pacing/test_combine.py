@@ -6,6 +6,7 @@ import pytest
 
 from gpx2fit.core.models import InputError, ModeAStop, SportType, Track, TrackPoint
 from gpx2fit.core.pacing.anchors import add_start_end_anchors
+from gpx2fit.core.pacing import combine as combine_module
 from gpx2fit.core.pacing.combine import combine
 from gpx2fit.core.pacing.curve_selection import DEFAULT_SMOOTHNESS, MAX_SPEED_RATIO_BOUNDS
 from gpx2fit.core.pacing.gradient import (
@@ -942,3 +943,181 @@ class TestCombineReturnsSameTrack:
         result = combine(track, anchors, SportType.RUNNING)
 
         assert result is track
+
+
+def _flat_10k() -> Track:
+    return flat_track([i * 100.0 for i in range(101)])
+
+
+def _paced_warnings(track: Track, anchors, **kwargs) -> list[str]:
+    warnings: list[str] = []
+    combine(track, anchors, SportType.RUNNING, warnings=warnings, **kwargs)
+    return warnings
+
+
+class TestCombineImplausibleSegmentPace:
+    """A6: warn when an anchor makes one segment's terrain-adjusted pace far off the workout's.
+
+    On a flat track without pace variation every leg's modeled time is proportional to its
+    distance, so for a 10 km, 1 h activity a first segment of d metres taking t seconds is
+    (3600 / 10000) / (t / d) times the workout's pace.
+    """
+
+    def test_a_proportional_anchor_does_not_warn(self):
+        anchors = [anchor(0.0, START), anchor(5000.0, START + timedelta(seconds=1800)),
+                   anchor(10000.0, START + timedelta(hours=1))]
+
+        assert _paced_warnings(_flat_10k(), anchors) == []
+
+    def test_a_far_too_fast_segment_warns_naming_both_ends(self):
+        # 1 km in 90 s against 0.36 s/m overall: 4x.
+        anchors = [anchor(0.0, START, "start"), anchor(1000.0, START + timedelta(seconds=90)),
+                   anchor(10000.0, START + timedelta(hours=1), "end")]
+
+        warnings = _paced_warnings(_flat_10k(), anchors, vary_pace=False)
+
+        assert len(warnings) == 1
+        assert "start (2024-01-01 08:00)" in warnings[0]
+        assert "anchor at 1.00 km (2024-01-01 08:01)" in warnings[0]
+        assert "4.0× faster" in warnings[0]
+
+    def test_a_far_too_slow_segment_warns(self):
+        # 1 km in 1800 s: 0.2x, i.e. 5x slower.
+        anchors = [anchor(0.0, START), anchor(1000.0, START + timedelta(seconds=1800)),
+                   anchor(10000.0, START + timedelta(hours=1))]
+
+        warnings = _paced_warnings(_flat_10k(), anchors, vary_pace=False)
+
+        assert len(warnings) == 1
+        assert "5.0× slower" in warnings[0]
+        assert "anchor at 1.00 km" in warnings[0]
+
+    def test_one_misplaced_anchor_is_named_once_rather_than_as_two_segments(self):
+        # 0.72 s/m overall. 2 km in 90 min is 2.7 s/m (3.75x slower), then 8 km in 30 min
+        # is 0.225 s/m (3.2x faster). Both sides
+        # share the anchor at 2 km, which is almost certainly the wrong one.
+        anchors = [anchor(0.0, START, "start"), anchor(2000.0, START + timedelta(minutes=90), "photo"),
+                   anchor(10000.0, START + timedelta(hours=2), "end")]
+
+        warnings = _paced_warnings(_flat_10k(), anchors, vary_pace=False)
+
+        assert len(warnings) == 1
+        assert "photo anchor at 2.00 km (2024-01-01 09:30)" in warnings[0]
+        assert "3.8× slower" in warnings[0] and "3.2× faster" in warnings[0]
+        assert "start (" not in warnings[0] and "end (" not in warnings[0]
+
+    def test_opposite_flags_without_a_shared_anchor_are_reported_separately(self):
+        # 0.35 s/m overall: 1 km in 30 min (5.1x slower), 4 km at exactly the workout's pace,
+        # then 5 km in 5 min (5.8x faster). Nothing points at a single anchor.
+        anchors = [anchor(0.0, START, "start"), anchor(1000.0, START + timedelta(seconds=1800)),
+                   anchor(5000.0, START + timedelta(seconds=3200)),
+                   anchor(10000.0, START + timedelta(seconds=3500), "end")]
+
+        warnings = _paced_warnings(_flat_10k(), anchors, vary_pace=False)
+
+        assert len(warnings) == 2
+        assert warnings[0].startswith("Between the start") and "slower" in warnings[0]
+        assert warnings[1].startswith("Between the anchor at 5.00 km") and "faster" in warnings[1]
+
+    def test_neighbours_off_the_same_way_are_reported_separately(self):
+        # Two slow segments either side of an anchor don't point at that anchor.
+        # 0.6 s/m overall: 1 km in 30 min twice is 3.0x slower each, then 8 km in 40 min is 2.0x.
+        anchors = [anchor(0.0, START, "start"), anchor(1000.0, START + timedelta(minutes=30)),
+                   anchor(2000.0, START + timedelta(minutes=60)), anchor(10000.0, START + timedelta(minutes=100), "end")]
+
+        warnings = _paced_warnings(_flat_10k(), anchors, vary_pace=False)
+
+        assert len(warnings) == 2
+        assert all("slower" in w for w in warnings)
+
+    @pytest.mark.parametrize(("first_half_seconds", "warns"), [
+        (700.0, True),   # 1800 / 700 = 2.57x
+        (740.0, False),  # 1800 / 740 = 2.43x
+    ])
+    def test_the_threshold_is_two_and_a_half_times(self, first_half_seconds, warns):
+        anchors = [anchor(0.0, START), anchor(5000.0, START + timedelta(seconds=first_half_seconds)),
+                   anchor(10000.0, START + timedelta(hours=1))]
+
+        warnings = _paced_warnings(_flat_10k(), anchors, vary_pace=False)
+
+        assert bool(warnings) is warns
+
+    def test_a_short_segment_is_too_noisy_to_judge(self):
+        # 200 m in 10 s would be 7x, but minute-rounded anchor times make a segment that short meaningless.
+        anchors = [anchor(0.0, START), anchor(200.0, START + timedelta(seconds=10)),
+                   anchor(10000.0, START + timedelta(hours=1))]
+
+        assert _paced_warnings(_flat_10k(), anchors, vary_pace=False) == []
+
+    def test_start_and_end_alone_never_warn(self):
+        anchors = [anchor(0.0, START), anchor(10000.0, START + timedelta(minutes=1))]
+
+        assert _paced_warnings(_flat_10k(), anchors, vary_pace=False) == []
+
+    def test_a_mode_b_stop_is_not_mistaken_for_a_slow_segment(self):
+        distances = [i * 100.0 for i in range(101)]
+        distances.insert(51, 5000.0)  # the stop's duplicated point
+        anchors = [
+            anchor(0.0, START),
+            anchor(5000.0, START + timedelta(seconds=1800), source="stop_arrival"),
+            anchor(5000.0, START + timedelta(seconds=1800 + 3 * 3600), source="stop_departure"),
+            anchor(10000.0, START + timedelta(seconds=3600 + 3 * 3600)),
+        ]
+
+        assert _paced_warnings(flat_track(distances), anchors, vary_pace=False) == []
+
+    def test_a_mode_a_stop_is_judged_on_moving_time(self):
+        # 1 km moving in 360 s (exactly the workout's pace) plus a 3 h stop. Judged on
+        # total time it would read as about 8x slower.
+        distances = [i * 100.0 for i in range(101)]
+        distances.insert(6, 500.0)
+        stop_seconds = 3 * 3600
+        anchors = [anchor(0.0, START), anchor(1000.0, START + timedelta(seconds=360 + stop_seconds)),
+                   anchor(10000.0, START + timedelta(seconds=3600 + stop_seconds))]
+
+        warnings = _paced_warnings(
+            flat_track(distances), anchors, vary_pace=False,
+            mode_a_stops=[ModeAStop(500.0, timedelta(seconds=stop_seconds))],
+        )
+
+        assert warnings == []
+
+    def test_slow_climbing_is_explained_by_the_terrain(self, monkeypatch):
+        # Terrain can't swing a leg past the speed bound (~2.7x), so a raw 2.5x gap can't
+        # come from terrain alone. The threshold is lowered to show what is compared.
+        monkeypatch.setattr(combine_module, "IMPLAUSIBLE_PACE_RATIO", 1.3)
+        legs = 60
+        climb = Track(points=[
+            point(elevation=min(i, legs) * 12.5, distance_from_start=i * 50.0) for i in range(2 * legs + 1)
+        ])  # 3 km at 25%, then 3 km flat
+        end = START + timedelta(hours=1)
+        modeled = combine(climb, [anchor(0.0, START, "start"), anchor(6000.0, end, "end")], SportType.RUNNING)
+        midpoint_time = timestamp_of(modeled.points[legs])
+        climb_seconds = (midpoint_time - START).total_seconds()
+        flat_seconds = (end - midpoint_time).total_seconds()
+        assert climb_seconds / flat_seconds > 2.0  # raw speeds differ far more than the threshold
+
+        # The anchor sits where the model would put it anyway.
+        anchors = [anchor(0.0, START, "start"), anchor(3000.0, midpoint_time), anchor(6000.0, end, "end")]
+        warnings: list[str] = []
+        combine(climb, anchors, SportType.RUNNING, warnings=warnings)
+        assert warnings == []
+
+        # The same times on flat ground: the first half 1/0.73x, the second 1.57x, the
+        # workout's pace, which points at the anchor between them.
+        flat = flat_track([i * 50.0 for i in range(2 * legs + 1)])
+        warnings = []
+        combine(flat, anchors, SportType.RUNNING, warnings=warnings)
+        assert len(warnings) == 1
+        assert "anchor at 3.00 km" in warnings[0]
+        assert "slower" in warnings[0] and "faster" in warnings[0]
+
+    def test_warning_never_changes_the_pacing(self):
+        anchors = [anchor(0.0, START), anchor(1000.0, START + timedelta(seconds=90)),
+                   anchor(10000.0, START + timedelta(hours=1))]
+        silent, warned = _flat_10k(), _flat_10k()
+
+        combine(silent, anchors, SportType.RUNNING)
+        combine(warned, anchors, SportType.RUNNING, warnings=[])
+
+        assert [p.timestamp for p in silent.points] == [p.timestamp for p in warned.points]

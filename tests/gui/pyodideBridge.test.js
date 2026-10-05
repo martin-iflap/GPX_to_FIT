@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
-import { classifyPyError, convert } from '../../src/gpx2fit/gui/js/pyodideBridge.js';
+import { classifyPyError, convert, describeSurfaceFailure, parseGpx } from '../../src/gpx2fit/gui/js/pyodideBridge.js';
 
 describe('classifyPyError', () => {
   it('extracts the message and tags isInputError for a traceback ending in InputError', () => {
@@ -210,5 +210,134 @@ describe('convert device', () => {
     const script = fakeRuntime.scripts.find((source) => /\bwrite_fit\(/.test(source));
     assert.match(script, /device_manufacturer=/);
     assert.doesNotMatch(script, /_track\.device\s*=/);
+  });
+});
+
+describe('describeSurfaceFailure', () => {
+  it('says the server was too slow for an aborted request', () => {
+    const error = new Error('The operation was aborted.');
+    error.name = 'AbortError';
+    assert.match(describeSurfaceFailure(error), /took too long/);
+  });
+
+  it("says the server couldn't be reached for a network failure", () => {
+    assert.match(describeSurfaceFailure(new TypeError('Failed to fetch')), /couldn't reach/);
+  });
+
+  it('always ends on what it means for the file', () => {
+    for (const error of [new TypeError('Failed to fetch'), new Error('anything'), 'not even an Error']) {
+      assert.match(describeSurfaceFailure(error), /^Surface lookup failed \(.+\), so this file is paced on gradient alone\.$/);
+    }
+  });
+});
+
+describe('convert warnings', () => {
+  const VALHALLA_HOST = 'valhalla1.openstreetmap.de';
+  const convertArgs = {
+    startIso: '2026-06-01T08:00:00.000Z',
+    durationSeconds: 3600,
+    sportEnumName: 'HIKING',
+    anchors: [],
+  };
+  let originalFetch;
+
+  function stubValhalla(respond) {
+    globalThis.fetch = async (url, init) => {
+      if (String(url).includes(VALHALLA_HOST)) {
+        return respond(init);
+      }
+      return { ok: true, text: async () => '', json: async () => ({}) };
+    };
+  }
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    globalThis.loadPyodide = async () => fakeRuntime;
+    fakeRuntime.globalsSet.clear();
+    fakeRuntime.scripts.length = 0;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    delete globalThis.loadPyodide;
+  });
+
+  it("still converts when Valhalla rejects the route, and says why in Valhalla's words", async () => {
+    stubValhalla(() => ({
+      ok: false,
+      status: 400,
+      statusText: 'Bad Request',
+      json: async () => ({ error_code: 154, error: 'Path distance exceeds the max distance limit' }),
+    }));
+
+    const { warnings } = await convert(convertArgs);
+
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /Path distance exceeds the max distance limit/);
+    assert.match(warnings[0], /400/);
+    assert.ok(fakeRuntime.scripts.some((source) => /\bcombine\(/.test(source)), 'conversion never ran');
+  });
+
+  it('reports an HTTP error whose body is not JSON by its status', async () => {
+    stubValhalla(() => ({
+      ok: false,
+      status: 503,
+      statusText: 'Service Unavailable',
+      json: async () => { throw new SyntaxError('Unexpected token <'); },
+    }));
+
+    const { warnings } = await convert(convertArgs);
+
+    assert.match(warnings[0], /503 Service Unavailable/);
+  });
+
+  it('reports a network failure', async () => {
+    stubValhalla(() => { throw new TypeError('Failed to fetch'); });
+
+    const { warnings } = await convert(convertArgs);
+
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /couldn't reach/);
+  });
+
+  it('has no surface warning when the lookup is switched off', async () => {
+    stubValhalla(() => { throw new TypeError('Failed to fetch'); });
+
+    const { warnings } = await convert({ ...convertArgs, surfaceLookup: false });
+
+    assert.deepEqual(warnings, []);
+  });
+
+  it("collects Python's warnings from the surface matching and the pacing, fresh for each conversion", async () => {
+    stubValhalla(() => ({ ok: true, json: async () => ({}) }));
+
+    await convert(convertArgs);
+
+    const resetIndex = fakeRuntime.scripts.findIndex((source) => /^\s*_convert_warnings\s*=\s*\[\]/m.test(source));
+    const surfaceIndex = fakeRuntime.scripts.findIndex((source) => /\bcalculate_surface_multipliers\(/.test(source));
+    const pacingIndex = fakeRuntime.scripts.findIndex((source) => /\bcombine\(/.test(source));
+    assert.ok(resetIndex >= 0, 'never reset _convert_warnings');
+    assert.ok(resetIndex < surfaceIndex && surfaceIndex < pacingIndex, 'reset must come before both producers');
+    assert.match(fakeRuntime.scripts[surfaceIndex], /calculate_surface_multipliers\(.*warnings=_convert_warnings/);
+    assert.match(fakeRuntime.scripts[pacingIndex], /\bcombine\(.*warnings=_convert_warnings/);
+  });
+});
+
+describe('parseGpx warnings', () => {
+  beforeEach(() => {
+    globalThis.loadPyodide = async () => fakeRuntime;
+    fakeRuntime.scripts.length = 0;
+  });
+
+  afterEach(() => {
+    delete globalThis.loadPyodide;
+  });
+
+  it("passes a warnings list to the parser and returns it", async () => {
+    const result = await parseGpx(new Uint8Array([1, 2, 3]));
+
+    const script = fakeRuntime.scripts.find((source) => /\bparse_gpx_bytes\(/.test(source));
+    assert.match(script, /parse_gpx_bytes\(.*warnings=_parse_warnings/);
+    assert.ok(Array.isArray(result.warnings));
   });
 });

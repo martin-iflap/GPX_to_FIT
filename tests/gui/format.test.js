@@ -13,6 +13,7 @@ import {
   formatPace,
   formatSpeedKmh,
   leftOutNote,
+  statusWithWarnings,
   pad,
 } from '../../src/gpx2fit/gui/js/format.js';
 
@@ -218,5 +219,28 @@ describe('leftOutNote', () => {
     assert.equal(leftOutNote(2, 0), " 2 anchors outside the activity's time were left out.");
     assert.equal(leftOutNote(2, 3), " 2 anchors and 3 stops outside the activity's time were left out.");
     assert.equal(leftOutNote(1, 1), " 1 anchor and 1 stop outside the activity's time were left out.");
+  });
+});
+
+describe('statusWithWarnings', () => {
+  it('is a plain status when there are no warnings', () => {
+    assert.deepEqual(statusWithWarnings('Route loaded.', []), { message: 'Route loaded.', kind: false });
+  });
+
+  it('treats a missing list as no warnings', () => {
+    assert.deepEqual(statusWithWarnings('Route loaded.', undefined), { message: 'Route loaded.', kind: false });
+  });
+
+  it('appends one warning and marks the status as a warning', () => {
+    assert.deepEqual(statusWithWarnings('FIT file generated successfully.', ['Surface lookup failed.']), {
+      message: 'FIT file generated successfully. Surface lookup failed.',
+      kind: 'warning',
+    });
+  });
+
+  it('appends several warnings in order', () => {
+    const { message, kind } = statusWithWarnings('Done.', ['First.', 'Second.']);
+    assert.equal(message, 'Done. First. Second.');
+    assert.equal(kind, 'warning');
   });
 });

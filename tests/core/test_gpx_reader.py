@@ -144,3 +144,93 @@ class TestMissingElevation:
         )
         track = parse_gpx_bytes(gpx_bytes)
         assert [p.elevation for p in track.points] == [100.0, 100.0, 130.0]
+
+
+def _multi_gpx(*tracks: list[list[tuple[float, float]]]) -> bytes:
+    """A GPX with one <trk> per argument, each a list of <trkseg>s, each a list of (lat, lon)."""
+    body = "".join(
+        "<trk>" + "".join(
+            "<trkseg>" + "".join(_trkpt(lat, lon, 100.0) for lat, lon in segment) + "</trkseg>"
+            for segment in segments
+        ) + "</trk>"
+        for segments in tracks
+    )
+    return f'<?xml version="1.0"?>\n<gpx version="1.1" creator="Test">{body}</gpx>'.encode("utf-8")
+
+
+# Two short north-going segments. The second starts `gap_deg` of latitude past the end of the first.
+def _two_segments(gap_deg: float) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+    first = [(45.0, 7.0), (45.001, 7.0), (45.002, 7.0)]
+    start = 45.002 + gap_deg
+    second = [(start, 7.0), (start + 0.001, 7.0)]
+    return first, second
+
+
+class TestSegmentGapWarning:
+    def test_a_wide_gap_between_trksegs_warns_with_its_width(self):
+        first, second = _two_segments(0.0126)  # ~1.40 km
+        warnings: list[str] = []
+
+        parse_gpx_bytes(_multi_gpx([first, second]), warnings=warnings)
+
+        gap_km = haversine_m(45.002, 7.0, 45.0146, 7.0) / 1000
+        assert f"{gap_km:.2f}" == "1.40"
+        assert len(warnings) == 1
+        assert "1 gap " in warnings[0]
+        assert "1.40 km" in warnings[0]
+        assert "straight line" in warnings[0]
+
+    def test_a_gap_between_two_trks_warns_too(self):
+        first, second = _two_segments(0.0126)
+        warnings: list[str] = []
+
+        parse_gpx_bytes(_multi_gpx([first], [second]), warnings=warnings)
+
+        assert len(warnings) == 1
+        assert "1.40 km" in warnings[0]
+
+    def test_several_gaps_are_counted_in_one_warning_naming_the_widest(self):
+        segments = [
+            [(45.0, 7.0), (45.001, 7.0)],
+            [(45.005, 7.0), (45.006, 7.0)],  # ~445 m after the first
+            [(45.0186, 7.0), (45.0196, 7.0)],  # ~1.40 km after the second
+        ]
+        warnings: list[str] = []
+
+        parse_gpx_bytes(_multi_gpx(segments), warnings=warnings)
+
+        assert len(warnings) == 1
+        assert "2 gaps " in warnings[0]
+        assert "1.40 km" in warnings[0]
+
+    def test_contiguous_segments_do_not_warn(self):
+        # A paused recording's usual export: the next segment starts where the last one ended.
+        first, second = _two_segments(0.0)
+        warnings: list[str] = []
+
+        parse_gpx_bytes(_multi_gpx([first, second]), warnings=warnings)
+
+        assert warnings == []
+
+    def test_a_short_gap_does_not_warn(self):
+        first, second = _two_segments(0.00054)  # ~60 m
+        warnings: list[str] = []
+
+        parse_gpx_bytes(_multi_gpx([first, second]), warnings=warnings)
+
+        assert warnings == []
+
+    def test_a_long_leg_inside_one_segment_is_not_a_gap(self):
+        # Planners write long straight legs on purpose; only the joins between segments are suspect.
+        warnings: list[str] = []
+
+        parse_gpx_bytes(_multi_gpx([[(45.0, 7.0), (45.02, 7.0)]]), warnings=warnings)
+
+        assert warnings == []
+
+    def test_the_join_still_counts_toward_the_distance(self):
+        first, second = _two_segments(0.0126)
+
+        track = parse_gpx_bytes(_multi_gpx([first, second]))
+
+        assert track.total_distance == pytest.approx(haversine_m(45.0, 7.0, 45.0156, 7.0), rel=0.01)

@@ -46,6 +46,10 @@ _SAC_BLEND_WEIGHT = 0.7 # sac_scale's share when blended with the physical-surfa
 _SAC_DOMINANCE_THRESHOLD = 0.85 # sac multiplier at/below this = meaningful difficulty, take it seriously
 _SAC_CONFLICT_DELTA = 0.25 # |sac_m - physical| beyond this = don't fully trust sac_scale alone
 
+# When at least this share of the route's distance had no usable match (and
+# so got the default multiplier), the user is told.
+SURFACE_FALLBACK_WARNING_SHARE = 0.10
+
 
 def build_trace_attributes_payload(track: Track, costing: str = _DEFAULT_COSTING) -> dict:
     """Build the request body for Valhalla's trace_attributes endpoint.
@@ -242,6 +246,8 @@ def calculate_surface_multipliers(
     response: dict,
     sport: SportType,
     default_multiplier: float = 1.0,
+    *,
+    warnings: list[str] | None = None,
 ) -> list[float]:
     """Calculate per-leg speed multipliers from a Valhalla trace_attributes response.
 
@@ -254,6 +260,9 @@ def calculate_surface_multipliers(
         default_multiplier: Used whenever a leg's surface/road_class/use
             can't be resolved (no matched edge) or a resolved value isn't in
             the relevant weight table.
+        warnings: If given, a user-facing message is appended when legs
+            without a usable match cover at least
+            SURFACE_FALLBACK_WARNING_SHARE of the route's distance.
 
     Returns:
         One relative speed multiplier per leg (N-1 values for N points).
@@ -263,17 +272,14 @@ def calculate_surface_multipliers(
         in at a high weight (_SAC_BLEND_WEIGHT); if it also indicates
         serious difficulty (at/below _SAC_DOMINANCE_THRESHOLD) and roughly
         agrees with the physical-surface factor (within
-        _SAC_CONFLICT_DELTA), it's used outright instead. A leg with an
-        unresolved endpoint gets `default_multiplier` directly.
+        _SAC_CONFLICT_DELTA), it's used outright instead.
 
-    Raises:
-        ValueError: If a leg's end-point edge index is smaller than its
-            start-point edge index. `response["edges"]` is documented to be
-            ordered along the matched path, so this should never happen for
-            a leg made of two consecutive, forward-progressing track points;
-            if it does, something (out-and-back ambiguity, a matching
-            glitch) has broken that assumption and silently slicing the
-            wrong span of edges would be worse than failing loudly.
+        A leg with an unresolved endpoint gets `default_multiplier` directly,
+        and so does a leg whose end-point edge index is smaller than its
+        start-point one. `response["edges"]` is ordered along the matched
+        path, so that only happens on a matching glitch, and slicing the
+        wrong span of edges would be worse than having no surface for that
+        one leg. It used to raise, which cost the whole route its surfaces.
     """
     if len(track.points) < 2:
         return []
@@ -281,19 +287,17 @@ def calculate_surface_multipliers(
     tables = _WEIGHTS_BY_SPORT[sport.value]
     edges = response.get("edges") or []
     point_edge_indexes = resolve_point_edge_indexes(response, len(track.points))
+    leg_lengths = [
+        curr.distance_from_start - prev.distance_from_start for prev, curr in zip(track.points, track.points[1:])
+    ]
 
     multipliers = []
-    for leg_index, (start_edge, end_edge) in enumerate(zip(point_edge_indexes, point_edge_indexes[1:])):
-        if start_edge is None or end_edge is None:
+    fallback_length = 0.0
+    for leg_length, start_edge, end_edge in zip(leg_lengths, point_edge_indexes, point_edge_indexes[1:]):
+        if start_edge is None or end_edge is None or start_edge > end_edge:
             multipliers.append(default_multiplier)
+            fallback_length += leg_length
             continue
-
-        if start_edge > end_edge:
-            raise ValueError(
-                f"Leg {leg_index}: end edge index ({end_edge}) is smaller than "
-                f"start edge index ({start_edge}); edges are expected to be "
-                "ordered along the matched path."
-            )
 
         edge_slice = edges[start_edge:end_edge + 1]
 
@@ -317,7 +321,16 @@ def calculate_surface_multipliers(
 
         multipliers.append(final)
 
+    total_length = sum(leg_lengths)
+    fallback_share = fallback_length / total_length if total_length > 0 else 0.0
+    if warnings is not None and fallback_share >= SURFACE_FALLBACK_WARNING_SHARE:
+        warnings.append(
+            f"Surface data couldn't be matched to {fallback_share:.0%} of the route, "
+            "so those parts are paced on gradient alone."
+        )
+
     return multipliers
 
 
 # todo: surface_weights.json's tables are tuned mostly for hiking. The weights might need adjusting, especially for running.
+# surface fallback warning share is a first guess.

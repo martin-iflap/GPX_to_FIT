@@ -18,7 +18,14 @@ import { createAnchorPlacer } from './anchorPopovers.js';
 import { initPhotoDrop, resetPhotoDrop } from './photoAnchors.js';
 import { initProfilePanel, showProfile, hideProfile } from './profilePanel.js';
 import { coveredMapHeight, initMobileLayout, revealMap } from './mobileLayout.js';
-import { describeError, fitFileNameFromGpx, formatDistanceKm, formatFileSize, leftOutNote } from './format.js';
+import {
+  describeError,
+  fitFileNameFromGpx,
+  formatDistanceKm,
+  formatFileSize,
+  leftOutNote,
+  statusWithWarnings,
+} from './format.js';
 
 const dropzone = document.getElementById('dropzone');
 const gpxFileInput = document.getElementById('gpxFileInput');
@@ -119,26 +126,30 @@ let statusTimeoutId = null;
  * Updates the status line.
  *
  * @param {string} message
- * @param {'error'|'input'|false} [kind] - `'error'` for an unexpected/
+ * @param {'error'|'input'|'warning'|false} [kind] - `'error'` for an unexpected/
  *   internal failure (styled red — see describeError in format.js), `'input'`
  *   for a problem traceable to something the user entered or hasn't set up
  *   yet (styled amber, so it visibly reads as "fix this" rather than "this
- *   app is broken"), or omitted/false for a normal, non-error status.
+ *   app is broken"), `'warning'` for a step that succeeded with a caveat
+ *   (also amber; see statusWithWarnings in format.js), or omitted/false for a
+ *   normal, non-error status.
  *
  * Errors are transient nudges, not permanent state, so they clear themselves
  * after a few seconds instead of sitting there until the next unrelated
- * status update happens to overwrite them.
+ * status update happens to overwrite them. A warning stays: it explains the
+ * route or file the user is looking at, and is gone with the next status.
  */
 function setStatus(message, kind = false) {
   statusEl.textContent = message;
   statusEl.classList.toggle('status-error', kind === 'error');
   statusEl.classList.toggle('status-input', kind === 'input');
+  statusEl.classList.toggle('status-warning', kind === 'warning');
 
   if (statusTimeoutId) {
     clearTimeout(statusTimeoutId);
     statusTimeoutId = null;
   }
-  if (kind) {
+  if (kind === 'error' || kind === 'input') {
     statusTimeoutId = setTimeout(() => {
       statusEl.textContent = 'Ready.';
       statusEl.classList.remove('status-error', 'status-input');
@@ -316,7 +327,7 @@ async function handleFile(file) {
     fileNameEl.hidden = false;
 
     const bytes = new Uint8Array(await file.arrayBuffer());
-    const { points, summary } = await parseGpx(bytes);
+    const { points, summary, warnings } = await parseGpx(bytes);
 
     // Anchors/stops/photo rows reference distances along the *previous*
     // route — a new upload invalidates all of them, so drop them before
@@ -342,7 +353,11 @@ async function handleFile(file) {
     // Before rendering, so the route is fitted to the map the sheet will leave visible.
     revealMap();
     mapModule.renderRoute(points, anchorPlacer.handleRouteClick);
-    setStatus('Route loaded. Set a start time and a duration, end time or average speed, or tap the route to add anchors.');
+    const loaded = statusWithWarnings(
+      'Route loaded. Set a start time and a duration, end time or average speed, or tap the route to add anchors.',
+      warnings,
+    );
+    setStatus(loaded.message, loaded.kind);
   } catch (error) {
     console.error(error);
     const { message, kind } = describeError(error);
@@ -430,7 +445,7 @@ runButton.addEventListener('click', async () => {
 
     // Captured now, so flipping the sport toggle afterward can't relabel this run's chart.
     const convertedSport = sportValue;
-    const { fitBytes, profile } = await convert({
+    const { fitBytes, profile, warnings } = await convert({
       startIso: startTimeField.getValue().toISOString(),
       durationSeconds: resolvedTime.durationSeconds,
       sportEnumName,
@@ -447,7 +462,11 @@ runButton.addEventListener('click', async () => {
     downloadLink.hidden = false;
     downloadLink.textContent = `Download FIT (${formatFileSize(blob.size)})`;
     showProfile(profile, convertedSport);
-    setStatus(`FIT file generated successfully.${leftOutNote(anchorsModule.countInactiveAnchors(), stopsModule.countInactiveStops())}`);
+    const generated = statusWithWarnings(
+      `FIT file generated successfully.${leftOutNote(anchorsModule.countInactiveAnchors(), stopsModule.countInactiveStops())}`,
+      warnings,
+    );
+    setStatus(generated.message, generated.kind);
     downloadLink.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     // So the Ctrl+Enter path ends one plain Enter away from the file, rather
     // than leaving focus on a button that just disabled itself.

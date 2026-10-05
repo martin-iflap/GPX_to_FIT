@@ -1026,6 +1026,13 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   color: var(--warning);
 }
 
+/* A step that succeeded with a caveat (a gap in the GPX, an implausible
+   segment pace, a failed surface lookup). Amber like .status-input, but
+   main.js doesn't clear it on a timer. */
+.status-warning {
+  color: var(--warning);
+}
+
 .download-link {
   display: block;
   text-align: center;

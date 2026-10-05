@@ -207,6 +207,50 @@ class TestExpandTrackWithStops:
         assert [p.distance_from_start for p in result] == [0.0, 300.0, 300.0, 600.0, 600.0, 1000.0]
 
 
+class TestExpandTrackWithStopsCopiesPoints:
+    """The input is the bridge's persistent `_track`, so the working copy must share no point with it."""
+
+    @pytest.mark.parametrize("stops", [
+        [],
+        [ModeAStop(500.0, timedelta(minutes=5))],
+        [ResolvedStop(500.0, START, START + timedelta(minutes=5))],
+    ])
+    def test_no_output_point_is_an_input_point(self, stops):
+        points = [point(distance_from_start=0.0), point(distance_from_start=500.0), point(distance_from_start=1000.0)]
+
+        result = expand_track_with_stops(points, stops)
+
+        input_ids = {id(p) for p in points}
+        assert not any(id(p) in input_ids for p in result)
+
+    def test_stamping_the_output_leaves_the_input_untimed(self):
+        points = [point(distance_from_start=0.0), point(distance_from_start=500.0), point(distance_from_start=1000.0)]
+
+        for p in expand_track_with_stops(points, [ModeAStop(500.0, timedelta(minutes=5))]):
+            p.timestamp = START
+
+        assert all(p.timestamp is None for p in points)
+
+    def test_copies_keep_every_field(self):
+        points = [point(lat=1.5, lon=2.5, elevation=300.0, distance_from_start=0.0),
+                  point(lat=1.6, lon=2.6, elevation=310.0, distance_from_start=500.0)]
+
+        result = expand_track_with_stops(points, [])
+
+        assert result == points
+
+    def test_combine_over_the_expanded_points_never_stamps_the_original_track(self):
+        track = Track(points=[point(distance_from_start=d) for d in (0.0, 250.0, 500.0, 750.0, 1000.0)])
+        hard_anchors = [anchor(0.0, START), anchor(1000.0, START + timedelta(minutes=30))]
+        mode_a_stops = [ModeAStop(500.0, timedelta(minutes=5))]
+
+        working_track = Track(points=expand_track_with_stops(track.points, [*mode_a_stops]))
+        combine(working_track, hard_anchors, SportType.RUNNING, mode_a_stops=mode_a_stops)
+
+        assert all(p.timestamp is not None for p in working_track.points)
+        assert all(p.timestamp is None for p in track.points)
+
+
 class TestExpandMultipliersWithStops:
     def test_length_increases_by_one_per_stop_matching_expand_track_with_stops(self):
         points = [point(distance_from_start=0.0), point(distance_from_start=500.0), point(distance_from_start=1000.0)]
