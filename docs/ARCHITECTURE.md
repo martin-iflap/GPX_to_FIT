@@ -425,9 +425,11 @@ flowchart TD
   rpei["resolve_point_edge_indexes(response, n)<br/>point → matched edge index, gaps filled from neighbours"]
   lcm["_leg_category_multiplier(edges, 'surface'|'road_class'|'use')"] --> lwa["_length_weighted_average"]
   lsm["_leg_sac_scale_multiplier(edges)"]
+  rss["_remove_surface_spikes(multipliers, leg_lengths)<br/>distance-weighted median over ±25 m"]
   csm --> rpei
   csm --> lcm
   csm --> lsm
+  csm --> rss
   W[("_WEIGHTS_BY_SPORT<br/>from surface_weights.json")] --> csm
 ```
 
@@ -441,7 +443,14 @@ leg has a SAC scale, one of two things happens:
 A leg with no matched edge gets 1.0, and so does a leg whose matched edges
 run backwards (a matching glitch; it used to raise and cost the whole route
 its surfaces). When those legs add up to `SURFACE_FALLBACK_WARNING_SHARE`
-(10%) of the distance or more, a warning is appended. The HTTP request
+(10%) of the distance or more, a warning is appended.
+
+Last, `_remove_surface_spikes` gives each leg the distance-weighted median
+of the multipliers within ±`SURFACE_SPIKE_HALF_WINDOW_M` (25 m). A surface
+feature shorter than that (a road crossing, a matching glitch) takes its
+surroundings' value; longer ones, and the steps between them, are unchanged.
+
+The HTTP request
 itself is made in `pyodideBridge.js`, which also turns a failed request into
 a warning (`describeSurfaceFailure`).
 

@@ -2,8 +2,10 @@ import pytest
 from gpx2fit.core.models import SportType, Track
 from gpx2fit.core.pacing import surface as surface_module
 from gpx2fit.core.pacing.surface import (
+    SURFACE_SPIKE_HALF_WINDOW_M,
     _leg_category_multiplier,
     _leg_sac_scale_multiplier,
+    _remove_surface_spikes,
     build_trace_attributes_payload,
     calculate_surface_multipliers,
     resolve_point_edge_indexes,
@@ -410,6 +412,24 @@ class TestCalculateSurfaceMultipliers:
         assert hiking_multiplier == pytest.approx(surface_share * 0.9 + (1 - surface_share))
         assert running_multiplier == pytest.approx(surface_share * 0.4 + (1 - surface_share))
 
+    def test_a_short_edge_between_two_long_legs_is_smoothed_away(self, monkeypatch):
+        # Points snap to trail, paved, paved, trail: legs 0 and 2 each span a
+        # trail edge and the paved one (the same blend), and the short leg 1
+        # is on the paved edge alone, a road crossing.
+        _patch_tables(monkeypatch, surface={"trail": 0.6, "paved": 1.2})
+        response = {
+            "edges": [_edge(50.0, surface="trail"), _edge(10.0, surface="paved"), _edge(50.0, surface="trail")],
+            "matched_points": [_matched(0), _matched(1), _matched(1), _matched(2)],
+        }
+        crossing = SURFACE_SPIKE_HALF_WINDOW_M / 2
+        track = _track_with_legs([100.0, crossing, 100.0])
+
+        multipliers = calculate_surface_multipliers(track, response, SportType.HIKING)
+
+        surface_share = surface_module._FAMILY_WEIGHTS["surface"]
+        trail_blend = surface_share * (0.6 * 50 + 1.2 * 10) / 60 + (1 - surface_share)
+        assert multipliers == [pytest.approx(trail_blend)] * 3
+
 
 def _track_with_legs(leg_lengths: list[float]) -> Track:
     """A Track whose legs have the given lengths (positions don't matter to surface.py's matching)."""
@@ -478,3 +498,129 @@ class TestSurfaceFallbackWarning:
         calculate_surface_multipliers(_track_with_legs([50.0, 50.0]), response, SportType.HIKING, warnings=warnings)
 
         assert warnings == []
+
+
+def _profile(*runs: tuple[float, float], leg_m: float) -> tuple[list[float], list[float]]:
+    """Multipliers and leg lengths for consecutive (value, length in metres) runs, cut into leg_m legs."""
+    multipliers: list[float] = []
+    for value, length in runs:
+        legs = round(length / leg_m)
+        assert legs * leg_m == pytest.approx(length)  # premise: runs fall on leg boundaries
+        multipliers += [value] * legs
+    return multipliers, [leg_m] * len(multipliers)
+
+
+def _per_metre(multipliers: list[float], leg_lengths: list[float]) -> list[float]:
+    """The value at every whole metre along the route, so tracks of different point density compare."""
+    return [value for value, length in zip(multipliers, leg_lengths) for _ in range(round(length))]
+
+
+class TestRemoveSurfaceSpikes:
+    # Lengths are derived from the window rather than hardcoded, so retuning
+    # SURFACE_SPIKE_HALF_WINDOW_M can't silently turn a "short" feature into a
+    # long one. A feature is removed when it is shorter than the half-window.
+    SHORT = SURFACE_SPIKE_HALF_WINDOW_M * 0.6
+    LONG = SURFACE_SPIKE_HALF_WINDOW_M * 1.4
+    BACKGROUND = SURFACE_SPIKE_HALF_WINDOW_M * 8
+
+    def test_a_short_spike_on_a_dense_track_is_removed_entirely(self):
+        multipliers, lengths = _profile(
+            (0.8, self.BACKGROUND), (1.05, self.SHORT), (0.8, self.BACKGROUND), leg_m=1.0,
+        )
+        assert 1.05 in multipliers  # premise
+
+        assert _remove_surface_spikes(multipliers, lengths) == [0.8] * len(multipliers)
+
+    def test_a_short_dip_is_removed_as_well_as_a_short_rise(self):
+        multipliers, lengths = _profile(
+            (1.0, self.BACKGROUND), (0.5, self.SHORT), (1.0, self.BACKGROUND), leg_m=1.0,
+        )
+        assert _remove_surface_spikes(multipliers, lengths) == [1.0] * len(multipliers)
+
+    def test_a_feature_longer_than_the_half_window_is_kept_whole(self):
+        multipliers, lengths = _profile(
+            (0.8, self.BACKGROUND), (1.05, self.LONG), (0.8, self.BACKGROUND), leg_m=1.0,
+        )
+        assert _remove_surface_spikes(multipliers, lengths) == multipliers
+
+    def test_a_real_surface_change_stays_a_sharp_step_in_the_same_place(self):
+        multipliers, lengths = _profile((0.8, self.BACKGROUND), (1.05, self.BACKGROUND), leg_m=1.0)
+        assert _remove_surface_spikes(multipliers, lengths) == multipliers
+
+    def test_a_spike_is_removed_without_disturbing_a_nearby_real_step(self):
+        # The spike sits a full window before the step, so neither can reach the other.
+        gap = SURFACE_SPIKE_HALF_WINDOW_M * 3
+        multipliers, lengths = _profile(
+            (0.8, self.BACKGROUND), (1.2, self.SHORT), (0.8, gap), (1.05, self.BACKGROUND), leg_m=1.0,
+        )
+        expected, _ = _profile(
+            (0.8, self.BACKGROUND), (0.8, self.SHORT), (0.8, gap), (1.05, self.BACKGROUND), leg_m=1.0,
+        )
+        assert _remove_surface_spikes(multipliers, lengths) == expected
+
+    def test_the_result_does_not_depend_on_point_density(self):
+        # The same route at 1 m and at 5 m point spacing: a moving average or
+        # window over a fixed number of legs would treat the two differently.
+        runs = ((0.8, 200.0), (1.05, 10.0), (0.8, 200.0), (1.05, 200.0), (0.9, 40.0), (1.05, 200.0))
+        dense = _profile(*runs, leg_m=1.0)
+        sparse = _profile(*runs, leg_m=5.0)
+
+        dense_result = _per_metre(_remove_surface_spikes(*dense), dense[1])
+        sparse_result = _per_metre(_remove_surface_spikes(*sparse), sparse[1])
+
+        assert dense_result == sparse_result
+        assert dense_result != _per_metre(*dense)  # premise: the 10 m spike was there to remove
+
+    def test_irregular_point_spacing_gives_the_same_result_as_even_spacing(self):
+        # Real GPX spacing varies from leg to leg. Cutting every 10 m into a 1 m
+        # and a 9 m leg must not move any surface change, so each leg has to be
+        # placed by the lengths before it, not by its own.
+        runs = ((0.8, 200.0), (1.05, 10.0), (0.8, 200.0), (1.05, 200.0), (0.9, 40.0), (1.05, 200.0))
+        even = _profile(*runs, leg_m=1.0)
+        irregular_values = [value for value, length in runs for _ in range(round(length / 10)) for _ in range(2)]
+        irregular_lengths = [1.0, 9.0] * (len(irregular_values) // 2)
+
+        assert _per_metre(_remove_surface_spikes(irregular_values, irregular_lengths), irregular_lengths) == (
+            _per_metre(_remove_surface_spikes(*even), even[1])
+        )
+
+    def test_legs_are_weighted_by_length_not_counted(self):
+        # Inside the window, the ten 1 m legs of 0.5 outnumber the two 20 m legs
+        # of 1.0 but cover far less ground, so they go.
+        multipliers = [1.0] * 4 + [0.5] * 10 + [1.0] * 4
+        lengths = [20.0] * 4 + [1.0] * 10 + [20.0] * 4
+
+        assert _remove_surface_spikes(multipliers, lengths, half_window_m=25.0) == [1.0] * len(multipliers)
+
+    def test_a_long_leg_is_a_long_feature_however_few_points_it_has(self):
+        # One 40 m leg on a sparse track covers most of a ±25 m window by itself.
+        multipliers = [0.8, 0.8, 1.05, 0.8, 0.8]
+        lengths = [40.0] * 5
+
+        assert _remove_surface_spikes(multipliers, lengths, half_window_m=25.0) == multipliers
+
+    def test_zero_length_legs_carry_no_weight(self):
+        # Duplicate GPX points make zero-length legs. A run of them with an odd
+        # value must not outvote a single real leg.
+        multipliers = [0.8] * 5 + [2.0] * 50 + [0.8] * 5
+        lengths = [10.0] * 5 + [0.0] * 50 + [10.0] * 5
+
+        assert _remove_surface_spikes(multipliers, lengths, half_window_m=25.0) == [0.8] * len(multipliers)
+
+    def test_a_track_with_no_length_is_returned_unchanged(self):
+        multipliers = [0.8, 1.2, 0.9, 1.1]
+        assert _remove_surface_spikes(multipliers, [0.0] * 4) == multipliers
+
+    def test_fewer_than_three_legs_are_returned_unchanged(self):
+        assert _remove_surface_spikes([0.8, 1.2], [1.0, 1.0]) == [0.8, 1.2]
+        assert _remove_surface_spikes([], []) == []
+
+    def test_the_input_list_is_not_modified(self):
+        multipliers, lengths = _profile(
+            (0.8, self.BACKGROUND), (1.05, self.SHORT), (0.8, self.BACKGROUND), leg_m=1.0,
+        )
+        original = list(multipliers)
+
+        _remove_surface_spikes(multipliers, lengths)
+
+        assert multipliers == original

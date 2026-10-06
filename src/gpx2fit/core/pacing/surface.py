@@ -23,6 +23,7 @@ the physical-surface factor, it's trusted outright.
 
 import json
 import pathlib
+from collections import defaultdict
 from collections.abc import Callable
 from typing import Any
 
@@ -49,6 +50,10 @@ _SAC_CONFLICT_DELTA = 0.25 # |sac_m - physical| beyond this = don't fully trust 
 # When at least this share of the route's distance had no usable match (and
 # so got the default multiplier), the user is told.
 SURFACE_FALLBACK_WARNING_SHARE = 0.10
+
+# Surface features shorter than this (a road crossing, a short bridge, a
+# matching glitch) are smoothed away by _remove_surface_spikes.
+SURFACE_SPIKE_HALF_WINDOW_M = 25.0
 
 
 def build_trace_attributes_payload(track: Track, costing: str = _DEFAULT_COSTING) -> dict:
@@ -241,6 +246,85 @@ def _leg_sac_scale_multiplier(
     return _length_weighted_average(tagged_edges, lambda e: weights.get(str(e["sac_scale"]), default_multiplier))
 
 
+def _remove_surface_spikes(
+    multipliers: list[float],
+    leg_lengths: list[float],
+    half_window_m: float = SURFACE_SPIKE_HALF_WINDOW_M,
+) -> list[float]:
+    """Remove surface features too short to be real, keeping real surface changes sharp.
+
+    Each leg takes the distance-weighted median of the multipliers within
+    ±half_window_m of its midpoint, i.e. the value covering the larger part of
+    that window. A feature shorter than half_window_m (a paved road crossing on
+    a trail, a short bridge) never covers the larger part, so it is replaced by
+    its surroundings. A longer one keeps its value, and a change between two
+    long stretches stays a sharp step in the same place. Unlike a moving
+    average, nothing else is touched, and the window is in metres, so the
+    result doesn't depend on the GPX's point density.
+
+    Args:
+        multipliers: One speed multiplier per leg.
+        leg_lengths: Each leg's length in metres, the same length as
+            multipliers. A zero-length leg carries no weight.
+        half_window_m: Half the window's length.
+
+    Returns:
+        A new list with one multiplier per leg. The input is not modified.
+    """
+    n = len(multipliers)
+    result = list(multipliers)
+    if n < 3:
+        return result
+
+    starts = [0.0] * n
+    for i in range(1, n):
+        starts[i] = starts[i - 1] + leg_lengths[i - 1]
+
+    # First and last index of the run of equal values each leg belongs to, so
+    # a window holding one value throughout is recognized without looking inside.
+    run_first = [0] * n
+    for i in range(1, n):
+        run_first[i] = run_first[i - 1] if multipliers[i] == multipliers[i - 1] else i
+    run_last = [n - 1] * n
+    for i in range(n - 2, -1, -1):
+        run_last[i] = run_last[i + 1] if multipliers[i] == multipliers[i + 1] else i
+
+    # lo...hi are the legs touching the current window. Both only move forward,
+    # so finding them costs O(n) over the whole track.
+    lo = hi = 0
+    for i in range(n):
+        centre = starts[i] + leg_lengths[i] / 2
+        window_start, window_end = centre - half_window_m, centre + half_window_m
+        while lo < i and starts[lo] + leg_lengths[lo] <= window_start:
+            lo += 1
+        while hi + 1 < n and starts[hi + 1] < window_end:
+            hi += 1
+        if run_first[i] <= lo and run_last[i] >= hi:
+            continue  # one value across the whole window, which is nearly every leg
+
+        # Metres of the window each value covers, a whole run of equal values at a time.
+        metres_by_value: defaultdict[float, float] = defaultdict(float)
+        j = lo
+        while j <= hi:
+            run_end = run_last[j]
+            overlap = min(window_end, starts[run_end] + leg_lengths[run_end]) - max(window_start, starts[j])
+            if overlap > 0:
+                metres_by_value[multipliers[j]] += overlap
+            j = run_end + 1
+        if not metres_by_value:
+            continue  # only zero-length legs nearby
+
+        half = sum(metres_by_value.values()) / 2
+        covered = 0.0
+        for value, metres in sorted(metres_by_value.items()):
+            covered += metres
+            if covered >= half:
+                result[i] = value
+                break
+
+    return result
+
+
 def calculate_surface_multipliers(
     track: Track,
     response: dict,
@@ -329,8 +413,9 @@ def calculate_surface_multipliers(
             "so those parts are paced on gradient alone."
         )
 
-    return multipliers
+    return _remove_surface_spikes(multipliers, leg_lengths)
 
 
 # todo: surface_weights.json's tables are tuned mostly for hiking. The weights might need adjusting, especially for running.
 # surface fallback warning share is a first guess.
+# surface spike half window is a first guess.
