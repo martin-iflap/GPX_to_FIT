@@ -271,18 +271,36 @@ the resulting multipliers to `combine()` as a plain list. `anchors.py`,
 ### 5.2 `gpx_reader.py`
 
 ```
-parse_gpx_bytes(gpx_bytes, device=None, *, warnings=None) -> Track
+parse_gpx_bytes(gpx_bytes, device=None, *, max_leg_m=MAX_LEG_M, warnings=None) -> Track
   bytes ─decode utf-8─▶ gpxpy.parse ─▶ for track/segment/point:
       cumulative distance_3d (→ distance_2d) ,
       implausible elevation → missing, carry-forward, leading back-fill,
       join to the previous segment wider than SEGMENT_GAP_WARNING_M (100 m) → noted
+  ─▶ densify_points(points, max_leg_m)   (skipped when max_leg_m is None)
   ─▶ Track(points, device = device or <gpx creator>, has_elevation)
   appends to warnings: one message if any segment join was a gap
   raises InputError: not UTF-8 · not GPX · no track points · one point · no length
+
+densify_points(points, max_leg_m) -> list[TrackPoint]
+  each leg longer than max_leg_m ─▶ ceil(leg / max_leg_m) equal pieces,
+      lat/lon/elevation/distance_from_start interpolated linearly
+  the original point objects are kept, unchanged and in order
 ```
 
 Segments are always concatenated, and a gap is joined with a straight leg
 that is paced like the rest. The warning only tells the user it happened.
+
+**Densifying (2026-10-08).** Every leg longer than `MAX_LEG_M` (15 m, a
+first guess) is split into equal pieces on the straight line between its
+points, since a GPX says nothing about the path between them. Pacing works
+per leg. On a sparse planner GPX (legs of 100 m or more), speed used to step
+at each point, and the gradient window and the pace wander had nothing to
+smooth. Anchors, photos and stops also snapped up to half a leg away. 15 m
+matches the spacing the tuning harness fits on, so the constants are used
+where they were fitted. A dense GPX is left as it is. Because this happens in
+the parser, every later step uses the dense track: the map, nearest-point
+lookups, the Valhalla request (more shape points for a sparse route), pacing
+and the FIT file.
 
 It reads only `<trk>` points. Route (`<rte>`) and waypoint elements are
 ignored.

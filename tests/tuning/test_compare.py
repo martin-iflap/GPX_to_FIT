@@ -30,7 +30,7 @@ def _self_consistent(prepared, params=None):
     predicted, _ = elapsed_from_model(
         TrackModel.build(prepared.track), prepared.sport, prepared.moving_seconds, params
     )
-    prepared.reference_elapsed = predicted.tolist()
+    prepared.reference_elapsed = predicted[prepared.recorded_indexes].tolist()
     return prepared
 
 

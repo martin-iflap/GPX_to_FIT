@@ -14,7 +14,11 @@ are rise over slope-distance, not rise over run), and rather than reimplement
 that convention and hope it matches, the harness just uses it.
 
 Resampling keeps real recorded points rather than interpolating between them,
-so every reference timestamp is a value the athlete actually produced.
+so every reference timestamp is a value the athlete actually produced. Parsing
+then densifies the track like it does in production, splitting any leg over
+`gpx_reader.MAX_LEG_M`. The model paces every point, but only the recorded ones
+(`PreparedActivity.recorded_indexes`) carry a reference time, so that's where
+it's judged.
 """
 
 import statistics
@@ -24,7 +28,7 @@ from xml.sax.saxutils import escape
 
 import numpy as np
 
-from gpx2fit.core.gpx_reader import parse_gpx_bytes
+from gpx2fit.core.gpx_reader import MAX_LEG_M, densify_points, parse_gpx_bytes
 from gpx2fit.core.models import SportType, Track, TrackPoint
 from tuning.elevation import NOISY_ELEVATION_RATIO, elevation_noise
 from tuning.fit_reader import ReferenceActivity, UnreadableActivity
@@ -75,11 +79,14 @@ class PreparedActivity:
     Attributes:
         name: Identifier for reports.
         sport: Which sport's constants the model should use.
-        track: The production-shaped track, straight out of `parse_gpx_bytes`,
-            with `distance_from_start` set and every timestamp None — exactly
-            what `combine()` expects to be handed.
+        track: The production-shaped track, exactly what `parse_gpx_bytes`
+            returns for the GPX (densified), with `distance_from_start` set and
+            every timestamp None — exactly what `combine()` expects to be handed.
+        recorded_indexes: Indexes into `track.points` of the recorded points,
+            the ones the GPX holds, in order. The rest were inserted by
+            densifying and have no reference time.
         reference_elapsed: The real moving-time seconds since the start, one
-            per point of `track`, strictly increasing and starting at 0.0.
+            per recorded point, strictly increasing and starting at 0.0.
         gpx_bytes: The synthesized GPX the track was parsed from, so the same
             input can be dropped into the browser GUI for an eyeball check.
         source_points: How many recorded points the activity started with.
@@ -91,11 +98,17 @@ class PreparedActivity:
     name: str
     sport: SportType
     track: Track
+    recorded_indexes: list[int]
     reference_elapsed: list[float]
     gpx_bytes: bytes
     source_points: int
     excised_seconds: float
     notes: list[str] = field(default_factory=list)
+
+    @property
+    def recorded_points(self) -> list[TrackPoint]:
+        """The track's recorded points, one per reference time."""
+        return [self.track.points[index] for index in self.recorded_indexes]
 
     @property
     def moving_seconds(self) -> float:
@@ -460,7 +473,13 @@ def prepare_reference(
         )
 
     gpx_bytes = _to_gpx_bytes(deduped_points, elevation_step_m, activity.name)
-    track = parse_gpx_bytes(gpx_bytes, device="gpx2fit-tuning")
+    # Densified here rather than inside parse_gpx_bytes, which does exactly the
+    # same, so the recorded points can be told apart: densify_points keeps them
+    # as the very same objects.
+    track = parse_gpx_bytes(gpx_bytes, device="gpx2fit-tuning", max_leg_m=None)
+    recorded = {id(point) for point in track.points}
+    track.points = densify_points(track.points, MAX_LEG_M)
+    recorded_indexes = [index for index, point in enumerate(track.points) if id(point) in recorded]
     track.sport = activity.sport
     track.activity_name = activity.name
 
@@ -468,6 +487,7 @@ def prepare_reference(
         name=activity.name,
         sport=activity.sport,
         track=track,
+        recorded_indexes=recorded_indexes,
         reference_elapsed=deduped_reference,
         gpx_bytes=gpx_bytes,
         source_points=len(points),

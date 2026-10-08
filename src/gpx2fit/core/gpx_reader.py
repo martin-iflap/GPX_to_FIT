@@ -37,21 +37,79 @@ def _gap_warning(gaps_m: list[float]) -> str:
     )
 
 
-def parse_gpx_bytes(gpx_bytes: bytes, device: str | None = None, *, warnings: list[str] | None = None) -> Track:
+# Parsing splits every leg longer than this, so a sparse GPX file is paced at
+# about the spacing the tuning harness fits its constants on and also the
+# pacing and anchors are more accurate on denser files.
+MAX_LEG_M = 15.0
+
+# Slack for floating-point distances, so a leg of exactly n x max_leg_m isn't cut
+# into n + 1 pieces.
+_LEG_TOLERANCE_M = 1e-6
+
+
+def densify_points(points: list[TrackPoint], max_leg_m: float) -> list[TrackPoint]:
+    """Split every leg longer than `max_leg_m` into equal pieces with straight-line points.
+
+    A GPX says nothing about the path between two of its points, so the
+    straight line is the best guess: latitude, longitude, elevation and
+    distance_from_start are all interpolated linearly, by the same fraction.
+    Equal pieces rather than full ones plus a remainder, so no leg ends up a
+    sliver. Legs at or under the limit, including zero-distance ones, get no
+    points.
+
+    Args:
+        points: Points in route order, with distance_from_start set.
+        max_leg_m: The longest leg to leave alone, in metres.
+    Returns:
+        A new list holding every original point object, unchanged and in
+        order, with the inserted points (no timestamp) between them. The
+        input list isn't modified.
+    Raises:
+        ValueError: If max_leg_m isn't positive.
+    """
+    if max_leg_m <= 0:
+        raise ValueError(f"max_leg_m must be positive, got {max_leg_m}.")
+
+    dense = points[:1]
+    for start, end in zip(points, points[1:]):
+        leg_m = end.distance_from_start - start.distance_from_start
+        pieces = math.ceil((leg_m - _LEG_TOLERANCE_M) / max_leg_m)
+        for piece in range(1, pieces):
+            fraction = piece / pieces
+            dense.append(TrackPoint(
+                lat=start.lat + (end.lat - start.lat) * fraction,
+                lon=start.lon + (end.lon - start.lon) * fraction,
+                elevation=start.elevation + (end.elevation - start.elevation) * fraction,
+                distance_from_start=start.distance_from_start + leg_m * fraction,
+            ))
+        dense.append(end)
+    return dense
+
+
+def parse_gpx_bytes(
+    gpx_bytes: bytes,
+    device: str | None = None,
+    *,
+    max_leg_m: float | None = MAX_LEG_M,
+    warnings: list[str] | None = None,
+) -> Track:
     """Parse GPX file contents into a Track.
 
     Args:
         gpx_bytes: Raw contents of a .gpx file.
         device: Device name to embed in the resulting Track. If not given,
             falls back to the GPX file's <creator> attribute.
+        max_leg_m: Legs longer than this are split with straight-line points
+            (see densify_points). None keeps exactly the GPX's own points.
         warnings: If given, a user-facing message is appended when segments
             are joined across a gap longer than SEGMENT_GAP_WARNING_M. The
             parse itself is the same either way.
     Returns:
-        A Track with one TrackPoint per GPX trackpoint, in file order, with
-        distance_from_start computed as the cumulative 3D (falling back to
-        2D) distance from the first point. Points have no timestamp yet —
-        that's assigned later by pacing.
+        A Track with one TrackPoint per GPX trackpoint, in file order, plus
+        any points densifying inserts between them, with distance_from_start
+        computed as the cumulative 3D (falling back to 2D) distance from the
+        first point. Points have no timestamp yet — that's assigned later by
+        pacing.
     Raises:
         InputError: If gpx_bytes isn't valid UTF-8, isn't parseable as GPX,
             contains no track points, or describes a route with no length
@@ -133,4 +191,10 @@ def parse_gpx_bytes(gpx_bytes: bytes, device: str | None = None, *, warnings: li
     if gaps_m and warnings is not None:
         warnings.append(_gap_warning(gaps_m))
 
+    # After the elevation back-fill, so inserted points interpolate real values.
+    if max_leg_m is not None:
+        track_points = densify_points(track_points, max_leg_m)
+
     return Track(points=track_points, device=device, has_elevation=has_elevation)
+
+# todo: max_leg_m is a first guess.

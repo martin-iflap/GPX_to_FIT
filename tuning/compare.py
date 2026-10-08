@@ -178,7 +178,7 @@ class ActivityReport:
         max_time_error_seconds: Largest signed gap between the model's clock
             and the real clock at the same point on the route.
         max_time_error_at_m: Where that gap happened.
-        rms_time_error_seconds: RMS of that signed error over all points.
+        rms_time_error_seconds: RMS of that signed error over all recorded points.
         buckets: Every bucket, in route order.
         bands: The buckets pooled by gradient.
         notes: Quality notes carried over from preparation.
@@ -317,13 +317,18 @@ class ActivityContext:
         model = TrackModel.build(track, params.gradient_window_m)
         bucket_m = max(bucket_m, params.gradient_window_m)
 
-        boundaries = np.asarray(_bucket_boundaries(model.leg_distances, bucket_m))
-        lo, hi = boundaries[:-1], boundaries[1:]
-
+        # Buckets start and end on recorded points, the only ones with a real
+        # time. lo/hi index the (densified) track the model paces; the
+        # recorded_* ones index the reference.
         point_distance = np.asarray([point.distance_from_start for point in track.points], dtype=float)
+        recorded = np.asarray(prepared.recorded_indexes)
+        boundaries = np.asarray(_bucket_boundaries(np.diff(point_distance[recorded]), bucket_m))
+        recorded_lo, recorded_hi = boundaries[:-1], boundaries[1:]
+        lo, hi = recorded[recorded_lo], recorded[recorded_hi]
+
         reference = np.asarray(prepared.reference_elapsed, dtype=float)
         bucket_distance = point_distance[hi] - point_distance[lo]
-        real_seconds = reference[hi] - reference[lo]
+        real_seconds = reference[recorded_hi] - reference[recorded_lo]
 
         # A bucket with no distance or no time says nothing about pace.
         # prepare() already removed stops, so this is rare.
@@ -553,7 +558,9 @@ def report_of(context: ActivityContext, params: PacingParams | None = None) -> A
     def distance_where(mask: np.ndarray) -> float:
         return float(context.bucket_distance[mask].sum())
 
-    errors = evaluation.predicted - np.asarray(prepared.reference_elapsed, dtype=float)
+    # Judged at the recorded points only: the inserted ones have no real time.
+    recorded = np.asarray(prepared.recorded_indexes)
+    errors = evaluation.predicted[recorded] - np.asarray(prepared.reference_elapsed, dtype=float)
     worst = int(np.argmax(np.abs(errors)))
 
     return ActivityReport(
@@ -568,7 +575,7 @@ def report_of(context: ActivityContext, params: PacingParams | None = None) -> A
         mixed_distance_m=distance_where(context.mixed),
         mean_log_residual=evaluation.mean_log_residual,
         max_time_error_seconds=float(errors[worst]),
-        max_time_error_at_m=prepared.track.points[worst].distance_from_start,
+        max_time_error_at_m=prepared.recorded_points[worst].distance_from_start,
         rms_time_error_seconds=math.sqrt((errors ** 2).mean()),
         buckets=buckets,
         bands=_pool_into_bands(buckets, context.mean_speed, evaluation.mean_log_residual),

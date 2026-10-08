@@ -24,7 +24,7 @@ class TestResampling:
         prepared = _prepared(spacing_m=30.0)
         gaps = [
             later.distance_from_start - earlier.distance_from_start
-            for earlier, later in zip(prepared.track.points, prepared.track.points[1:])
+            for earlier, later in zip(prepared.recorded_points, prepared.recorded_points[1:])
         ]
         # The recording is at 16 m, so a 30 m target lands on every other point.
         assert 28.0 <= min(gaps[:-1]) and max(gaps) <= 40.0
@@ -49,7 +49,7 @@ class TestResampling:
         recorded = sorted(point.lat for point in activity.track.points)
         # The recording steps 16 m per point, so anything interpolated would
         # land tens of metres from every real point rather than centimetres.
-        for point in prepared.track.points:
+        for point in prepared.recorded_points:
             index = bisect_left(recorded, point.lat)
             neighbours = recorded[max(0, index - 1): index + 1]
             assert min(abs(point.lat - lat) for lat in neighbours) < 1e-6
@@ -57,12 +57,12 @@ class TestResampling:
 
 class TestElevation:
     def test_elevation_is_quantized_to_whole_metres(self):
-        for point in _prepared().track.points:
+        for point in _prepared().recorded_points:
             assert point.elevation == pytest.approx(round(point.elevation))
 
     def test_a_coarser_step_quantizes_further(self):
         prepared = _prepared(elevation_step_m=5.0)
-        for point in prepared.track.points:
+        for point in prepared.recorded_points:
             assert point.elevation % 5.0 == pytest.approx(0.0)
 
     def test_an_activity_with_flat_elevation_is_rejected(self):
@@ -76,9 +76,12 @@ class TestReferenceTiming:
         assert reference[0] == 0.0
         assert all(later > earlier for earlier, later in zip(reference, reference[1:]))
 
-    def test_one_reference_time_per_track_point(self):
-        prepared = _prepared()
-        assert len(prepared.reference_elapsed) == len(prepared.track.points)
+    def test_one_reference_time_per_recorded_point(self):
+        prepared = _prepared(spacing_m=40.0)
+        assert len(prepared.track.points) > len(prepared.recorded_indexes)  # 40 m legs were densified
+        assert len(prepared.reference_elapsed) == len(prepared.recorded_indexes)
+        assert prepared.recorded_indexes[0] == 0
+        assert prepared.recorded_indexes[-1] == len(prepared.track.points) - 1
 
     def test_moving_time_matches_the_recording_when_nothing_was_stopped(self):
         track = synthetic_activity()

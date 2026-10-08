@@ -1,8 +1,10 @@
+from datetime import timedelta
+
 import pytest
 
-from gpx2fit.core.gpx_reader import parse_gpx_bytes
-from gpx2fit.core.models import InputError
-from tests.core.conftest import haversine_m
+from gpx2fit.core.gpx_reader import MAX_LEG_M, densify_points, parse_gpx_bytes
+from gpx2fit.core.models import InputError, TrackPoint
+from tests.core.conftest import START, haversine_m, point
 
 
 def _gpx(trkpts: str, creator: str | None = "Test Creator") -> bytes:
@@ -27,7 +29,7 @@ class TestBasicParsing:
         gpx_bytes = _gpx(
             _trkpt(45.0, 7.0, 100.0) + _trkpt(45.001, 7.0, 110.0) + _trkpt(45.002, 7.0, 120.0)
         )
-        track = parse_gpx_bytes(gpx_bytes)
+        track = parse_gpx_bytes(gpx_bytes, max_leg_m=None)
         assert [(p.lat, p.lon, p.elevation) for p in track.points] == [
             (45.0, 7.0, 100.0),
             (45.001, 7.0, 110.0),
@@ -42,7 +44,7 @@ class TestBasicParsing:
     def test_distance_from_start_is_cumulative_and_matches_great_circle_distance(self):
         lats = [45.0, 45.001, 45.003]
         gpx_bytes = _gpx("".join(_trkpt(lat, 7.0, 0.0) for lat in lats))
-        track = parse_gpx_bytes(gpx_bytes)
+        track = parse_gpx_bytes(gpx_bytes, max_leg_m=None)
 
         expected_leg_1 = haversine_m(lats[0], 7.0, lats[1], 7.0)
         expected_leg_2 = haversine_m(lats[1], 7.0, lats[2], 7.0)
@@ -98,13 +100,13 @@ class TestMissingElevation:
     def test_leading_missing_elevation_is_back_filled_from_the_first_known_value(self):
         # Not 0.0, which would put a fake cliff where the real elevation starts.
         gpx_bytes = _gpx(_trkpt(45.0, 7.0, ele=None) + _trkpt(45.001, 7.0, ele=None) + _trkpt(45.002, 7.0, 50.0))
-        track = parse_gpx_bytes(gpx_bytes)
+        track = parse_gpx_bytes(gpx_bytes, max_leg_m=None)
         assert [p.elevation for p in track.points] == [50.0, 50.0, 50.0]
         assert track.has_elevation
 
     def test_no_elevation_anywhere_is_zero_and_flagged(self):
         gpx_bytes = _gpx(_trkpt(45.0, 7.0, ele=None) + _trkpt(45.001, 7.0, ele=None))
-        track = parse_gpx_bytes(gpx_bytes)
+        track = parse_gpx_bytes(gpx_bytes, max_leg_m=None)
         assert [p.elevation for p in track.points] == [0.0, 0.0]
         assert not track.has_elevation
 
@@ -119,12 +121,12 @@ class TestMissingElevation:
         gpx_bytes = _gpx(
             _trkpt(45.0, 7.0, 100.0) + _trkpt(45.001, 7.0, sentinel) + _trkpt(45.002, 7.0, 110.0)
         )
-        track = parse_gpx_bytes(gpx_bytes)
+        track = parse_gpx_bytes(gpx_bytes, max_leg_m=None)
         assert [p.elevation for p in track.points] == [100.0, 100.0, 110.0]
 
     def test_leading_implausible_elevation_is_back_filled(self):
         gpx_bytes = _gpx(_trkpt(45.0, 7.0, -32768.0) + _trkpt(45.001, 7.0, 20.0))
-        track = parse_gpx_bytes(gpx_bytes)
+        track = parse_gpx_bytes(gpx_bytes, max_leg_m=None)
         assert [p.elevation for p in track.points] == [20.0, 20.0]
 
     def test_only_implausible_elevations_count_as_no_elevation(self):
@@ -135,14 +137,14 @@ class TestMissingElevation:
         gpx_bytes = _gpx(
             _trkpt(45.0, 7.0, 100.0) + _trkpt(45.001, 7.0, ele=None) + _trkpt(45.002, 7.0, ele=None)
         )
-        track = parse_gpx_bytes(gpx_bytes)
+        track = parse_gpx_bytes(gpx_bytes, max_leg_m=None)
         assert [p.elevation for p in track.points] == [100.0, 100.0, 100.0]
 
     def test_elevation_resumes_from_real_value_after_gap(self):
         gpx_bytes = _gpx(
             _trkpt(45.0, 7.0, 100.0) + _trkpt(45.001, 7.0, ele=None) + _trkpt(45.002, 7.0, 130.0)
         )
-        track = parse_gpx_bytes(gpx_bytes)
+        track = parse_gpx_bytes(gpx_bytes, max_leg_m=None)
         assert [p.elevation for p in track.points] == [100.0, 100.0, 130.0]
 
 
@@ -234,3 +236,155 @@ class TestSegmentGapWarning:
         track = parse_gpx_bytes(_multi_gpx([first, second]))
 
         assert track.total_distance == pytest.approx(haversine_m(45.0, 7.0, 45.0156, 7.0), rel=0.01)
+
+
+def _legs(points: list[TrackPoint]) -> list[float]:
+    return [b.distance_from_start - a.distance_from_start for a, b in zip(points, points[1:])]
+
+
+class TestDensifyPoints:
+    def test_a_long_leg_is_split_into_equal_pieces_no_longer_than_the_limit(self):
+        # 40 m at 15 m: three pieces of 13.33 m, not 15 + 15 + 10.
+        dense = densify_points([point(distance_from_start=0.0), point(distance_from_start=40.0)], 15.0)
+
+        assert [p.distance_from_start for p in dense] == pytest.approx([0.0, 40 / 3, 80 / 3, 40.0])
+
+    def test_inserted_points_lie_on_the_straight_line_between_their_neighbours(self):
+        start = point(lat=45.0, lon=7.0, elevation=100.0, distance_from_start=10.0)
+        end = point(lat=45.004, lon=7.002, elevation=130.0, distance_from_start=70.0)
+
+        dense = densify_points([start, end], 15.0)
+
+        assert [(p.lat, p.lon, p.elevation, p.distance_from_start) for p in dense] == [
+            (45.0, 7.0, 100.0, 10.0),
+            pytest.approx((45.001, 7.0005, 107.5, 25.0)),
+            pytest.approx((45.002, 7.001, 115.0, 40.0)),
+            pytest.approx((45.003, 7.0015, 122.5, 55.0)),
+            (45.004, 7.002, 130.0, 70.0),
+        ]
+
+    def test_inserted_points_have_no_timestamp(self):
+        start = point(distance_from_start=0.0, timestamp=START)
+        end = point(distance_from_start=40.0, timestamp=START + timedelta(seconds=30))
+
+        dense = densify_points([start, end], 15.0)
+
+        assert [p.timestamp for p in dense] == [START, None, None, START + timedelta(seconds=30)]
+
+    def test_legs_at_or_under_the_limit_are_left_alone(self):
+        points = [point(distance_from_start=d) for d in (0.0, 5.0, 20.0, 35.0)]
+
+        dense = densify_points(points, 15.0)
+
+        assert dense == points
+
+    def test_a_leg_of_exactly_twice_the_limit_is_split_in_two_despite_rounding(self):
+        # 32.02 - 2.02 is 30.000000000000004 in floating point, a hair over 2 x 15.
+        assert 32.02 - 2.02 > 30.0
+        dense = densify_points([point(distance_from_start=2.02), point(distance_from_start=32.02)], 15.0)
+
+        assert len(dense) == 3
+
+    def test_a_leg_just_over_the_limit_is_split(self):
+        dense = densify_points([point(distance_from_start=0.0), point(distance_from_start=15.01)], 15.0)
+
+        assert [p.distance_from_start for p in dense] == pytest.approx([0.0, 7.505, 15.01])
+
+    def test_only_long_legs_get_new_points(self):
+        points = [point(distance_from_start=d) for d in (0.0, 10.0, 50.0, 55.0, 100.0)]
+
+        dense = densify_points(points, 15.0)
+
+        assert [p.distance_from_start for p in dense] == pytest.approx(
+            [0.0, 10.0, 23.333, 36.667, 50.0, 55.0, 70.0, 85.0, 100.0], abs=1e-3
+        )
+
+    def test_every_original_point_is_kept_unchanged_and_in_order(self):
+        points = [
+            point(lat=45.0 + i * 0.001, lon=7.0 - i * 0.002, elevation=100.0 + i, distance_from_start=d)
+            for i, d in enumerate((0.0, 3.0, 120.0, 121.0, 400.0))
+        ]
+        originals = [(p.lat, p.lon, p.elevation, p.distance_from_start) for p in points]
+
+        dense = densify_points(points, 15.0)
+
+        kept = [p for p in dense if any(p is original for original in points)]
+        assert kept == points
+        assert all(a is b for a, b in zip(kept, points))
+        assert [(p.lat, p.lon, p.elevation, p.distance_from_start) for p in kept] == originals
+        assert max(_legs(dense)) <= 15.0
+
+    def test_a_zero_distance_leg_is_kept_as_is(self):
+        # A repeated point (a stop's duplicate, or a planner's double click) has nothing to split.
+        points = [point(distance_from_start=d) for d in (0.0, 10.0, 10.0, 20.0)]
+
+        assert densify_points(points, 15.0) == points
+
+    def test_the_input_list_is_not_modified(self):
+        points = [point(distance_from_start=0.0), point(distance_from_start=100.0)]
+
+        densify_points(points, 15.0)
+
+        assert len(points) == 2
+
+    @pytest.mark.parametrize("max_leg_m", [0.0, -1.0])
+    def test_a_limit_that_is_not_positive_is_refused(self, max_leg_m):
+        with pytest.raises(ValueError):
+            densify_points([point(distance_from_start=0.0), point(distance_from_start=100.0)], max_leg_m)
+
+
+class TestParseDensifies:
+    # 0.001 degrees of latitude is about 111 m.
+    def test_parsing_splits_long_legs_to_the_default_limit(self):
+        track = parse_gpx_bytes(_gpx(_trkpt(45.0, 7.0, 100.0) + _trkpt(45.001, 7.0, 108.0)))
+
+        legs = _legs(track.points)
+        assert len(legs) == 8  # ceil(111.2 / 15)
+        assert max(legs) <= MAX_LEG_M
+        assert min(legs) == pytest.approx(max(legs))
+
+    def test_densifying_keeps_the_route_and_its_length(self):
+        gpx_bytes = _gpx(_trkpt(45.0, 7.0, 100.0) + _trkpt(45.001, 7.0, 108.0) + _trkpt(45.001, 7.002, 104.0))
+
+        raw = parse_gpx_bytes(gpx_bytes, max_leg_m=None)
+        dense = parse_gpx_bytes(gpx_bytes)
+
+        assert len(dense.points) > len(raw.points)
+        assert dense.total_distance == raw.total_distance
+        assert [(p.lat, p.lon, p.elevation, p.distance_from_start) for p in raw.points] == [
+            (p.lat, p.lon, p.elevation, p.distance_from_start)
+            for p in dense.points
+            if any((p.lat, p.lon) == (r.lat, r.lon) for r in raw.points)
+        ]
+
+    def test_inserted_points_match_the_parsed_distance(self):
+        # The interpolated position and the interpolated distance agree with each other.
+        track = parse_gpx_bytes(_gpx(_trkpt(45.0, 7.0, 0.0) + _trkpt(45.003, 7.0, 0.0)))
+
+        assert len(track.points) > 2
+        for p in track.points:
+            assert p.distance_from_start == pytest.approx(haversine_m(45.0, 7.0, p.lat, p.lon), rel=0.01)
+
+    def test_a_custom_limit_is_honoured(self):
+        track = parse_gpx_bytes(_gpx(_trkpt(45.0, 7.0, 100.0) + _trkpt(45.001, 7.0, 100.0)), max_leg_m=50.0)
+
+        assert len(track.points) == 4  # ceil(111.2 / 50) = 3 legs
+
+    def test_none_switches_densifying_off(self):
+        track = parse_gpx_bytes(_gpx(_trkpt(45.0, 7.0, 100.0) + _trkpt(45.001, 7.0, 100.0)), max_leg_m=None)
+
+        assert len(track.points) == 2
+
+    def test_inserted_points_use_back_filled_elevations(self):
+        # Densifying runs after leading missing elevations take the first known value, not before.
+        track = parse_gpx_bytes(_gpx(_trkpt(45.0, 7.0, ele=None) + _trkpt(45.001, 7.0, 60.0)))
+
+        assert len(track.points) > 2
+        assert [p.elevation for p in track.points] == pytest.approx([60.0] * len(track.points))
+
+    def test_a_route_without_elevation_stays_flat_and_flagged(self):
+        track = parse_gpx_bytes(_gpx(_trkpt(45.0, 7.0, ele=None) + _trkpt(45.001, 7.0, ele=None)))
+
+        assert len(track.points) > 2
+        assert {p.elevation for p in track.points} == {0.0}
+        assert not track.has_elevation

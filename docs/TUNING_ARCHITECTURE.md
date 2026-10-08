@@ -103,7 +103,7 @@ flowchart TD
 
   subgraph core["gpx2fit.core (imported, never modified)"]
     models["models<br/>SportType, Track, TrackPoint"]
-    gpxr["gpx_reader.parse_gpx_bytes"]
+    gpxr["gpx_reader<br/>parse_gpx_bytes, densify_points, MAX_LEG_M"]
     grad["pacing.gradient<br/>calculate_gradient, minetti_/tobler_speeds_from_gradients,<br/>CurveShape, CurveExponents, GRADIENT_WINDOW_M"]
     cs["pacing.curve_selection<br/>constants, smoothstep, _verticality,<br/>MAX_SPEED_RATIO_BOUNDS"]
     comb["pacing.combine<br/>_MIN_SURFACE_MULTIPLIER"]
@@ -141,7 +141,7 @@ flowchart TD
   DF2 --> rda
   rda --> RA["ReferenceActivity<br/>Track with REAL timestamps, timer pauses,<br/>device totals, drop counts"]
   RA --> pr["prepare.prepare_reference"]
-  pr --> PA["PreparedActivity<br/>track: parsed GPX, no timestamps<br/>reference_elapsed: real moving seconds per point"]
+  pr --> PA["PreparedActivity<br/>track: parsed and densified GPX, no timestamps<br/>recorded_indexes: which points were recorded<br/>reference_elapsed: real moving seconds per recorded point"]
   PA --> tmb["model.TrackModel.build"]
   tmb --> TM["TrackModel<br/>gradients, leg distances, raw curves,<br/>verticality, flat-equivalent distance,<br/>route noise and spread windows"]
   PA --> acb["compare.ActivityContext.build"]
@@ -403,9 +403,19 @@ flowchart TD
   trim --> rs["_resample_indexes<br/>keep REAL points ~15 m apart (no interpolation)"]
   rs --> dd["drop kept points with no elapsed time"]
   dd --> gpx["_to_gpx_bytes<br/>elevation rounded to 1 m, no &lt;time&gt;"]
-  gpx --> parse["core gpx_reader.parse_gpx_bytes<br/>the production parser"]
-  parse --> PA["PreparedActivity(track, reference_elapsed, gpx_bytes, notes)"]
+  gpx --> parse["core gpx_reader.parse_gpx_bytes(max_leg_m=None)<br/>the production parser"]
+  parse --> dens["core gpx_reader.densify_points(MAX_LEG_M)<br/>what the parser's default does, by hand"]
+  dens --> PA["PreparedActivity(track, recorded_indexes, reference_elapsed, gpx_bytes, notes)"]
 ```
+
+Production's parser splits every leg longer than `gpx_reader.MAX_LEG_M`
+(15 m) with straight-line points, so the model paces the same densified track
+here. Only the recorded points carry a real time. `densify_points` keeps them
+as the very same objects, which is how `recorded_indexes` finds them, and why
+the harness densifies by hand instead of with the parser's default.
+`ActivityContext.build` puts bucket edges only on recorded points, and the
+report's clock drift is measured there too. No reference time is ever
+interpolated.
 
 `_check_quality` rejects, in order:
 
