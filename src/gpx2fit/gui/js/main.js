@@ -12,6 +12,7 @@ import * as anchorsModule from './anchors.js';
 import * as stopsModule from './stops.js';
 import { effectiveStopTimes } from './activityWindow.js';
 import { initTheme } from './theme.js';
+import { initGlass } from './glass.js';
 import { initShortcuts } from './shortcuts.js';
 import { initDevicePicker } from './devicePicker.js';
 import { createAnchorPlacer } from './anchorPopovers.js';
@@ -85,6 +86,7 @@ anchorsModule.initAnchorList(anchorListEl, anchorEmptyStateEl);
 stopsModule.initStopList(stopListEl, stopEmptyStateEl);
 mapModule.initMap('map');
 initTheme(themeToggle);
+initGlass();
 initProfilePanel({
   shellEl: appShellEl,
   panelEl: profilePanelEl,
@@ -115,6 +117,11 @@ initShortcuts({
   gpxFileInput,
   photoFileInput: photoFileInputEl,
   deviceButton: deviceButtonEl,
+  startTimeFieldEl,
+  startTimeToggleEl: startTimeToggleContainer,
+  appShellEl,
+  profileCloseButton: profileCloseButtonEl,
+  profileShowButton: profileShowButtonEl,
 });
 
 /* ---------- status ---------- */

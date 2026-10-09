@@ -5,7 +5,8 @@
 // Strava shows a device only when the FIT file_id's manufacturer + product
 // pair is in its own table, and ignores the embedded product name. So only
 // IDs with a real source belong in this list: the Garmin ones are copied from
-// fit_tool's GarminProduct enum (the FIT SDK profile), and Suunto's older
+// the FIT SDK profile (fit_tool's GarminProduct enum, and Garmin's own
+// fit-javascript-sdk for the newest), and Suunto's older
 // ones from Suunto's own product-ID list. Other brands' IDs are added only
 // from a real recording whose device Strava named, or from another FIT
 // reader's device table (GoldenCheetah's FITmetadata.json, Runalyze's
@@ -35,24 +36,42 @@ export const DEVICE_CATALOG = [
     brand: 'Garmin',
     devices: [
       // 3076 (Forerunner 245) is confirmed to show on Strava (2026-09-21).
-      // The rest come from the same enum but haven't been upload-tested.
+      // The rest come from the same profile but haven't been upload-tested.
+      // The newest (FR 170/570/970, fēnix 8 Pro/9/9 Pro/E, Enduro 4, Venu 4,
+      // Venu X1, vívoactive 6, Instinct Crossover AMOLED) were added from
+      // Garmin's FIT SDK 21.218 (fit-javascript-sdk's garminProduct) on
+      // 2026-10-09; Strava's own table may not have caught up with them yet.
+      // Where a model has one ID per case size, the larger case's is used.
+      // Models released before late 2020 were dropped then, except the
+      // Forerunner 245, kept as the verified one.
       { name: 'Forerunner 55', manufacturer: GARMIN, product: 3869 },
       { name: 'Forerunner 165', manufacturer: GARMIN, product: 4432 },
+      { name: 'Forerunner 170', manufacturer: GARMIN, product: 4815 },
       { name: 'Forerunner 245', manufacturer: GARMIN, product: 3076 },
       { name: 'Forerunner 255', manufacturer: GARMIN, product: 3992 },
       { name: 'Forerunner 265', manufacturer: GARMIN, product: 4257 },
-      { name: 'Forerunner 945', manufacturer: GARMIN, product: 3113 },
+      { name: 'Forerunner 570', manufacturer: GARMIN, product: 4570 },
       { name: 'Forerunner 955', manufacturer: GARMIN, product: 4024 },
       { name: 'Forerunner 965', manufacturer: GARMIN, product: 4315 },
-      { name: 'fēnix 6', manufacturer: GARMIN, product: 3290 },
+      { name: 'Forerunner 970', manufacturer: GARMIN, product: 4565 },
       { name: 'fēnix 7', manufacturer: GARMIN, product: 3906 },
       { name: 'fēnix 7 Pro', manufacturer: GARMIN, product: 4375 },
       { name: 'fēnix 8', manufacturer: GARMIN, product: 4536 },
+      { name: 'fēnix 8 Pro', manufacturer: GARMIN, product: 4631 },
+      { name: 'fēnix 9', manufacturer: GARMIN, product: 5134 },
+      { name: 'fēnix 9 Pro', manufacturer: GARMIN, product: 4953 },
+      { name: 'fēnix E', manufacturer: GARMIN, product: 4666 },
       { name: 'epix (Gen 2)', manufacturer: GARMIN, product: 3943 },
+      { name: 'epix Pro (Gen 2)', manufacturer: GARMIN, product: 4313 },
       { name: 'Enduro 3', manufacturer: GARMIN, product: 4575 },
+      { name: 'Enduro 4', manufacturer: GARMIN, product: 5169 },
       { name: 'Instinct 3', manufacturer: GARMIN, product: 4586 },
+      { name: 'Instinct Crossover AMOLED', manufacturer: GARMIN, product: 4678 },
       { name: 'Venu 3', manufacturer: GARMIN, product: 4260 },
+      { name: 'Venu 4', manufacturer: GARMIN, product: 4643 },
+      { name: 'Venu X1', manufacturer: GARMIN, product: 4603 },
       { name: 'vívoactive 5', manufacturer: GARMIN, product: 4426 },
+      { name: 'vívoactive 6', manufacturer: GARMIN, product: 4625 },
     ],
   },
   {
@@ -61,12 +80,12 @@ export const DEVICE_CATALOG = [
       // From Runalyze's CorosFitSdkMapping (github.com/Runalyze/devices),
       // which maps real uploads' file_id products to models. It also maps
       // 294 (COROS's manufacturer ID) to VERTIX 2, which looks like a slip,
-      // so only 832 is used for that watch. PACE 4 and APEX 4 aren't in it
-      // yet. None has been upload-tested on Strava.
-      { name: 'PACE 2', manufacturer: COROS, product: 802 },
+      // so only 832 is used for that watch. PACE 4 and APEX 4 still had no
+      // sourced ID on 2026-10-09 (not in that table, nothing published), so
+      // they aren't listed. PACE 2 and APEX Pro (2019–20) were dropped then.
+      // None has been upload-tested on Strava.
       { name: 'PACE 3', manufacturer: COROS, product: 804 },
       { name: 'PACE Pro', manufacturer: COROS, product: 805 },
-      { name: 'APEX Pro', manufacturer: COROS, product: 841 },
       { name: 'APEX 2', manufacturer: COROS, product: 812 },
       { name: 'APEX 2 Pro', manufacturer: COROS, product: 822 },
       { name: 'VERTIX 2', manufacturer: COROS, product: 832 },

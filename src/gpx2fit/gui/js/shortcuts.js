@@ -16,9 +16,9 @@
 //   so the sport shortcuts use Alt instead.
 // - Alt+D/E/F/T/V/B/S are browser menu or address-bar accelerators and are
 //   deliberately avoided (so the device picker is Alt+W, for "watch", not
-//   Alt+D); Alt+H/R/U/P/W are free (Alt+H opens Firefox's Help
-//   menu when its menu bar is reachable, which the preventDefault below
-//   suppresses).
+//   Alt+D, and the duration box is Alt+L, for "length"); Alt+H/R/U/P/W and
+//   Alt+L/K/N/G are free (Alt+H opens Firefox's Help menu when its menu bar
+//   is reachable, which the preventDefault below suppresses).
 // - Matching is on `event.code`, not `event.key`, because Option+letter on
 //   macOS produces a special character ("˙" for Option+H) rather than the
 //   letter itself.
@@ -58,6 +58,10 @@ const SHORTCUTS = [
   { keys: ['Alt', 'U'], label: 'Choose a GPX file', action: 'uploadGpx', match: (e) => isAltCombo(e, 'KeyU') },
   { keys: ['Alt', 'P'], label: 'Add photos', action: 'uploadPhotos', match: (e) => isAltCombo(e, 'KeyP') },
   { keys: ['Alt', 'W'], label: 'Choose a device', action: 'chooseDevice', match: (e) => isAltCombo(e, 'KeyW') },
+  { keys: ['Alt', 'N'], label: 'Enter the start time', action: 'focusStart', match: (e) => isAltCombo(e, 'KeyN') },
+  { keys: ['Alt', 'L'], label: 'Enter the duration', action: 'focusDuration', match: (e) => isAltCombo(e, 'KeyL') },
+  { keys: ['Alt', 'K'], label: 'Next of Duration / End time / Avg speed', action: 'nextTimeMode', match: (e) => isAltCombo(e, 'KeyK') },
+  { keys: ['Alt', 'G'], label: 'Show or hide the profile chart', action: 'toggleProfile', match: (e) => isAltCombo(e, 'KeyG') },
   { keys: ['?'], label: 'Show these shortcuts', action: 'togglePanel', plain: true, match: (e) => e.key === '?' && !e.ctrlKey && !e.metaKey && !e.altKey },
   { keys: ['Esc'], label: 'Close this panel', action: 'closePanel', plain: true, match: (e) => e.key === 'Escape' },
 ];
@@ -74,6 +78,26 @@ function displayKey(token) {
     return '⌥';
   }
   return token;
+}
+
+/**
+ * The first box the user could type into right now: the start-time toggle
+ * keeps every mode's fields in the DOM and hides the inactive ones (and the
+ * speed mode hides its inactive unit's row), so "first input" alone isn't it.
+ */
+function firstVisibleInput(container) {
+  return [...container.querySelectorAll('input')].find((input) => input.closest('.hidden') === null) ?? null;
+}
+
+/** Focuses a box with its contents selected, so typing replaces them. */
+function focusAndSelect(input) {
+  input.focus();
+  // A date input has no text selection, and select() throws on some engines.
+  try {
+    input.select();
+  } catch {
+    // Focus alone is enough there.
+  }
 }
 
 /** The `aria-keyshortcuts` value for a shortcut, e.g. "Alt+H". */
@@ -96,6 +120,11 @@ function ariaKeyshortcuts(keys) {
  * @param {HTMLInputElement} opts.gpxFileInput - the hidden GPX file input
  * @param {HTMLInputElement} opts.photoFileInput - the hidden photo file input
  * @param {HTMLButtonElement} opts.deviceButton - the sidebar button that opens the device picker
+ * @param {HTMLElement} opts.startTimeFieldEl - the #startTimeField container (createDateTimeField)
+ * @param {HTMLElement} opts.startTimeToggleEl - the #startTimeToggle container (createTimeToggle)
+ * @param {HTMLElement} opts.appShellEl - the app shell, which carries `.has-profile` while the profile panel is open
+ * @param {HTMLButtonElement} opts.profileCloseButton - hides the profile panel
+ * @param {HTMLButtonElement} opts.profileShowButton - reopens it; `hidden` while there's nothing to show
  */
 export function initShortcuts({
   triggerButton,
@@ -105,6 +134,11 @@ export function initShortcuts({
   gpxFileInput,
   photoFileInput,
   deviceButton,
+  startTimeFieldEl,
+  startTimeToggleEl,
+  appShellEl,
+  profileCloseButton,
+  profileShowButton,
 }) {
   /* ---------- panel ---------- */
 
@@ -172,6 +206,24 @@ export function initShortcuts({
     return true;
   }
 
+  function timeModeTabs() {
+    return [...startTimeToggleEl.querySelectorAll('.time-toggle-modes .segmented-option')];
+  }
+
+  // Clicks a start-time tab (so the toggle's own setMode runs) and puts the
+  // caret in that mode's first box.
+  function openTimeMode(tab) {
+    if (!tab) {
+      return false;
+    }
+    tab.click();
+    const input = firstVisibleInput(startTimeToggleEl.querySelector('.time-toggle-fields') ?? startTimeToggleEl);
+    if (input) {
+      focusAndSelect(input);
+    }
+    return true;
+  }
+
   // Returns whether the shortcut actually did something — only then is the
   // browser's own handling of the keystroke suppressed.
   function runAction(action) {
@@ -201,6 +253,39 @@ export function initShortcuts({
         setPanelOpen(false);
         deviceButton.click();
         return true;
+      case 'focusStart': {
+        const input = firstVisibleInput(startTimeFieldEl);
+        if (!input) {
+          return false;
+        }
+        setPanelOpen(false);
+        input.focus();
+        return true;
+      }
+      case 'focusDuration':
+        setPanelOpen(false);
+        return openTimeMode(timeModeTabs()[0]);
+      case 'nextTimeMode': {
+        const tabs = timeModeTabs();
+        if (tabs.length === 0) {
+          return false;
+        }
+        const active = tabs.findIndex((tab) => tab.classList.contains('is-active'));
+        setPanelOpen(false);
+        return openTimeMode(tabs[(active + 1) % tabs.length]);
+      }
+      case 'toggleProfile':
+        // Both buttons already handle focus and the show pill; with no
+        // conversion yet neither applies, and the key is left alone.
+        if (appShellEl.classList.contains('has-profile')) {
+          profileCloseButton.click();
+          return true;
+        }
+        if (!profileShowButton.hidden) {
+          profileShowButton.click();
+          return true;
+        }
+        return false;
       case 'togglePanel':
         setPanelOpen(!isPanelOpen());
         return true;
@@ -247,6 +332,9 @@ export function initShortcuts({
       runButton.setAttribute('aria-keyshortcuts', 'Control+Enter Meta+Enter');
     } else if (action === 'chooseDevice') {
       deviceButton.setAttribute('aria-keyshortcuts', ariaKeyshortcuts(keys));
+    } else if (action === 'toggleProfile') {
+      profileCloseButton.setAttribute('aria-keyshortcuts', ariaKeyshortcuts(keys));
+      profileShowButton.setAttribute('aria-keyshortcuts', ariaKeyshortcuts(keys));
     }
   });
 }

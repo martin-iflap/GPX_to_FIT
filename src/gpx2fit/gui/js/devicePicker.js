@@ -20,6 +20,56 @@ import { wireNumericBox } from './timeInput.js';
 // convert every route for the same watch.
 const STORAGE_KEY = 'device';
 
+// Matches .device-grid's `grid-template-columns` in styles.css.
+const GRID_COLUMNS = 2;
+
+const NAVIGATION_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End']);
+
+/**
+ * Where an arrow key moves focus among the options, laid out as rows of
+ * `rowLengths[i]` options each (all rows read left to right, one after
+ * another). Left/Right step in reading order, Up/Down keep the column (or
+ * take the row's last option, if it is shorter), Home/End jump to the ends.
+ * Every move stops at the edges rather than wrapping.
+ *
+ * @param {number[]} rowLengths - options per row, each at least 1
+ * @param {number} index - the focused option's index in reading order
+ * @param {string} key - the KeyboardEvent key
+ * @returns {number} the option to focus (`index` itself when nothing moves)
+ */
+export function moveFocusIndex(rowLengths, index, key) {
+  const total = rowLengths.reduce((sum, length) => sum + length, 0);
+  if (key === 'Home') {
+    return 0;
+  }
+  if (key === 'End') {
+    return total - 1;
+  }
+  if (key === 'ArrowLeft') {
+    return Math.max(index - 1, 0);
+  }
+  if (key === 'ArrowRight') {
+    return Math.min(index + 1, total - 1);
+  }
+  if (key !== 'ArrowUp' && key !== 'ArrowDown') {
+    return index;
+  }
+
+  let row = 0;
+  let rowStart = 0;
+  while (index >= rowStart + rowLengths[row]) {
+    rowStart += rowLengths[row];
+    row += 1;
+  }
+  const column = index - rowStart;
+  const target = key === 'ArrowUp' ? row - 1 : row + 1;
+  if (target < 0 || target >= rowLengths.length) {
+    return index;
+  }
+  const targetStart = key === 'ArrowUp' ? rowStart - rowLengths[target] : rowStart + rowLengths[row];
+  return targetStart + Math.min(column, rowLengths[target] - 1);
+}
+
 /**
  * Wires the device button and dialog. Call once at startup.
  *
@@ -30,6 +80,7 @@ const STORAGE_KEY = 'device';
  *   `device` argument for pyodideBridge's convert()
  */
 export function initDevicePicker({ buttonEl, dialogEl }) {
+  const panelEl = dialogEl.querySelector('.device-dialog-panel');
   const catalogEl = dialogEl.querySelector('.device-catalog');
   const noneButton = dialogEl.querySelector('[data-device-none]');
   const customDetails = dialogEl.querySelector('.device-custom');
@@ -58,6 +109,10 @@ export function initDevicePicker({ buttonEl, dialogEl }) {
   /* ---------- rendering ---------- */
 
   const optionButtons = [];
+  // Every pickable button in reading order, and how they fall into visual
+  // rows: "No device" alone, then each brand's grid GRID_COLUMNS at a time.
+  const navOptions = [noneButton];
+  const rowLengths = [1];
 
   DEVICE_CATALOG.forEach(({ brand, devices }) => {
     const heading = document.createElement('p');
@@ -76,8 +131,12 @@ export function initDevicePicker({ buttonEl, dialogEl }) {
         choose({ manufacturer: device.manufacturer, product: device.product, serialNumber: null, name });
       });
       optionButtons.push({ option, device });
+      navOptions.push(option);
       grid.append(option);
     });
+    for (let left = devices.length; left > 0; left -= GRID_COLUMNS) {
+      rowLengths.push(Math.min(left, GRID_COLUMNS));
+    }
 
     catalogEl.append(heading, grid);
   });
@@ -114,6 +173,31 @@ export function initDevicePicker({ buttonEl, dialogEl }) {
     serialInput.value = isCustom && selection.serialNumber !== null ? String(selection.serialNumber) : '';
     customDetails.open = isCustom;
     dialogEl.showModal();
+    // showModal would focus the close button. The panel (tabindex -1) takes
+    // focus instead, so nothing is highlighted until the user presses Tab.
+    panelEl.focus({ preventScroll: true });
+  });
+
+  /* ---------- keyboard ---------- */
+
+  dialogEl.addEventListener('keydown', (event) => {
+    if (event.altKey || event.ctrlKey || event.metaKey) {
+      return;
+    }
+    // The first Tab after opening lands on the current pick (by default
+    // "No device", the first option), so the arrows have a place to start.
+    if (event.key === 'Tab' && !event.shiftKey && document.activeElement === panelEl) {
+      event.preventDefault();
+      (navOptions.find((option) => option.classList.contains('is-selected')) ?? noneButton).focus();
+      return;
+    }
+    // Only among the options, so arrows still move the caret in the boxes.
+    const index = navOptions.indexOf(document.activeElement);
+    if (index === -1 || !NAVIGATION_KEYS.has(event.key)) {
+      return;
+    }
+    event.preventDefault();
+    navOptions[moveFocusIndex(rowLengths, index, event.key)].focus();
   });
 
   dialogEl.querySelector('[data-device-close]').addEventListener('click', () => dialogEl.close());

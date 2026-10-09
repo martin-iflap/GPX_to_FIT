@@ -57,9 +57,100 @@ function mount() {
   triggerButton.type = 'button';
   const panelContainer = document.createElement('div');
 
-  document.body.append(sportControlEl, runButton, gpxFileInput, photoFileInput, deviceButton, triggerButton, panelContainer);
+  // The start date/time field: a date box first, as createDateTimeField builds it.
+  const startTimeFieldEl = document.createElement('div');
+  const startDateInput = document.createElement('input');
+  startDateInput.type = 'date';
+  startTimeFieldEl.append(startDateInput);
 
-  initShortcuts({ triggerButton, panelContainer, sportControlEl, runButton, gpxFileInput, photoFileInput, deviceButton });
+  // The start-time toggle's shape (createTimeToggle): three tabs whose click
+  // handlers switch `.is-active` and `.hidden`, and per-mode fields where
+  // the speed mode hides its inactive unit row.
+  const startTimeToggleEl = document.createElement('div');
+  const modesEl = document.createElement('div');
+  modesEl.className = 'time-toggle-modes segmented';
+  const fieldsEl = document.createElement('div');
+  fieldsEl.className = 'time-toggle-fields';
+  const tabClicks = [];
+  function modeFields(...inputs) {
+    const el = document.createElement('div');
+    el.append(...inputs);
+    fieldsEl.append(el);
+    return el;
+  }
+  function box(label) {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.setAttribute('aria-label', label);
+    return input;
+  }
+  const hoursInput = box('Hours');
+  const endDateInput = box('End date');
+  const kmhRow = document.createElement('div');
+  kmhRow.className = 'hidden';
+  kmhRow.append(box('km/h'));
+  const paceMinutesInput = box('Pace minutes');
+  const modes = [
+    { name: 'duration', fields: modeFields(hoursInput, box('Minutes')) },
+    { name: 'end', fields: modeFields(endDateInput) },
+    { name: 'avgSpeed', fields: modeFields(kmhRow, paceMinutesInput) },
+  ];
+  modes.forEach(({ name }) => {
+    const tab = document.createElement('button');
+    tab.type = 'button';
+    tab.className = 'segmented-option';
+    tab.addEventListener('click', () => {
+      tabClicks.push(name);
+      setTimeMode(name);
+    });
+    modesEl.append(tab);
+  });
+  function setTimeMode(name) {
+    modes.forEach((mode, index) => {
+      modesEl.children[index].classList.toggle('is-active', mode.name === name);
+      mode.fields.classList.toggle('hidden', mode.name !== name);
+    });
+  }
+  startTimeToggleEl.append(modesEl, fieldsEl);
+
+  const appShellEl = document.createElement('div');
+  const profileCloseButton = document.createElement('button');
+  profileCloseButton.type = 'button';
+  const profileShowButton = document.createElement('button');
+  profileShowButton.type = 'button';
+  const profileClicks = [];
+  profileCloseButton.addEventListener('click', () => profileClicks.push('close'));
+  profileShowButton.addEventListener('click', () => profileClicks.push('show'));
+
+  document.body.append(
+    sportControlEl,
+    runButton,
+    gpxFileInput,
+    photoFileInput,
+    deviceButton,
+    triggerButton,
+    panelContainer,
+    startTimeFieldEl,
+    startTimeToggleEl,
+    appShellEl,
+    profileCloseButton,
+    profileShowButton,
+  );
+
+  initShortcuts({
+    triggerButton,
+    panelContainer,
+    sportControlEl,
+    runButton,
+    gpxFileInput,
+    photoFileInput,
+    deviceButton,
+    startTimeFieldEl,
+    startTimeToggleEl,
+    appShellEl,
+    profileCloseButton,
+    profileShowButton,
+  });
 
   const panel = panelContainer.querySelector('.shortcuts-panel');
 
@@ -74,11 +165,25 @@ function mount() {
     deviceClicks,
     triggerButton,
     panel,
+    startDateInput,
+    hoursInput,
+    endDateInput,
+    paceMinutesInput,
+    tabClicks,
+    setTimeMode,
+    appShellEl,
+    profileCloseButton,
+    profileShowButton,
+    profileClicks,
     reset() {
-      [sportClicks, runClicks, gpxClicks, photoClicks, deviceClicks].forEach((log) => log.splice(0));
+      [sportClicks, runClicks, gpxClicks, photoClicks, deviceClicks, tabClicks, profileClicks].forEach((log) => log.splice(0));
       runButton.disabled = false;
       panel.classList.add('hidden');
       triggerButton.setAttribute('aria-expanded', 'false');
+      setTimeMode('duration');
+      appShellEl.classList.remove('has-profile');
+      profileShowButton.hidden = true;
+      document.activeElement?.blur();
     },
   };
 }
@@ -188,10 +293,83 @@ describe('initShortcuts', () => {
     });
   });
 
+  describe('start time and duration', () => {
+    it('Alt+N focuses the start date box', () => {
+      const event = press({ code: 'KeyN', altKey: true });
+      assert.equal(document.activeElement, ctx.startDateInput);
+      assert.equal(event.defaultPrevented, true);
+    });
+
+    it('Alt+L clicks the Duration tab and selects the hours box', () => {
+      ctx.setTimeMode('end');
+      ctx.hoursInput.value = '3';
+      press({ code: 'KeyL', altKey: true });
+      assert.deepEqual(ctx.tabClicks, ['duration']);
+      assert.equal(document.activeElement, ctx.hoursInput);
+      assert.equal(ctx.hoursInput.selectionStart, 0);
+      assert.equal(ctx.hoursInput.selectionEnd, 1);
+    });
+
+    it('Alt+L works from inside another time box, since it has a modifier', () => {
+      ctx.startDateInput.focus();
+      press({ code: 'KeyL', altKey: true }, ctx.startDateInput);
+      assert.equal(document.activeElement, ctx.hoursInput);
+    });
+
+    it('Alt+K steps through the modes and wraps back to Duration', () => {
+      press({ code: 'KeyK', altKey: true });
+      assert.equal(document.activeElement, ctx.endDateInput);
+      press({ code: 'KeyK', altKey: true });
+      // The km/h row is hidden, so the first box the user can see is the pace one.
+      assert.equal(document.activeElement, ctx.paceMinutesInput);
+      press({ code: 'KeyK', altKey: true });
+      assert.equal(document.activeElement, ctx.hoursInput);
+      assert.deepEqual(ctx.tabClicks, ['end', 'avgSpeed', 'duration']);
+    });
+
+    it('does nothing while a dialog is open', () => {
+      const dialog = document.createElement('dialog');
+      dialog.setAttribute('open', '');
+      document.body.append(dialog);
+      press({ code: 'KeyL', altKey: true });
+      press({ code: 'KeyK', altKey: true });
+      press({ code: 'KeyN', altKey: true });
+      dialog.remove();
+      assert.deepEqual(ctx.tabClicks, []);
+      assert.equal(document.activeElement, document.body);
+    });
+  });
+
+  describe('profile chart', () => {
+    it('Alt+G hides an open profile', () => {
+      ctx.appShellEl.classList.add('has-profile');
+      const event = press({ code: 'KeyG', altKey: true });
+      assert.deepEqual(ctx.profileClicks, ['close']);
+      assert.equal(event.defaultPrevented, true);
+    });
+
+    it('Alt+G reopens a hidden one through the show button', () => {
+      ctx.profileShowButton.hidden = false;
+      press({ code: 'KeyG', altKey: true });
+      assert.deepEqual(ctx.profileClicks, ['show']);
+    });
+
+    it('leaves the key alone before any conversion', () => {
+      const event = press({ code: 'KeyG', altKey: true });
+      assert.deepEqual(ctx.profileClicks, []);
+      assert.equal(event.defaultPrevented, false);
+    });
+
+    it('advertises the binding on both buttons', () => {
+      assert.equal(ctx.profileCloseButton.getAttribute('aria-keyshortcuts'), 'Alt+G');
+      assert.equal(ctx.profileShowButton.getAttribute('aria-keyshortcuts'), 'Alt+G');
+    });
+  });
+
   describe('the shortcuts panel', () => {
     it('lists one row per bound shortcut', () => {
       assert.equal(isPanelOpen(), false);
-      assert.equal(ctx.panel.querySelectorAll('.shortcut-row').length, 8);
+      assert.equal(ctx.panel.querySelectorAll('.shortcut-row').length, 12);
       assert.equal(ctx.triggerButton.getAttribute('aria-expanded'), 'false');
     });
 

@@ -10,6 +10,23 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
+    <!-- The liquid-glass lens (styles.css, glass.js; Chromium only). The
+         feImage stretches a displacement map over the pane: red shifts
+         sideways and green up/down, both at the neutral 128 across the
+         middle and ramping over the outer ~15%, so the backdrop near each
+         edge is pulled in from further inside, the way a thick glass rim
+         bends light. -->
+    <svg class="glass-defs" width="0" height="0" aria-hidden="true" focusable="false" style="position: absolute">
+      <filter id="liquidGlass" x="0" y="0" width="1" height="1" color-interpolation-filters="sRGB">
+        <feImage
+          result="lensMap"
+          preserveAspectRatio="none"
+          href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' preserveAspectRatio='none'><defs><linearGradient id='x'><stop offset='0' stop-color='rgb(255,0,0)'/><stop offset='.05' stop-color='rgb(190,0,0)'/><stop offset='.15' stop-color='rgb(128,0,0)'/><stop offset='.85' stop-color='rgb(128,0,0)'/><stop offset='.95' stop-color='rgb(66,0,0)'/><stop offset='1' stop-color='rgb(0,0,0)'/></linearGradient><linearGradient id='y' x2='0' y2='1'><stop offset='0' stop-color='rgb(0,255,0)'/><stop offset='.05' stop-color='rgb(0,190,0)'/><stop offset='.15' stop-color='rgb(0,128,0)'/><stop offset='.85' stop-color='rgb(0,128,0)'/><stop offset='.95' stop-color='rgb(0,66,0)'/><stop offset='1' stop-color='rgb(0,0,0)'/></linearGradient></defs><rect width='100' height='100' fill='url(%23x)'/><rect width='100' height='100' fill='url(%23y)' style='mix-blend-mode:screen'/></svg>"
+        />
+        <feDisplacementMap in="SourceGraphic" in2="lensMap" scale="28" xChannelSelector="R" yChannelSelector="G" />
+      </filter>
+    </svg>
+
     <div id="appShell" class="app-shell">
       <section id="mapPanel">
         <div id="map"></div>
@@ -214,7 +231,7 @@
     <!-- The device picker (devicePicker.js fills .device-catalog). A modal
          <dialog> sits in the top layer, above Leaflet, whatever its z-index. -->
     <dialog id="deviceDialog" class="device-dialog" aria-labelledby="deviceDialogTitle">
-      <div class="device-dialog-panel">
+      <div class="device-dialog-panel" tabindex="-1">
         <div class="device-dialog-header">
           <h2 id="deviceDialogTitle" class="device-dialog-title">Choose a device</h2>
           <button type="button" class="device-dialog-close" aria-label="Close" data-device-close>

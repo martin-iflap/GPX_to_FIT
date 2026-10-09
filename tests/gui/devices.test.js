@@ -45,6 +45,14 @@ describe('DEVICE_CATALOG', () => {
     assert.equal(selectionLabel({ ...NO_DEVICE, manufacturer: 23, product: 34 }), 'Suunto 9 Baro');
   });
 
+  it('keeps a stored pick of a dropped preset working as custom IDs', () => {
+    // The Forerunner 945 left the catalog on 2026-10-09.
+    const stored = parseStoredSelection(JSON.stringify({ manufacturer: 1, product: 3113, serialNumber: null, name: 'Garmin Forerunner 945' }));
+    assert.equal(findDevice(1, 3113), null);
+    assert.equal(selectionLabel(stored), 'Custom device (1/3113)');
+    assert.deepEqual(toConvertDevice(stored), { name: 'Garmin Forerunner 945', manufacturer: 1, product: 3113, serialNumber: undefined });
+  });
+
   it("leaves out the COROS source's product 294, which is COROS's manufacturer ID", () => {
     assert.equal(findDevice(294, 294), null);
     assert.equal(findDevice(294, 832)?.name, 'VERTIX 2');
