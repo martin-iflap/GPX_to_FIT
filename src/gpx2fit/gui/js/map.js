@@ -132,7 +132,7 @@ export function renderRoute(points, onRouteClick) {
   }
 
   const latLngs = points.map((p) => [p.lat, p.lon]);
-  const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#007aff';
+  const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#0088ff';
 
   routeLine = L.polyline(latLngs, { color: accent, weight: 4, opacity: 0.9 }).addTo(map);
 
@@ -158,7 +158,7 @@ export function showHoverMarker(lat, lon) {
   hoverMarker.setLatLng([lat, lon]);
   if (!map.hasLayer(hoverMarker)) {
     // Re-read on every show rather than once, in case the theme changed since.
-    const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#007aff';
+    const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#0088ff';
     hoverMarker.setStyle({ fillColor: accent });
     hoverMarker.addTo(map);
   }

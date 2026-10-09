@@ -2,47 +2,61 @@
   color-scheme: light dark;
   --font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", sans-serif;
 
-  --bg-base: #f5f6f8;
+  /* The palette follows Apple's macOS 26 design kit (the owner's reference
+     PNGs, 2026-10-09): neutral greys rather than blue-tinted ones, the
+     #0088ff / #0091ff system blue, capsule buttons, tinted-fill secondary
+     and destructive buttons, and opaque fields with a chevron chip. */
+  --bg-base: #f5f5f7;
   /* Two tints share one blur. --bg-elevated is the near-opaque one, for
      surfaces with nothing interesting behind them (the sidebar, its
      dropdowns) and for the profile chart, whose lines would compete with
-     the map. --glass-bg is the see-through one for popups floating over the
-     map: thin enough, and blurred little enough, that shapes and colours
-     behind them still read, like macOS/iOS widgets.
-     The "liquid glass" look on top of the tint: --glass-edge is the lit rim
-     (a bright top-left edge, a fainter bottom-right one, a soft inner glow)
-     that makes a pane read as a thick lens rather than a flat sheet, and
-     --glass-shadow a two-layer lift. Chromium also bends the backdrop at
-     the edges of floating panes (#liquidGlass in index.html, glass.js). */
-  --bg-elevated: rgba(255, 255, 255, 0.62);
-  --glass-bg: rgba(255, 255, 255, 0.34);
+     the map. It is the kit's alert fill exactly. --glass-bg is the
+     see-through one for popups floating over the map: thin enough that
+     shapes and colours behind them still read.
+     The "liquid glass" look on top of the tint: --glass-edge is the rim. In
+     light mode that's a grey hairline with a faint shade inside it, as the
+     kit's light alert has; in dark mode a lit hairline brightest along the
+     top. --glass-shadow is the kit's big, soft drop shadow. Chromium also
+     bends the backdrop at the edges of floating panes (#liquidGlass in
+     index.html, glass.js). */
+  --bg-elevated: rgba(245, 245, 245, 0.73);
+  --glass-bg: rgba(245, 245, 245, 0.55);
   --glass-filter: blur(9px) saturate(190%) brightness(1.04);
   --glass-edge:
-    inset 1px 1px 0 rgba(255, 255, 255, 0.8),
-    inset -1px -1px 0 rgba(255, 255, 255, 0.3),
-    inset 0 0 18px rgba(255, 255, 255, 0.28);
-  --glass-shadow: 0 2px 6px rgba(15, 23, 42, 0.06), 0 18px 48px rgba(15, 23, 42, 0.16);
-  --bg-elevated-2: rgba(15, 23, 42, 0.05);
-  --bg-elevated-3: rgba(15, 23, 42, 0.09);
-  --border-subtle: rgba(15, 23, 42, 0.09);
-  --text-primary: #0f172a;
-  --text-secondary: #4b5568;
-  --text-tertiary: #8a93a6;
-  --accent: #007aff;
-  --accent-hover: #0064d6;
-  --accent-soft: rgba(0, 122, 255, 0.12);
+    inset 0 0 0 1px rgba(0, 0, 0, 0.08),
+    inset 0 1px 0 1px rgba(255, 255, 255, 0.6),
+    inset 0 0 10px rgba(0, 0, 0, 0.04);
+  --glass-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 16px 48px rgba(0, 0, 0, 0.18);
+  --bg-elevated-2: rgba(0, 0, 0, 0.05);
+  --bg-elevated-3: rgba(0, 0, 0, 0.09);
+  --border-subtle: rgba(0, 0, 0, 0.1);
+  /* Text fields and the device button: opaque, like the kit's combo box. */
+  --field-bg: #ffffff;
+  /* The square behind a field's chevron (the kit's combo-box button). */
+  --control-chip: rgba(0, 0, 0, 0.08);
+  --text-primary: #161616;
+  --text-secondary: #4a4a4f;
+  --text-tertiary: #8a8a8e;
+  --accent: #0088ff;
+  --accent-hover: #0077e6;
+  --accent-soft: rgba(0, 136, 255, 0.14);
   --accent-contrast: #ffffff;
   --danger: #ff3b30;
+  /* The kit's destructive button: red text on a red-tinted capsule. */
+  --danger-soft: rgba(255, 59, 48, 0.25);
   --warning: #b5750a;
-  --shadow-color: rgba(15, 23, 42, 0.16);
-  --chart-elevation-fill: rgba(15, 23, 42, 0.1);
-  --chart-elevation-stroke: rgba(15, 23, 42, 0.28);
-  --chart-grid: rgba(15, 23, 42, 0.07);
+  --shadow-color: rgba(0, 0, 0, 0.16);
+  --chart-elevation-fill: rgba(0, 0, 0, 0.08);
+  --chart-elevation-stroke: rgba(0, 0, 0, 0.26);
+  --chart-grid: rgba(0, 0, 0, 0.06);
 
   --radius-sm: 10px;
   --radius-md: 12px;
   --radius-lg: 16px;
-  --radius-xl: 22px;
+  /* The kit's alert corner: 24px around 16px of padding, so the 28px
+     capsule buttons inside sit concentric with it. */
+  --radius-xl: 24px;
+  --radius-pill: 999px;
 
   --space-1: 4px;
   --space-2: 8px;
@@ -65,26 +79,29 @@
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg-base: #0b0d12;
-  --bg-elevated: rgba(22, 24, 32, 0.72);
-  --glass-bg: rgba(22, 24, 32, 0.4);
+  --bg-base: #161616;
+  --bg-elevated: rgba(26, 26, 26, 0.82);
+  --glass-bg: rgba(30, 30, 30, 0.6);
   --glass-filter: blur(9px) saturate(170%);
   --glass-edge:
-    inset 1px 1px 0 rgba(255, 255, 255, 0.22),
-    inset -1px -1px 0 rgba(255, 255, 255, 0.07),
-    inset 0 0 18px rgba(255, 255, 255, 0.06);
-  --glass-shadow: 0 2px 6px rgba(0, 0, 0, 0.3), 0 18px 48px rgba(0, 0, 0, 0.5);
+    inset 0 0 0 1px rgba(255, 255, 255, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    inset 0 0 8px rgba(255, 255, 255, 0.05);
+  --glass-shadow: 0 1px 3px rgba(0, 0, 0, 0.35), 0 16px 48px rgba(0, 0, 0, 0.5);
   --bg-elevated-2: rgba(255, 255, 255, 0.06);
-  --bg-elevated-3: rgba(255, 255, 255, 0.1);
+  --bg-elevated-3: rgba(255, 255, 255, 0.09);
   --border-subtle: rgba(255, 255, 255, 0.1);
-  --text-primary: #f2f4f8;
-  --text-secondary: #a6adba;
-  --text-tertiary: #6b7284;
-  --accent: #0a84ff;
-  --accent-hover: #3399ff;
-  --accent-soft: rgba(10, 132, 255, 0.18);
+  --field-bg: #1e1e1e;
+  --control-chip: rgba(255, 255, 255, 0.18);
+  --text-primary: #f5f5f5;
+  --text-secondary: #b4b4b9;
+  --text-tertiary: #7c7c80;
+  --accent: #0091ff;
+  --accent-hover: #33a7ff;
+  --accent-soft: rgba(0, 145, 255, 0.2);
   --accent-contrast: #ffffff;
   --danger: #ff453a;
+  --danger-soft: rgba(255, 69, 58, 0.25);
   --warning: #d99b2b;
   --shadow-color: rgba(0, 0, 0, 0.5);
   --chart-elevation-fill: rgba(255, 255, 255, 0.1);
@@ -94,26 +111,29 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg-base: #0b0d12;
-    --bg-elevated: rgba(22, 24, 32, 0.72);
-    --glass-bg: rgba(22, 24, 32, 0.4);
+    --bg-base: #161616;
+    --bg-elevated: rgba(26, 26, 26, 0.82);
+    --glass-bg: rgba(30, 30, 30, 0.6);
     --glass-filter: blur(9px) saturate(170%);
     --glass-edge:
-      inset 1px 1px 0 rgba(255, 255, 255, 0.22),
-      inset -1px -1px 0 rgba(255, 255, 255, 0.07),
-      inset 0 0 18px rgba(255, 255, 255, 0.06);
-    --glass-shadow: 0 2px 6px rgba(0, 0, 0, 0.3), 0 18px 48px rgba(0, 0, 0, 0.5);
+      inset 0 0 0 1px rgba(255, 255, 255, 0.12),
+      inset 0 1px 0 rgba(255, 255, 255, 0.28),
+      inset 0 0 8px rgba(255, 255, 255, 0.05);
+    --glass-shadow: 0 1px 3px rgba(0, 0, 0, 0.35), 0 16px 48px rgba(0, 0, 0, 0.5);
     --bg-elevated-2: rgba(255, 255, 255, 0.06);
-    --bg-elevated-3: rgba(255, 255, 255, 0.1);
+    --bg-elevated-3: rgba(255, 255, 255, 0.09);
     --border-subtle: rgba(255, 255, 255, 0.1);
-    --text-primary: #f2f4f8;
-    --text-secondary: #a6adba;
-    --text-tertiary: #6b7284;
-    --accent: #0a84ff;
-    --accent-hover: #3399ff;
-    --accent-soft: rgba(10, 132, 255, 0.18);
+    --field-bg: #1e1e1e;
+    --control-chip: rgba(255, 255, 255, 0.18);
+    --text-primary: #f5f5f5;
+    --text-secondary: #b4b4b9;
+    --text-tertiary: #7c7c80;
+    --accent: #0091ff;
+    --accent-hover: #33a7ff;
+    --accent-soft: rgba(0, 145, 255, 0.2);
     --accent-contrast: #ffffff;
     --danger: #ff453a;
+    --danger-soft: rgba(255, 69, 58, 0.25);
     --warning: #d99b2b;
     --shadow-color: rgba(0, 0, 0, 0.5);
     --chart-elevation-fill: rgba(255, 255, 255, 0.1);
@@ -270,7 +290,8 @@ body {
   background: transparent;
   width: 32px;
   height: 32px;
-  border-radius: var(--radius-sm);
+  /* Round, like macOS 26 toolbar buttons. */
+  border-radius: 50%;
   color: var(--text-secondary);
   cursor: pointer;
   transition: color var(--transition), background var(--transition), transform var(--transition);
@@ -308,11 +329,12 @@ a.theme-toggle {
   top: calc(100% + var(--space-2));
   z-index: 30;
   width: 236px;
-  padding: var(--space-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  background: var(--bg-base);
-  box-shadow: 0 12px 32px var(--shadow-color);
+  padding: var(--space-4);
+  border-radius: var(--radius-xl);
+  background: var(--bg-elevated);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+  box-shadow: var(--glass-edge), var(--glass-shadow);
 }
 
 .shortcuts-panel-heading {
@@ -385,7 +407,7 @@ a.theme-toggle {
   padding: 0.6rem 0.75rem;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-subtle);
-  background: var(--bg-elevated-2);
+  background: var(--field-bg);
   color: var(--text-primary);
   font: inherit;
   transition: border-color var(--transition), box-shadow var(--transition);
@@ -441,6 +463,13 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   font-size: 1.4rem;
   margin-bottom: var(--space-2);
   color: var(--text-tertiary);
+}
+
+/* The GPX dropzone's icon is the macOS blue folder (an inline SVG). */
+.dropzone-icon svg {
+  display: block;
+  margin: 0 auto;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.12));
 }
 
 .dropzone-text {
@@ -523,11 +552,121 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 
 /* ---------- pace smoothness slider ---------- */
 
+/* macOS 26's center-biased, ticked slider: a thin track, filled in the
+   accent colour from the origin (5 = automatic) to the knob rather than from
+   the left end, and a white capsule knob. rangeFill.js keeps --range-lo and
+   --range-hi (0–1, the fill's two ends) in step with the value; the
+   defaults are the origin itself, an empty fill. The knob's centre travels
+   from half its width in from each end, so the fill's ends are placed on
+   that same span. */
+.range-input,
+.range-ticks {
+  --range-knob-w: 24px;
+}
+
 .range-input {
+  --range-knob-h: 16px;
+  --range-track-h: 4px;
+  --range-lo: 0.4444;
+  --range-hi: 0.4444;
+  --range-lo-at: calc(var(--range-knob-w) / 2 + (100% - var(--range-knob-w)) * var(--range-lo));
+  --range-hi-at: calc(var(--range-knob-w) / 2 + (100% - var(--range-knob-w)) * var(--range-hi));
+  --range-fill: linear-gradient(
+    to right,
+    var(--bg-elevated-3) 0 var(--range-lo-at),
+    var(--accent) var(--range-lo-at) var(--range-hi-at),
+    var(--bg-elevated-3) var(--range-hi-at) 100%
+  );
+  --range-knob-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.12), 0 1px 3px rgba(0, 0, 0, 0.3);
+  -webkit-appearance: none;
+  appearance: none;
   width: 100%;
+  height: var(--range-knob-h);
   margin: 0;
-  accent-color: var(--accent);
+  background: transparent;
   cursor: pointer;
+}
+
+.range-input::-webkit-slider-runnable-track {
+  height: var(--range-track-h);
+  border-radius: var(--radius-pill);
+  background: var(--range-fill);
+}
+
+.range-input::-moz-range-track {
+  height: var(--range-track-h);
+  border-radius: var(--radius-pill);
+  background: var(--range-fill);
+}
+
+.range-input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: var(--range-knob-w);
+  height: var(--range-knob-h);
+  /* WebKit puts the thumb's top on the track's top. */
+  margin-top: calc((var(--range-track-h) - var(--range-knob-h)) / 2);
+  border: none;
+  border-radius: var(--radius-pill);
+  background: #ffffff;
+  box-shadow: var(--range-knob-shadow);
+  transition: transform 120ms ease, box-shadow var(--transition);
+}
+
+.range-input::-moz-range-thumb {
+  width: var(--range-knob-w);
+  height: var(--range-knob-h);
+  border: none;
+  border-radius: var(--radius-pill);
+  background: #ffffff;
+  box-shadow: var(--range-knob-shadow);
+  transition: transform 120ms ease, box-shadow var(--transition);
+}
+
+/* The knob swells a little while held, as macOS 26's does. */
+.range-input:active::-webkit-slider-thumb {
+  transform: scale(1.12);
+}
+
+.range-input:active::-moz-range-thumb {
+  transform: scale(1.12);
+}
+
+.range-input:focus-visible {
+  outline: none;
+}
+
+.range-input:focus-visible::-webkit-slider-thumb {
+  box-shadow: var(--range-knob-shadow), 0 0 0 3px var(--accent-soft);
+}
+
+.range-input:focus-visible::-moz-range-thumb {
+  box-shadow: var(--range-knob-shadow), 0 0 0 3px var(--accent-soft);
+}
+
+/* One tick per value under the track (index.html has one span per step).
+   Each tick's centre lines up with the knob's centre at that value: the row
+   is inset by half the knob, less half a tick. The origin's tick is taller. */
+.range-ticks {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  height: 6px;
+  margin-top: calc(-1 * var(--space-1));
+  padding: 0 calc(var(--range-knob-w) / 2 - 1px);
+}
+
+.range-ticks span {
+  width: 2px;
+  height: 4px;
+  border-radius: 1px;
+  background: var(--text-tertiary);
+  opacity: 0.5;
+}
+
+.range-ticks span.is-origin {
+  height: 6px;
+  opacity: 0.8;
 }
 
 .smoothness-value {
@@ -578,8 +717,8 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   display: flex;
   gap: 2px;
   padding: 3px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-elevated-2);
+  border-radius: var(--radius-pill);
+  background: var(--bg-elevated-3);
 }
 
 .segmented-option {
@@ -591,7 +730,7 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   font-size: 0.85rem;
   font-weight: 500;
   padding: 0.5rem 0.6rem;
-  border-radius: calc(var(--radius-sm) - 3px);
+  border-radius: var(--radius-pill);
   cursor: pointer;
   transition: background var(--transition), color var(--transition);
 }
@@ -662,10 +801,10 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
    suffix beside it — it's an alternative on offer, not the current state. */
 .speed-unit-button {
   margin-left: var(--space-1);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  background: var(--bg-elevated-2);
-  color: var(--text-tertiary);
+  border: none;
+  border-radius: var(--radius-pill);
+  background: var(--bg-elevated-3);
+  color: var(--text-secondary);
   font: inherit;
   font-size: 0.75rem;
   font-weight: 500;
@@ -676,7 +815,7 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 }
 
 .speed-unit-button:hover {
-  background: var(--bg-elevated);
+  background: var(--control-chip);
   color: var(--text-primary);
 }
 
@@ -769,8 +908,7 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   flex-direction: column;
   gap: 2px;
   padding: var(--space-2);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
   background: var(--bg-elevated);
   backdrop-filter: var(--glass-filter);
   -webkit-backdrop-filter: var(--glass-filter);
@@ -816,9 +954,9 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 
 .day-selector-button {
   width: 100%;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  background: var(--bg-elevated-2);
+  border: none;
+  border-radius: var(--radius-pill);
+  background: var(--bg-elevated-3);
   color: var(--text-secondary);
   font: inherit;
   font-size: 0.78rem;
@@ -830,7 +968,7 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 }
 
 .day-selector-button:hover {
-  background: var(--bg-elevated);
+  background: var(--control-chip);
   color: var(--text-primary);
 }
 
@@ -846,8 +984,7 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   flex-direction: column;
   gap: 2px;
   padding: var(--space-2);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
   background: var(--bg-elevated);
   backdrop-filter: var(--glass-filter);
   -webkit-backdrop-filter: var(--glass-filter);
@@ -949,7 +1086,7 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 
 .anchor-row-delete:hover {
   color: var(--danger);
-  background: rgba(255, 59, 48, 0.1);
+  background: var(--danger-soft);
 }
 
 .anchor-row.is-problem .anchor-row-time {
@@ -977,12 +1114,14 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 
 /* ---------- buttons / status ---------- */
 
+/* Capsules, as in the kit's alert: the primary action a filled blue one,
+   the follow-up (.download-link) a tinted one. */
 .primary-button {
   position: relative;
   width: 100%;
   border: none;
   padding: 0.75rem 1rem;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-pill);
   background: var(--accent);
   color: var(--accent-contrast);
   font: inherit;
@@ -1059,9 +1198,9 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 .download-link {
   display: block;
   text-align: center;
-  padding: 0.7rem 1rem;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--accent);
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
   color: var(--accent);
   font-weight: 600;
   text-decoration: none;
@@ -1069,7 +1208,7 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 }
 
 .download-link:hover {
-  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
 }
 
 /* This link receives focus programmatically after a successful convert (see
@@ -1156,12 +1295,12 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 }
 
 .leaflet-popup-content-wrapper {
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-xl);
   box-shadow: var(--glass-edge), var(--glass-shadow);
 }
 
 .anchor-popover .leaflet-popup-content {
-  margin: var(--space-3);
+  margin: var(--space-4);
   width: 240px !important;
   display: flex;
   flex-direction: column;
@@ -1290,8 +1429,8 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   align-items: center;
   gap: var(--space-2);
   padding: 0.4rem 0.9rem;
-  border: 1px solid var(--border-subtle);
-  border-radius: 999px;
+  border: none;
+  border-radius: var(--radius-pill);
   background: var(--glass-bg);
   backdrop-filter: var(--glass-filter);
   -webkit-backdrop-filter: var(--glass-filter);
@@ -1498,10 +1637,9 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   z-index: 5;
   min-width: 150px;
   padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   background: var(--bg-base);
-  box-shadow: 0 8px 24px var(--shadow-color);
+  box-shadow: var(--glass-edge), var(--glass-shadow);
   font-size: 0.76rem;
   font-variant-numeric: tabular-nums;
   pointer-events: none;
@@ -1526,17 +1664,19 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 /* ---------- device picker ---------- */
 
 /* Styled like a filled input rather than a button: it shows a value, the
-   current device, and only opens a picker for it. */
+   current device, and only opens a picker for it. The kit's combo box: an
+   opaque field with a chevron in a small rounded chip at its right end.
+   The chevron is a mask over currentColor so it follows the theme. */
 .device-button {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
   width: 100%;
-  padding: 0.6rem 0.75rem;
+  padding: 0.6rem 0.4rem 0.6rem 0.75rem;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  background: var(--bg-elevated-2);
+  background: var(--field-bg);
   color: var(--text-primary);
   font: inherit;
   text-align: left;
@@ -1544,11 +1684,28 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   transition: border-color var(--transition), background var(--transition);
 }
 
+.device-button::before {
+  content: "";
+  order: 2;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  border-radius: 6px;
+  background: var(--control-chip);
+}
+
 .device-button::after {
-  content: "›";
-  color: var(--text-tertiary);
-  font-size: 1.1rem;
-  line-height: 1;
+  content: "";
+  order: 3;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  /* Pulled back over the chip by its own width plus the flex gap. */
+  margin-left: calc(-22px - var(--space-2));
+  background: var(--text-primary);
+  -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 22 22'><polyline points='7.5 9.5 11 13 14.5 9.5' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/></svg>") center / 22px 22px no-repeat;
+  mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 22 22'><polyline points='7.5 9.5 11 13 14.5 9.5' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/></svg>") center / 22px 22px no-repeat;
 }
 
 .device-button.is-empty {
@@ -1579,7 +1736,7 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 }
 
 .device-dialog::backdrop {
-  background: rgba(15, 23, 42, 0.22);
+  background: rgba(0, 0, 0, 0.2);
   backdrop-filter: blur(3px);
   -webkit-backdrop-filter: blur(3px);
 }
@@ -1588,7 +1745,6 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   display: flex;
   flex-direction: column;
   max-height: inherit;
-  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-xl);
   background: var(--glass-bg);
   backdrop-filter: var(--glass-filter);
@@ -1616,13 +1772,13 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   height: 30px;
   border: none;
   border-radius: 50%;
-  background: var(--bg-elevated-2);
+  background: var(--bg-elevated-3);
   color: var(--text-secondary);
   cursor: pointer;
 }
 
 .device-dialog-close:hover {
-  background: var(--bg-elevated-3);
+  background: var(--control-chip);
   color: var(--text-primary);
 }
 
@@ -1657,9 +1813,11 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 
 .device-option {
   padding: 0.5rem 0.7rem;
-  border: 1px solid var(--border-subtle);
+  /* Borderless grey fill, like the kit's secondary buttons; the transparent
+     border keeps the size when the selected one gains its blue edge. */
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
-  background: var(--bg-elevated-2);
+  background: var(--bg-elevated-3);
   color: var(--text-primary);
   font: inherit;
   font-size: 0.85rem;
@@ -1751,9 +1909,9 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 
 .device-custom-apply {
   margin-top: var(--space-3);
-  padding: 0.45rem 0.9rem;
+  padding: 0.45rem 1.1rem;
   border: none;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-pill);
   background: var(--accent);
   color: var(--accent-contrast);
   font: inherit;
@@ -1878,8 +2036,9 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   margin-bottom: var(--space-4);
   padding: var(--space-5);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  background: var(--bg-elevated);
+  border-radius: var(--radius-xl);
+  /* Opaque: the grey glass tint would vanish into the grey page here. */
+  background: var(--field-bg);
   /* Keeps the heading clear of the top edge when jumped to via #anchor. */
   scroll-margin-top: var(--space-4);
 }
@@ -2124,6 +2283,15 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
     height: 20px;
   }
 
+  .range-input,
+  .range-ticks {
+    --range-knob-w: 32px;
+  }
+
+  .range-input {
+    --range-knob-h: 22px;
+  }
+
   /* Leaflet gives its container font-size: 0.75rem, so popup inputs inherit
      12px, and iOS zooms the whole page into any input under 16px. Phones
      get the route dialog instead; this covers touch tablets, which keep the
@@ -2173,6 +2341,7 @@ html.glass-refraction .day-selector-dropdown {
   /* The .glass-refraction forms are needed to outrank the rule above. */
   #sidebar,
   #profilePanel,
+  .shortcuts-panel,
   .leaflet-popup-content-wrapper,
   .leaflet-popup-tip,
   .profile-show-button,
@@ -2197,5 +2366,13 @@ html.glass-refraction .day-selector-dropdown {
 
   .profile-show-button:active {
     transform: translateX(-50%);
+  }
+
+  .range-input:active::-webkit-slider-thumb {
+    transform: none;
+  }
+
+  .range-input:active::-moz-range-thumb {
+    transform: none;
   }
 }

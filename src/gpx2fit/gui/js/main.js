@@ -13,6 +13,7 @@ import * as stopsModule from './stops.js';
 import { effectiveStopTimes } from './activityWindow.js';
 import { initTheme } from './theme.js';
 import { initGlass } from './glass.js';
+import { initCenterBiasedRange } from './rangeFill.js';
 import { initShortcuts } from './shortcuts.js';
 import { initDevicePicker } from './devicePicker.js';
 import { createAnchorPlacer } from './anchorPopovers.js';
@@ -219,6 +220,8 @@ try {
   // Keep the default.
 }
 smoothnessValueEl.textContent = smoothnessSliderEl.value;
+// The fill grows out of the HTML default (5 = automatic), not the left end.
+initCenterBiasedRange(smoothnessSliderEl, Number(smoothnessSliderEl.defaultValue));
 
 smoothnessSliderEl.addEventListener('input', () => {
   smoothnessValueEl.textContent = smoothnessSliderEl.value;

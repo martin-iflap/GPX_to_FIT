@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <!-- Tints a phone browser's toolbar; theme.js keeps it at --bg-base. -->
-    <meta name="theme-color" content="#f5f6f8" />
+    <meta name="theme-color" content="#f5f5f7" />
     <title>GPX to FIT</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <link rel="stylesheet" href="styles.css" />
@@ -116,7 +116,25 @@
             <div id="dropzone" class="dropzone" tabindex="0">
               <input id="gpxFileInput" type="file" accept=".gpx" class="visually-hidden" />
               <div class="dropzone-content">
-                <span class="dropzone-icon">⤒</span>
+                <!-- The macOS blue folder: a darker back with its tab, a
+                     lighter front, and a highlight along the front's top. -->
+                <span class="dropzone-icon">
+                  <svg viewBox="0 0 64 52" width="40" height="33" aria-hidden="true" focusable="false">
+                    <defs>
+                      <linearGradient id="folderBack" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0" stop-color="#64abdb" />
+                        <stop offset="1" stop-color="#4c94c8" />
+                      </linearGradient>
+                      <linearGradient id="folderFront" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0" stop-color="#89cbf1" />
+                        <stop offset="1" stop-color="#65afdd" />
+                      </linearGradient>
+                    </defs>
+                    <path d="M3 8a4 4 0 0 1 4-4h15.3a4 4 0 0 1 2.9 1.2L28.4 8.5H57a4 4 0 0 1 4 4V18H3z" fill="url(#folderBack)" />
+                    <rect x="3" y="13" width="58" height="36" rx="4" fill="url(#folderFront)" />
+                    <rect x="5" y="13" width="54" height="1.5" rx="0.75" fill="#ffffff" opacity="0.55" />
+                  </svg>
+                </span>
                 <!-- .copy-pointer / .copy-touch: styles.css shows one or the other. -->
                 <p class="dropzone-text"><span class="copy-pointer">Drag &amp; drop a GPX file, or <span class="dropzone-link">browse</span></span><span class="copy-touch"><span class="dropzone-link">Tap to choose a GPX file</span></span></p>
                 <p id="fileName" class="dropzone-filename" hidden></p>
@@ -164,6 +182,10 @@
               <output id="smoothnessValue" class="smoothness-value" for="smoothnessSlider">5</output>
             </div>
             <input id="smoothnessSlider" class="range-input" type="range" min="1" max="10" step="1" value="5" />
+            <!-- One tick per step, 1–10; the 5th is the fill's origin (rangeFill.js). -->
+            <div class="range-ticks" aria-hidden="true">
+              <span></span><span></span><span></span><span></span><span class="is-origin"></span><span></span><span></span><span></span><span></span><span></span>
+            </div>
             <div class="range-captions" aria-hidden="true">
               <span>Varied</span>
               <p class="control-hint control-hint--flush">
