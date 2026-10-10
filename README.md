@@ -84,7 +84,9 @@ GPX file ──▶ parse route ──▶ gradient per leg (smoothed over 70 m)
    fast or slow.
 4. **Fitting.** Between every pair of anchors, the modeled times are scaled
    so that the segment takes exactly the known time, with any stop time
-   inside it removed first.
+   inside it removed first. Then every sudden change of speed (a surface
+   change, a hilltop) is turned into a short ramp, no steeper than a runner's
+   or hiker's realistic acceleration.
 5. **Output.** Every point gets a timestamp. The FIT file gets records, timer
    pause events around each stop, and a lap/session summary with moving time
    and average speed.

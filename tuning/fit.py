@@ -22,6 +22,13 @@ the other nor reads the other's output; each backs its own command.
 A typical session runs `sweep` to see where the model is wrong and then `fit`
 to change it, but that link is a person reading a table, not code.
 
+The search scores every cell with the acceleration limit off
+(`acceleration_scale` 0): the limit ramps a change of speed over a few metres,
+far inside the ≥70 m buckets, and on the corpus it moved no fitted constant
+(2026-10-08), while making the search about three times slower. The
+before/after objectives, and every other command, run the model with it on,
+as the app does.
+
 Grid search because the objective is only piecewise smooth (medians,
 smoothsteps, a tanh), an evaluation takes milliseconds, and a full grid also
 shows how flat the optimum is (`StageStep.plateau`).
@@ -224,7 +231,8 @@ class StageStep:
         sport: The sport it was fitted for, or None for a shared stage.
         values: The block's knob values afterward.
         changed: Whether the block moved.
-        train_objective: The whole training split's objective afterward.
+        train_objective: The whole training split's objective afterward, as
+            the search scores it: without the acceleration limit.
         plateau: knob -> (low, high), the grid values scoring within
             PLATEAU_SHARE of the block's best. A wide plateau means the corpus
             barely constrains that knob, so read its value loosely.
@@ -715,6 +723,11 @@ def fit_constants(
         """The SportType -> PacingParams callable for these knob values."""
         return proposal_of(globals_, per_sport).for_sport
 
+    def build_for_search(globals_: dict[str, float], per_sport: dict[SportType, dict[str, float]]):
+        """`build`, with the acceleration limit off (see the module docstring)."""
+        for_sport = build(globals_, per_sport)
+        return lambda s: replace(for_sport(s), acceleration_scale=0.0)
+
     before_params = build(dict(global_values), {sport: dict(values) for sport, values in sport_values.items()})
     train_before = evaluator.corpus_objective(before_params, train)
     test_before = evaluator.corpus_objective(before_params, test) if test else 0.0
@@ -725,7 +738,7 @@ def fit_constants(
                r_changed: bool, r_plateau: dict[str, tuple[float, float]]) -> None:
         history.append(StageStep(
             r_round_number, r_stage.name, r_sport, {name: r_values[name] for name in r_stage.knobs}, r_changed,
-            evaluator.corpus_objective(build(global_values, sport_values), train), r_plateau,
+            evaluator.corpus_objective(build_for_search(global_values, sport_values), train), r_plateau,
         ))
 
     for round_number in range(1, rounds + 1):
@@ -739,7 +752,7 @@ def fit_constants(
                     before = sport_values[sport]
                     sport_values[sport], plateau = _search_block(
                         evaluator, sport_train,
-                        lambda trial, s=sport: build(global_values, {**sport_values, s: trial}),
+                        lambda trial, s=sport: build_for_search(global_values, {**sport_values, s: trial}),
                         stage.knobs, before,
                     )
                     changed = sport_values[sport] != before
@@ -748,7 +761,7 @@ def fit_constants(
             else:
                 before = global_values
                 global_values, plateau = _search_block(
-                    evaluator, train, lambda trial: build(trial, sport_values), stage.knobs, before,
+                    evaluator, train, lambda trial: build_for_search(trial, sport_values), stage.knobs, before,
                 )
                 changed = global_values != before
                 moved |= changed

@@ -1,11 +1,15 @@
 import math
+import random
 import statistics
 from datetime import timedelta
 
 import pytest
 
+from gpx2fit.core.fit_writer import _resample
+from gpx2fit.core.gpx_reader import MAX_LEG_M, densify_points
 from gpx2fit.core.models import InputError, ModeAStop, SportType, Track, TrackPoint
 from gpx2fit.core.pacing.anchors import add_start_end_anchors
+from gpx2fit.core.pacing import acceleration as acceleration_module
 from gpx2fit.core.pacing import combine as combine_module
 from gpx2fit.core.pacing.combine import combine
 from gpx2fit.core.pacing.curve_selection import DEFAULT_SMOOTHNESS, MAX_SPEED_RATIO_BOUNDS
@@ -1121,3 +1125,241 @@ class TestCombineImplausibleSegmentPace:
         combine(warned, anchors, SportType.RUNNING, warnings=[])
 
         assert [p.timestamp for p in silent.points] == [p.timestamp for p in warned.points]
+
+
+def _leg_speeds(points: list[TrackPoint]) -> list[float]:
+    """Each leg's absolute speed in m/s from stamped points (0.0 for a zero-distance leg)."""
+    return [
+        (b.distance_from_start - a.distance_from_start) / seconds if seconds > 0 else 0.0
+        for seconds, a, b in zip(_leg_seconds(points), points, points[1:])
+    ]
+
+
+def _worst_acceleration_share(points: list[TrackPoint]) -> float:
+    """The largest |Δv²| between adjacent moving legs, as a share of what max acceleration 1 m/s² would allow.
+
+    Between leg midpoints at a constant acceleration a -> |Δv²| = a * (Δs₁ + Δs₂),
+    so this is the steepest acceleration on the track, in m/s².
+    """
+    distances = [b.distance_from_start - a.distance_from_start for a, b in zip(points, points[1:])]
+    speeds = _leg_speeds(points)
+    worst = 0.0
+    for d0, d1, v0, v1 in zip(distances, distances[1:], speeds, speeds[1:]):
+        if d0 > 0 and d1 > 0:
+            worst = max(worst, abs(v1 * v1 - v0 * v0) / (d0 + d1))
+    return worst
+
+
+class TestCombineAccelerationLimit:
+    """No two adjacent legs change speed faster than the sport's maximum acceleration."""
+
+    LEG_M = 2.0  # gpx_reader.MAX_LEG_M; the limit can't ramp within one leg
+
+    def _surface_step(self) -> tuple[Track, list[float]]:
+        # 2 km flat, the second half on a surface 40% slower.
+        count = int(2000 / self.LEG_M)
+        track = flat_track([index * self.LEG_M for index in range(count + 1)])
+        multipliers = [1.0 if index < count // 2 else 0.6 for index in range(count)]
+        return track, multipliers
+
+    def _crest(self) -> Track:
+        # 1 km up at 12%, 1 km down at 12%: one sharp hilltop.
+        count = int(2000 / self.LEG_M)
+        return Track(points=[
+            point(elevation=0.12 * min(d, 2000 - d), distance_from_start=d)
+            for d in (index * self.LEG_M for index in range(count + 1))
+        ])
+
+    @staticmethod
+    def _anchors(track: Track, seconds: float):
+        return [anchor(0.0, START), anchor(track.total_distance, START + timedelta(seconds=seconds))]
+
+    # Typical speeds per sport: ~1.3 m/s hiking, ~3 m/s running.
+    SECONDS = {SportType.HIKING: 1600.0, SportType.RUNNING: 700.0}
+
+    @pytest.mark.parametrize("sport", [SportType.HIKING, SportType.RUNNING])
+    def test_a_surface_step_is_ramped_within_the_limit(self, sport):
+        limit = acceleration_module.MAX_ACCELERATION_MPS2[sport]
+        track, multipliers = self._surface_step()
+        unlimited, _ = self._surface_step()
+        anchors = self._anchors(track, self.SECONDS[sport])
+        combine(unlimited, anchors, sport, multipliers=multipliers, acceleration_limit=False)
+        assert _worst_acceleration_share(unlimited.points) > 2 * limit  # premise: an instant step
+
+        combine(track, anchors, sport, multipliers=multipliers)
+        assert _worst_acceleration_share(track.points) <= limit * (1 + 1e-4)
+
+    def test_a_sharp_crest_is_ramped_within_the_limit(self):
+        sport = SportType.RUNNING
+        limit = acceleration_module.MAX_ACCELERATION_MPS2[sport]
+        unlimited = self._crest()
+        combine(unlimited, self._anchors(unlimited, self.SECONDS[sport]), sport, acceleration_limit=False)
+        assert _worst_acceleration_share(unlimited.points) > 1.5 * limit  # premise
+
+        track = self._crest()
+        combine(track, self._anchors(track, self.SECONDS[sport]), sport)
+        assert _worst_acceleration_share(track.points) <= limit * (1 + 1e-4)
+
+    def test_a_hiking_crest_is_already_gentle_and_left_alone(self):
+        # Tobler's response turns from climb to descent gently enough that a
+        # hiker's crest is within the limit as paced, so nothing moves.
+        sport = SportType.HIKING
+        limited, unlimited = self._crest(), self._crest()
+        combine(limited, self._anchors(limited, self.SECONDS[sport]), sport)
+        combine(unlimited, self._anchors(unlimited, self.SECONDS[sport]), sport, acceleration_limit=False)
+        assert [p.timestamp for p in limited.points] == [p.timestamp for p in unlimited.points]
+
+    def test_anchors_are_still_hit_exactly(self):
+        track, multipliers = self._surface_step()
+        mid_time = START + timedelta(seconds=700)
+        end_time = START + timedelta(seconds=1600)
+        anchors = [anchor(0.0, START), anchor(1200.0, mid_time), anchor(2000.0, end_time)]
+
+        combine(track, anchors, SportType.HIKING, multipliers=multipliers)
+
+        by_distance = {p.distance_from_start: timestamp_of(p) for p in track.points}
+        assert by_distance[1200.0] == mid_time
+        assert by_distance[2000.0] == end_time
+        # And the step inside the first segment was really limited.
+        assert _worst_acceleration_share(track.points[:601]) <= 0.15 * (1 + 1e-4)
+
+    def test_each_segment_is_limited_on_its_own(self):
+        # An anchor is a known time: the jump in pace it implies is reported
+        # (see _implausible_pace_warnings), not smoothed across.
+        track = flat_track([index * 5.0 for index in range(401)])
+        anchors = [anchor(0.0, START), anchor(1000.0, START + timedelta(seconds=500)),
+                   anchor(2000.0, START + timedelta(seconds=1500))]
+        combine(track, anchors, SportType.HIKING, vary_pace=False)
+        speeds = _leg_speeds(track.points)
+        assert speeds[199] == pytest.approx(2.0)
+        assert speeds[200] == pytest.approx(1.0)
+
+    def test_gentle_pace_variation_is_left_exactly_alone(self):
+        def flat() -> Track:
+            return Track(points=[
+                point(lat=46.0 + d * 1e-5, lon=14.0, distance_from_start=float(d)) for d in range(0, 10_001, 2)
+            ])
+
+        for sport, seconds in ((SportType.HIKING, 7700.0), (SportType.RUNNING, 3300.0)):
+            limited = flat()
+            unlimited = flat()
+            combine(limited, self._anchors(limited, seconds), sport)
+            combine(unlimited, self._anchors(unlimited, seconds), sport, acceleration_limit=False)
+            assert [p.timestamp for p in limited.points] == [p.timestamp for p in unlimited.points]
+
+    def test_the_limit_is_per_sport(self):
+        # A 2.5 -> 2.0 m/s step is Δv² = 2.25 over 10 m: inside running's
+        # 0.30 m/s² (cap 3.0), outside hiking's 0.15 (cap 1.5).
+        def step() -> tuple[Track, list[float], list]:
+            t = flat_track([index * 5.0 for index in range(401)])
+            multip = [1.0] * 200 + [0.8] * 200
+            return t, multip, self._anchors(t, 1000 / 2.5 + 1000 / 2.0)
+
+        results = {}
+        for sport in (SportType.RUNNING, SportType.HIKING):
+            for limited in (True, False):
+                track, multipliers, anchors = step()
+                combine(track, anchors, sport, multipliers=multipliers, vary_pace=False, acceleration_limit=limited)
+                results[sport, limited] = [p.timestamp for p in track.points]
+
+        assert results[SportType.RUNNING, True] == results[SportType.RUNNING, False]
+        assert results[SportType.HIKING, True] != results[SportType.HIKING, False]
+
+    def test_a_stop_still_starts_and_ends_instantly(self):
+        track = flat_track([index * 5.0 for index in range(401)])
+        track.points.insert(201, point(distance_from_start=1000.0))
+        stop = ModeAStop(1000.0, timedelta(minutes=5))
+        anchors = self._anchors(track, 1600.0 + 300.0)
+
+        combine(track, anchors, SportType.HIKING, mode_a_stops=[stop], vary_pace=False)
+
+        speeds = _leg_speeds(track.points)
+        assert speeds[200] == 0.0
+        assert speeds[199] == pytest.approx(speeds[0])
+        assert speeds[201] == pytest.approx(speeds[0])
+
+
+class TestLimitLegTimes:
+    """combine._limit_leg_times on plain floats, where stamping's microsecond rounding can't hide anything."""
+
+    distances = [2.0] * 500
+    # A hiker at 1.5 m/s onto a surface 40% slower, halfway.
+    seconds = [2.0 / 1.5] * 250 + [2.0 / 0.9] * 250
+    limit = 0.15
+
+    def _limited(self) -> list[float]:
+        return combine_module._limit_leg_times(self.distances, self.seconds, sum(self.seconds), self.limit)
+
+    def test_the_total_time_is_kept(self):
+        assert sum(self._limited()) == pytest.approx(sum(self.seconds), rel=1e-12)
+
+    def test_the_rescaled_speeds_are_still_within_the_limit(self):
+        speeds = [d / t for d, t in zip(self.distances, self._limited())]
+        for v0, v1 in zip(speeds, speeds[1:]):
+            assert abs(v1 * v1 - v0 * v0) <= self.limit * 4.0 * (1 + 1e-9)
+
+    def test_times_within_the_limit_come_back_exactly(self):
+        # Arbitrary floats, where distance / (distance / t) often isn't t to the last bit.
+        rng = random.Random(3)
+        distances = [rng.uniform(1.0, 2.0) for _ in range(500)]
+        seconds = [d / (1.3 + 0.01 * math.sin(index / 10)) * rng.uniform(0.999, 1.001) for index, d in enumerate(distances)]
+        assert combine_module._limit_leg_times(distances, seconds, sum(seconds), self.limit) == seconds
+
+    @pytest.mark.parametrize("seed", range(20))
+    def test_a_rescale_that_speeds_everything_up_is_still_within_the_limit(self, seed):
+        # Limiting only slows legs, so the rescale back to the anchors' time
+        # speeds every leg up again, which steepens every change of speed by
+        # the square of that factor. Here the limit slows a lot, so one
+        # limit-then-rescale would break it by far more than the tolerance.
+        rng = random.Random(seed)
+        distances = [rng.uniform(0.5, 3.0) for _ in range(300)]
+        seconds = [d / rng.uniform(0.5, 5.0) for d in distances]
+        limited = combine_module._limit_leg_times(distances, seconds, sum(seconds), self.limit)
+        assert sum(limited) == pytest.approx(sum(seconds), rel=1e-12)
+        speeds = [d / t for d, t in zip(distances, limited)]
+        for d0, d1, v0, v1 in zip(distances, distances[1:], speeds, speeds[1:]):
+            assert abs(v1 * v1 - v0 * v0) <= self.limit * (d0 + d1) * (1 + 1e-9)
+
+    def test_the_step_down_ends_where_the_slower_surface_begins(self):
+        # Rescaling speeds every leg up by one factor, so the slow side stays
+        # one flat speed and the ramp stays on the fast side.
+        speeds = [d / t for d, t in zip(self.distances, self._limited())]
+        assert max(speeds[250:]) == pytest.approx(min(speeds[250:]), rel=1e-12)
+        assert speeds[249] > speeds[250] * (1 + 1e-6)
+
+    def test_a_stop_leg_keeps_zero_time(self):
+        distances = self.distances[:250] + [0.0] + self.distances[250:]
+        seconds = self.seconds[:250] + [0.0] + self.seconds[250:]
+        limited = combine_module._limit_leg_times(distances, seconds, sum(seconds), self.limit)
+        assert limited[250] == 0.0
+        assert sum(limited) == pytest.approx(sum(seconds), rel=1e-12)
+
+
+def test_the_last_leg_does_not_absorb_the_rounding_of_the_total():
+    # combine stamps the end point from its anchor, so a total that drifted
+    # in limiting would land on the last leg alone as a jump in speed.
+    track = flat_track([index * 2.0 for index in range(1001)])
+    multipliers = [1.0] * 500 + [0.6] * 500
+    anchors = [anchor(0.0, START), anchor(2000.0, START + timedelta(seconds=1600))]
+    combine(track, anchors, SportType.HIKING, multipliers=multipliers, vary_pace=False)
+    speeds = _leg_speeds(track.points)
+    assert speeds[-1] == pytest.approx(speeds[-2], rel=1e-5)
+
+
+@pytest.mark.parametrize("sport, seconds", [(SportType.HIKING, 1600.0), (SportType.RUNNING, 700.0)])
+def test_a_sparse_route_has_no_sudden_jump_in_its_1hz_records(sport, seconds):
+    # A planner's GPX: points 100 m apart, densified as parse_gpx_bytes does.
+    # A leg must take well under the ~3 s a step's ramp lasts, or the limit
+    # has nothing to ramp across and the whole step lands between two records.
+    sparse = [point(lat=46.0 + d * 9e-6, lon=14.0, distance_from_start=float(d)) for d in range(0, 2001, 100)]
+    track = Track(points=densify_points(sparse, MAX_LEG_M))
+    multipliers = [1.0 if b.distance_from_start <= 1000 else 0.6 for b in track.points[1:]]
+    anchors = [anchor(0.0, START), anchor(2000.0, START + timedelta(seconds=seconds))]
+
+    combine(track, anchors, sport, multipliers=multipliers, vary_pace=False)
+
+    (records,) = _resample(track.points)
+    per_second = [b.distance - a.distance for a, b in zip(records, records[1:])]
+    worst_change = max(abs(later - earlier) for earlier, later in zip(per_second, per_second[1:]))
+    # Unlimited, the step is about 0.55 m/s in one second hiking and 0.9 running.
+    assert worst_change < 2 * acceleration_module.MAX_ACCELERATION_MPS2[sport]

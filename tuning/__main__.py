@@ -388,6 +388,8 @@ def command_fit(args: argparse.Namespace) -> int:
         print(f"  {step.round:>5}  {step.stage:<16}  {sport:<9}  {step.train_objective:.4f}"
               f"  {'*' if step.changed else ' '} {values}")
     print("  (* = the block moved in that step)")
+    print("  The search scores without the acceleration limit, which the 70 m buckets can't see;"
+          " the before/after objectives above include it.")
     print(f"  [low-high] = values scoring within {PLATEAU_SHARE:.1%} of the block's best."
           " A wide range means the corpus barely pins that knob.")
 

@@ -31,6 +31,11 @@ later refactor and the harness starts tuning a model the app doesn't run.
 `tests/tuning/test_model_mirror.py` is the guard: it asserts
 `elapsed_from_model` at default `PacingParams` reproduces `combine()`'s
 timestamps exactly.
+
+The acceleration limit is borrowed rather than restated: its passes are
+sequential, with no numpy form, so `elapsed_from_model` calls `combine`'s own
+`_limit_leg_times`, after a numpy check that skips it when no leg breaks the
+limit (where it would change nothing).
 """
 
 import functools
@@ -41,7 +46,8 @@ from dataclasses import dataclass, field, fields, replace
 import numpy as np
 
 from gpx2fit.core.models import SportType, Track
-from gpx2fit.core.pacing.combine import _MIN_RELATIVE_SPEED, _MIN_SURFACE_MULTIPLIER
+from gpx2fit.core.pacing.acceleration import MAX_ACCELERATION_MPS2
+from gpx2fit.core.pacing.combine import _MIN_RELATIVE_SPEED, _MIN_SURFACE_MULTIPLIER, _limit_leg_times
 from gpx2fit.core.pacing.curve_selection import (
     CURVE_FILLS,
     CURVE_REFERENCE_GRADE,
@@ -103,6 +109,10 @@ class PacingParams:
             model alone, for an A/B against a run without the variation. Not
             a knob to fit: the noise is uncorrelated with real deviations, so
             the search would always drive it to 0.
+        acceleration_scale: Multiplies acceleration.MAX_ACCELERATION_MPS2[sport].
+            1.0 is what the app does; 0.0 turns the limit off, for an A/B. Not
+            a knob to fit: the limit ramps changes of speed over a few metres,
+            far inside the ≥70 m buckets the objective scores.
     """
     gradient_window_m: float = GRADIENT_WINDOW_M
     curve_reference_grade: float = CURVE_REFERENCE_GRADE
@@ -120,6 +130,7 @@ class PacingParams:
     tobler_weight: float | None = None
     max_speed_ratio: float | None = None
     variation_scale: float = 1.0
+    acceleration_scale: float = 1.0
 
 
 _PARAM_NAMES = frozenset(param.name for param in fields(PacingParams))
@@ -524,7 +535,32 @@ def elapsed_from_model(
     if modeled_total <= 0:
         raise ValueError("The model gave this track zero total time; it has no positive-distance legs.")
 
+    leg_seconds = modeled * (active_seconds / modeled_total)
+    if params.acceleration_scale > 0:
+        max_acceleration = MAX_ACCELERATION_MPS2[sport] * params.acceleration_scale
+        leg_seconds = _acceleration_limited(model.leg_distances, leg_seconds, active_seconds, max_acceleration)
+
     elapsed = np.empty(len(modeled) + 1)
     elapsed[0] = 0.0
-    np.cumsum(modeled * (active_seconds / modeled_total), out=elapsed[1:])
+    np.cumsum(leg_seconds, out=elapsed[1:])
     return elapsed, settings
+
+
+def _acceleration_limited(
+    leg_distances: np.ndarray, leg_seconds: np.ndarray, active_seconds: float, max_acceleration: float
+) -> np.ndarray:
+    """combine._limit_leg_times, skipped when a numpy check finds no pair of legs that breaks the limit.
+
+    The check is the same constraint, |Δv²| ≤ a · (Δs₁ + Δs₂), in the same
+    floating-point operations, so it finds a violation exactly when core
+    would. With none, core would return the times unchanged, so it isn't
+    called at all.
+    """
+    moving = leg_seconds > 0
+    speeds = np.divide(leg_distances, leg_seconds, out=np.zeros_like(leg_seconds), where=moving)
+    both = moving[:-1] & moving[1:]
+    squares = speeds * speeds
+    caps = max_acceleration * (leg_distances[:-1] + leg_distances[1:])
+    if not np.any(both & (np.abs(squares[1:] - squares[:-1]) > caps)):
+        return leg_seconds
+    return np.asarray(_limit_leg_times(leg_distances.tolist(), leg_seconds.tolist(), active_seconds, max_acceleration))

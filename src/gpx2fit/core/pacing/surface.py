@@ -56,12 +56,38 @@ SURFACE_FALLBACK_WARNING_SHARE = 0.10
 SURFACE_SPIKE_HALF_WINDOW_M = 25.0
 
 
+# Valhalla is sent a shape point at least this far apart. gpx_reader densifies
+# to 2 m legs, and a point every 2 m would cost a 25 km route ~12,500 shape
+# points against Valhalla's limit (16,000 by default) for nothing: densified
+# points lie on straight lines, so they tell the map matcher nothing new.
+SHAPE_SPACING_M = 15.0
+
+
+def shape_point_indexes(track: Track) -> list[int]:
+    """Indexes of the track points sent to Valhalla as its request shape.
+
+    The first and last points, and every point at least SHAPE_SPACING_M past
+    the previous one kept. A track sparser than that sends every point.
+    """
+    points = track.points
+    if len(points) < 2:
+        return list(range(len(points)))
+    indexes = [0]
+    last_kept = points[0].distance_from_start
+    for index in range(1, len(points) - 1):
+        if points[index].distance_from_start - last_kept >= SHAPE_SPACING_M:
+            indexes.append(index)
+            last_kept = points[index].distance_from_start
+    indexes.append(len(points) - 1)
+    return indexes
+
+
 def build_trace_attributes_payload(track: Track, costing: str = _DEFAULT_COSTING) -> dict:
     """Build the request body for Valhalla's trace_attributes endpoint.
 
     Args:
-        track: Track whose points become the request's shape, one shape
-            point per track point, in order.
+        track: Track whose points become the request's shape, in order: the
+            ones shape_point_indexes picks.
         costing: Valhalla costing model to request.
 
     Returns:
@@ -76,7 +102,7 @@ def build_trace_attributes_payload(track: Track, costing: str = _DEFAULT_COSTING
         raise ValueError("Cannot build a trace_attributes payload for a track with no points.")
 
     return {
-        "shape": [{"lat": p.lat, "lon": p.lon} for p in track.points],
+        "shape": [{"lat": track.points[i].lat, "lon": track.points[i].lon} for i in shape_point_indexes(track)],
         "costing": costing,
         "shape_match": _SHAPE_MATCH,
     }
@@ -336,8 +362,9 @@ def calculate_surface_multipliers(
     """Calculate per-leg speed multipliers from a Valhalla trace_attributes response.
 
     Args:
-        track: Track whose points were sent as the Valhalla request shape,
-            in the same order.
+        track: The track build_trace_attributes_payload built the request
+            from. Each leg between two of its shape points is matched as one,
+            and every leg of the track inside it gets that multiplier.
         response: Parsed trace_attributes JSON response for that request.
         sport: Sport whose weight tables (surface, road_class, use,
             sac_scale) should be used.
@@ -370,17 +397,21 @@ def calculate_surface_multipliers(
 
     tables = _WEIGHTS_BY_SPORT[sport.value]
     edges = response.get("edges") or []
-    point_edge_indexes = resolve_point_edge_indexes(response, len(track.points))
+    shape_indexes = shape_point_indexes(track)
+    point_edge_indexes = resolve_point_edge_indexes(response, len(shape_indexes))
     leg_lengths = [
         curr.distance_from_start - prev.distance_from_start for prev, curr in zip(track.points, track.points[1:])
     ]
 
     multipliers = []
     fallback_length = 0.0
-    for leg_length, start_edge, end_edge in zip(leg_lengths, point_edge_indexes, point_edge_indexes[1:]):
+    for first, last, start_edge, end_edge in zip(
+        shape_indexes, shape_indexes[1:], point_edge_indexes, point_edge_indexes[1:]
+    ):
+        legs_inside = last - first
         if start_edge is None or end_edge is None or start_edge > end_edge:
-            multipliers.append(default_multiplier)
-            fallback_length += leg_length
+            multipliers.extend([default_multiplier] * legs_inside)
+            fallback_length += sum(leg_lengths[first:last])
             continue
 
         edge_slice = edges[start_edge:end_edge + 1]
@@ -403,7 +434,7 @@ def calculate_surface_multipliers(
         else:
             final = _SAC_BLEND_WEIGHT * sac_m + (1 - _SAC_BLEND_WEIGHT) * physical
 
-        multipliers.append(final)
+        multipliers.extend([final] * legs_inside)
 
     total_length = sum(leg_lengths)
     fallback_share = fallback_length / total_length if total_length > 0 else 0.0

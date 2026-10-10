@@ -38,7 +38,7 @@ redesigning, not refactoring.
 | **Start and end are anchors.** A known time at distance 0, at the end, at a summit, from a photo, or at a stop's arrival/departure all use the same `Anchor` type. | `combine()` has one code path: fit between consecutive anchors. The average-speed entry is also just another way to set the end anchor's time. It's converted in JS, and `core/` never sees a speed. |
 | **Two-stage inputs.** `RawAnchor → Anchor`, `RawStop → ResolvedStop \| ModeAStop`, `RawPhotoAnchor → ResolvedPhotoAnchor`.                                         | "Raw" is what the frontend can know (a click position, a distance). "Resolved" is pinned to a track point. Don't merge the two stages.                                                               |
 | **Derived values are computed, not cached.** `Track.total_distance` and `start_time` are properties.                                                               | Pacing mutates `points` in place. A cached total could silently go stale, and recomputing costs almost nothing at this data size.                                                                    |
-| **`SportType` is a closed enum and a dispatch key.**                                                                                                               | `curve_selection`, `surface` and `fit_writer` branch on it. Adding cycling needs a new pacing model, not just a new enum value.                                                                      |
+| **`SportType` is a closed enum and a dispatch key.**                                                                                                               | `curve_selection`, `surface`, `fit_writer` and `acceleration` (`MAX_ACCELERATION_MPS2`) branch on it. Adding cycling needs a new pacing model, not just a new enum value.                            |
 | **`InputError` is a user-facing contract.**                                                                                                                        | Raise it only for problems the user can fix, with a plain-language message. See [§9](#9-errors).                                                                                                     |
 | **Pacing is resolved per workout, fitted per segment.**                                                                                                            | Which curve to use, how much speed may swing, and the curve exponents are decided once from the whole track. Anchors only mark where a time is known, not where the terrain changes.                 |
 
@@ -63,6 +63,7 @@ src/gpx2fit/
 │       ├── surface.py            Valhalla response → per-leg surface multipliers
 │       ├── surface_weights.json  per-sport weight tables for surface.py
 │       ├── variation.py          deterministic pace wander on steady stretches
+│       ├── acceleration.py       per-sport limit on how fast the paced speed changes
 │       └── combine.py            fits speeds to anchors, stamps timestamps
 └── gui/
     ├── index.html                app shell; loads Leaflet, Pyodide, exifr from CDNs
@@ -256,6 +257,8 @@ flowchart LR
   combine["pacing/combine.py"] --> cs
   combine --> gradient
   combine --> variation
+  accel["pacing/acceleration.py"] --> models
+  combine --> accel
   gpx -.-> gpxpy(["gpxpy"])
   fitw --> enc["fit_encoder.py"]
 ```
@@ -290,17 +293,18 @@ densify_points(points, max_leg_m) -> list[TrackPoint]
 Segments are always concatenated, and a gap is joined with a straight leg
 that is paced like the rest. The warning only tells the user it happened.
 
-**Densifying (2026-10-08).** Every leg longer than `MAX_LEG_M` (15 m, a
-first guess) is split into equal pieces on the straight line between its
-points, since a GPX says nothing about the path between them. Pacing works
-per leg. On a sparse planner GPX (legs of 100 m or more), speed used to step
-at each point, and the gradient window and the pace wander had nothing to
-smooth. Anchors, photos and stops also snapped up to half a leg away. 15 m
-matches the spacing the tuning harness fits on, so the constants are used
-where they were fitted. A dense GPX is left as it is. Because this happens in
-the parser, every later step uses the dense track: the map, nearest-point
-lookups, the Valhalla request (more shape points for a sparse route), pacing
-and the FIT file.
+**Densifying (2026-10-08).** Every leg longer than `MAX_LEG_M` (2 m) is
+split into equal pieces on the straight line between its points, since a GPX
+says nothing about the path between them. Pacing works per leg. On a sparse
+planner GPX (legs of 100 m or more), speed used to step at each point, and
+the gradient window and the pace wander had nothing to smooth. Anchors,
+photos and stops also snapped up to half a leg away. 2 m (it was 15 m at
+first) is short enough for the acceleration limit (§5.9a) to ramp a change
+of speed across several legs. The tuning harness densifies the same way. A
+dense GPX is left as it is. Because this happens in the parser, every later
+step uses the dense track: the map, nearest-point lookups, pacing and the
+FIT file. The Valhalla request doesn't: it is thinned back to a point every
+15 m (§5.8).
 
 It reads only `<trk>` points. Route (`<rte>`) and waypoint elements are
 ignored.
@@ -438,8 +442,11 @@ still first guesses.
 
 ```mermaid
 flowchart TD
-  btap["build_trace_attributes_payload(track, costing='pedestrian')<br/>→ dict (shape = every point, shape_match walk_or_snap)"]
+  btap["build_trace_attributes_payload(track, costing='pedestrian')<br/>→ dict (shape = the shape points, shape_match walk_or_snap)"]
   csm["calculate_surface_multipliers(track, response, sport, warnings)<br/>→ one multiplier per leg"]
+  spi["shape_point_indexes(track)<br/>first, last, and every point ≥ 15 m past the last kept"]
+  btap --> spi
+  csm --> spi
   rpei["resolve_point_edge_indexes(response, n)<br/>point → matched edge index, gaps filled from neighbours"]
   lcm["_leg_category_multiplier(edges, 'surface'|'road_class'|'use')"] --> lwa["_length_weighted_average"]
   lsm["_leg_sac_scale_multiplier(edges)"]
@@ -451,7 +458,15 @@ flowchart TD
   W[("_WEIGHTS_BY_SPORT<br/>from surface_weights.json")] --> csm
 ```
 
-For each leg: `physical = 0.5·surface + 0.3·use + 0.2·road_class`. If the
+Valhalla gets a thinned shape: `shape_point_indexes` keeps the first and
+last points and every point at least `SHAPE_SPACING_M` (15 m) past the
+previous one kept. The track is densified to 2 m legs, and a point per leg
+would cost a 25 km route ~12,500 shape points (Valhalla's default limit is
+16,000) for nothing, since densified points lie on straight lines. Each
+multiplier below is worked out per *shape leg* (between two shape points)
+and given to every track leg inside it.
+
+For each shape leg: `physical = 0.5·surface + 0.3·use + 0.2·road_class`. If the
 leg has a SAC scale, one of two things happens:
 
 - The SAC factor replaces `physical` outright when it's severe (≤ 0.85) and
@@ -507,11 +522,42 @@ its value and draws nothing. So converting again, moving an anchor or adding
 a stop never reshuffles it, and its statistics don't depend on how densely
 the GPX is sampled.
 
+### 5.9a `pacing/acceleration.py`: no sudden changes of speed
+
+```mermaid
+flowchart TD
+  la["limit_acceleration(leg_distances, speeds, max_acceleration)<br/>→ new list of speeds, each ≤ its input"]
+  la --> fwd["forward pass: cap each leg at what<br/>the leg before can speed up to"]
+  fwd --> bwd["backward pass: cap each leg at what<br/>can slow down in time for the next"]
+  M[("MAX_ACCELERATION_MPS2<br/>running 0.30, hiking 0.15 m/s²")] -.-> ltt["combine._limit_leg_times<br/>at a / k², rescale by k, repeat until k settles"]
+  ltt --> la
+```
+
+Each leg is paced at one speed, so a surface change, a hilltop or a valley
+floor used to be a jump between two 1 Hz records. The limit turns each jump
+into a ramp:
+
+- **Constraint.** Between two adjacent moving legs, measured between their
+  midpoints: `|v₂² − v₁²| ≤ a · (Δs₁ + Δs₂)`. At constant acceleration v² is
+  linear in distance, so this is exact. `a` is the sport's
+  `MAX_ACCELERATION_MPS2` (first guesses, about a 3 s transition for a
+  typical step).
+- **Envelope.** Each modeled speed is a ceiling, the most its terrain
+  allows. The result is the fastest profile under every ceiling that keeps
+  the limit, found by one forward and one backward pass. Speeding up onto
+  faster terrain starts where it begins. Slowing down for slower terrain is
+  finished by the time you reach it. A short fast patch peaks lower, and
+  only on the patch. A short slow patch is crossed at its own speed. Every
+  lowered leg is exactly at the limit against a neighbour, and legs already
+  within the limit come back bit for bit.
+- **Stops.** There is no constraint across a zero-distance leg, so a stop
+  still starts and ends instantly.
+
 ### 5.10 `pacing/combine.py`: fitting the model to the anchors
 
 ```mermaid
 flowchart TD
-  C["combine(track, anchors, sport, multipliers?, mode_a_stops?, smoothness, vary_pace, warnings?)"]
+  C["combine(track, anchors, sport, multipliers?, mode_a_stops?, smoothness, vary_pace, limit_acceleration, warnings?)"]
   C --> rab["_resolve_anchor_bounds(points, anchors)<br/>anchor → point index (bisect;<br/>a same-distance anchor pair takes the stop's two points)"]
   C --> bmas["_bucket_mode_a_stops(anchors, stops)<br/>Mode A stops per segment"]
   C --> cg["gradient.calculate_gradient(track)<br/>once, whole track"]
@@ -521,12 +567,13 @@ flowchart TD
   r2 --> r3["curve_selection.resolve_curve_shape"]
   C --> wtv["_whole_track_variation<br/>variation.pace_variation, once, whole track"]
   C --> loop{{"for each consecutive anchor pair"}}
-  loop --> ps["_pace_segment(points, gradients, a, b,<br/>weight, ratio, shape, multipliers, stops, variation)"]
+  loop --> ps["_pace_segment(points, gradients, a, b,<br/>weight, ratio, shape, multipliers, stops, variation,<br/>max_acceleration)"]
   ps --> b["gradient.blended_speeds_from_gradients"]
   ps --> sf["× max(surface multiplier, 0.05)"]
   ps --> pvm["× pace-variation multiplier"]
   ps --> cst["_compress_speed_toward_typical<br/>tanh in log space around the segment median"]
   ps --> sc["scale = (Δt − Mode A stop time) / Σ(d / v)"]
+  ps --> llt["_limit_leg_times<br/>acceleration.limit_acceleration, then rescale"]
   ps --> st["stamp timestamps; add each Mode A<br/>stop's duration at its duplicate point"]
   ps -.-> err["InputError: time goes backwards ·<br/>stops exceed the segment's time"]
   ps --> fitret["returns (active_seconds, modeled_time)"]
@@ -543,7 +590,14 @@ Within one segment, `_pace_segment` does the following, in order:
    This is a soft clamp, so it never produces a flat plateau.
 4. Modeled time per leg is `d_i / v_i`. Scale all of them so they add up
    to the segment's active time.
-5. Walk the legs, adding the time. When the walk crosses a Mode A stop's
+5. Unless `limit_acceleration=False`, limit the now absolute speeds to the
+   sport's `MAX_ACCELERATION_MPS2` (§5.9a) and rescale the times to the
+   active time again. Limiting only slows legs, so the rescale speeds every
+   leg up by one factor k ≥ 1, which steepens each ramp by k². So the limit
+   is applied at `a / k²`, with k found by fixed-point iteration from 1
+   (a few rounds on a real route). Each segment is limited on its own, so
+   the step at an anchor stays.
+6. Walk the legs, adding the time. When the walk crosses a Mode A stop's
    zero-distance leg, add the stop's duration to that point and every later
    point.
 
@@ -695,6 +749,8 @@ flowchart TD
   dp["devicePicker.js<br/>device button + &lt;dialog&gt;"]
   dev["devices.js<br/>catalog, validation, storage"]
   th["theme.js<br/>light/dark"]
+  gl["glass.js<br/>liquid-glass refraction switch"]
+  rf["rangeFill.js<br/>smoothness slider's center-biased fill"]
   fmt["format.js<br/>formatting + describeError"]
   cfg["config.js<br/>Thunderforest key (gitignored)"]
 
@@ -712,6 +768,8 @@ flowchart TD
   dp --> dev
   dp --> ti
   main --> th
+  main --> gl
+  main --> rf
   main --> fmt
   main --> mob
   mob -. "mapModule injected" .-> map
@@ -837,16 +895,32 @@ photoAnchors.handleFiles
   hours and minutes boxes.
 - **`shortcuts.js`**: each entry in one `SHORTCUTS` array both binds a key
   and renders a row in the "?" panel. Each action calls `.click()` on the
-  existing control.
+  existing control, or focuses an existing box. Besides the sport, convert,
+  file and device keys, Alt+N focuses the start date, Alt+L the duration,
+  Alt+K steps through the start-time tabs, and Alt+G hides or reopens the
+  profile. For those it gets `startTimeFieldEl`, `startTimeToggleEl`,
+  `appShellEl` and the profile's close/show buttons from `main.js`.
+- **`glass.js`**: `supportsBackdropRefraction(nav)` (true when
+  `userAgentData` lists Chromium) and `initGlass()`, which sets
+  `html.glass-refraction`. That turns on `index.html`'s `#liquidGlass` SVG
+  filter in the floating panes' `backdrop-filter`. Tested.
+- **`rangeFill.js`**: `centerBiasedFill(value, min, max, origin)` (pure) and
+  `initCenterBiasedRange(input, origin)`, which keeps `--range-lo`/`--range-hi`
+  on the smoothness slider so its fill grows from 5 (automatic) toward the
+  knob, as in macOS 26's center-biased slider. Tested.
 - **`devices.js`**: `DEVICE_CATALOG` (brand → `{name, manufacturer, product}`;
-  only IDs with a real source: Garmin from `fit_tool`'s `GarminProduct`, Suunto
+  only IDs with a real source: Garmin from the FIT SDK profile (`fit_tool`'s
+  `GarminProduct`, and Garmin's `fit-javascript-sdk` for the newest), Suunto
   from its own product-ID list, other brands from a recording Strava named or
   another FIT reader's device table: GoldenCheetah, Runalyze) plus pure helpers
   (`selectionLabel`, `parseCustomIds`, `parseStoredSelection`,
   `toConvertDevice`). Tested.
 - **`devicePicker.js`**: the sidebar's device button and the native
   `<dialog>` it opens with `showModal()`. Persists the choice in
-  `localStorage` (`device`). jsdom has no `showModal`, so it is untested.
+  `localStorage` (`device`). Nothing is focused on open; the first Tab goes
+  to the current pick, and the arrows then move over the grid through the
+  exported pure `moveFocusIndex(rowLengths, index, key)`, which is tested.
+  jsdom has no `showModal`, so the rest of the module is untested.
 - **`profileChart.js`**: pure helpers (`niceTicks`, `linearScale`,
   `buildSeries`, `stopRuns`, `averageMovingSpeedMps`, `linePath`, …) plus
   `createProfileChart`. The pure part has tests.
@@ -1041,19 +1115,19 @@ It touches the app in exactly three places:
 
 ## 11. Tests
 
-| Suite           | Location                            | Covers                                                                                                                                                                                                                                                                                                                                                                                    |
-|-----------------|-------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| pytest, `core/` | `tests/core/`, `tests/core/pacing/` | every `core` module. Shared track builders live in `tests/core/conftest.py`                                                                                                                                                                                                                                                                                                               |
-| pytest, harness | `tests/tuning/`                     | see [TUNING_ARCHITECTURE.md §13](TUNING_ARCHITECTURE.md#13-tests)                                                                                                                                                                                                                                                                                                                         |
-| node, GUI       | `tests/gui/*.test.js`               | `format`, `dateTimeField`, `timeInput`, `markerList`, `activityWindow`, `anchors` + `stops` (`anchorsAndStops`: the activity-window re-check and `getActive*()`, with `map.js` mocked), `photoAnchors` (incl. `initPhotoDrop`'s per-status rows), `pyodideBridge` (against a fake Pyodide), `shortcuts`, `profileChart`, `devices`, `mobileLayout`. `testUtils/domSetup.js` sets up jsdom |
-| untested        | none                                | `map.js`, `anchorPopovers.js`, `profilePanel.js`, `main.js` (Leaflet and popover UI), plus the row/pin rendering side of `anchors.js`/`stops.js`, which have to be checked by hand in a browser                                                                                                                                                                                           |
+| Suite           | Location                            | Covers                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+|-----------------|-------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| pytest, `core/` | `tests/core/`, `tests/core/pacing/` | every `core` module, plus `test_bridge_core_files.py` (every `core/` file is in `pyodideBridge.js`'s `CORE_FILES`). Shared track builders live in `tests/core/conftest.py`                                                                                                                                                                                                                                                                            |
+| pytest, harness | `tests/tuning/`                     | see [TUNING_ARCHITECTURE.md §13](TUNING_ARCHITECTURE.md#13-tests)                                                                                                                                                                                                                                                                                                                                                                                     |
+| node, GUI       | `tests/gui/*.test.js`               | `format`, `dateTimeField`, `timeInput`, `markerList`, `activityWindow`, `anchors` + `stops` (`anchorsAndStops`: the activity-window re-check and `getActive*()`, with `map.js` mocked), `photoAnchors` (incl. `initPhotoDrop`'s per-status rows), `pyodideBridge` (against a fake Pyodide), `shortcuts`, `profileChart`, `devices`, `devicePickerNav` (`moveFocusIndex`), `glass`, `rangeFill`, `mobileLayout`. `testUtils/domSetup.js` sets up jsdom |
+| untested        | none                                | `map.js`, `anchorPopovers.js`, `profilePanel.js`, `main.js` (Leaflet and popover UI), plus the row/pin rendering side of `anchors.js`/`stops.js`, which have to be checked by hand in a browser                                                                                                                                                                                                                                                       |
 
 ---
 
 ## 12. Change checklists
 
 **Adding a module under `core/`**
-- Add it to `CORE_FILES` in `pyodideBridge.js`.
+- Add it to `CORE_FILES` in `pyodideBridge.js` (`tests/core/test_bridge_core_files.py` fails until you do).
 - Keep it free of I/O and native extensions.
 - Use `models.py` types.
 
@@ -1072,7 +1146,7 @@ It touches the app in exactly three places:
 **Adding a sport**
 - Extend `SportType`.
 - Add the sport to every `SportType`-keyed table: `TOBLER_THRESHOLDS`,
-  `MAX_SPEED_RATIO_BOUNDS` and `surface_weights.json`.
+  `MAX_SPEED_RATIO_BOUNDS`, `MAX_ACCELERATION_MPS2` and `surface_weights.json`.
 - Update the sport mapping in `fit_writer`.
 - Add a segment in the GUI's sport control and update `sportEnumName` in
   `main.js`.

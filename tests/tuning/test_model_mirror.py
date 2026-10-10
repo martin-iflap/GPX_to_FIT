@@ -8,7 +8,8 @@ doesn't run, and nothing else would notice.
 
 So: at default PacingParams, elapsed_from_model must reproduce combine()'s
 timestamps exactly, pace variation included, for both sports and across
-flat, gentle, rolling and mountainous terrain.
+flat, gentle, rolling and mountainous terrain, and on fine legs where the
+acceleration limit ramps the changes of speed.
 """
 
 from datetime import timedelta
@@ -23,7 +24,7 @@ from gpx2fit.core.pacing.curve_selection import (
     resolve_tobler_weight,
 )
 from gpx2fit.core.pacing.gradient import calculate_gradient
-from tests.core.conftest import START, anchor, flat_track, leg_distances, rolling_track, timestamp_of
+from tests.core.conftest import START, anchor, flat_track, leg_distances, point, rolling_track, timestamp_of
 from tuning.model import (
     PacingParams,
     ResolvedSettings,
@@ -37,6 +38,16 @@ from tuning.model import (
 
 SPORTS = [SportType.RUNNING, SportType.HIKING]
 
+
+def _sawtooth(distance: float, leg_m: float, half_period_m: float, grade: float) -> Track:
+    """Even climbs and descents of `half_period_m`, meeting at sharp crests and valley floors."""
+    points = []
+    for index in range(int(distance / leg_m) + 1):
+        d = index * leg_m
+        phase = d % (2 * half_period_m)
+        points.append(point(elevation=grade * min(phase, 2 * half_period_m - phase), distance_from_start=d))
+    return Track(points=points)
+
 # Flat, gently rolling, and steep enough to push resolve_tobler_weight's
 # verticality criterion over — the three regimes the constants behave
 # differently in. Plus "gentle", whose local speed spread sits inside
@@ -47,6 +58,9 @@ TERRAINS = {
     "gentle": lambda: rolling_track(4000.0, climb_per_km=8.0),
     "rolling": lambda: rolling_track(4000.0, climb_per_km=40.0),
     "mountain": lambda: rolling_track(4000.0, climb_per_km=250.0),
+    # At gpx_reader.MAX_LEG_M, where pacing.acceleration has legs to ramp
+    # across: every crest and valley floor here is a change of speed it limits.
+    "fine": lambda: _sawtooth(3000.0, leg_m=2.0, half_period_m=300.0, grade=0.12),
 }
 
 # Fast enough to stay on Minetti, and slow enough to tip to Tobler.

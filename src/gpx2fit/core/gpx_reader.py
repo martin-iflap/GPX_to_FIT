@@ -37,10 +37,12 @@ def _gap_warning(gaps_m: list[float]) -> str:
     )
 
 
-# Parsing splits every leg longer than this, so a sparse GPX file is paced at
-# about the spacing the tuning harness fits its constants on and also the
-# pacing and anchors are more accurate on denser files.
-MAX_LEG_M = 15.0
+# Parsing splits every leg longer than this, so pacing, anchors and stops are
+# as accurate on a sparse GPX file as on a dense one. 2 m is about 1.5 s for a
+# hiker and 0.7 s for a runner: short enough for pacing.acceleration to ramp a
+# change of speed over a few legs, rather than leaving it a jump between two
+# 1 Hz records. The tuning harness densifies its recordings the same way.
+MAX_LEG_M = 2.0
 
 # Slack for floating-point distances, so a leg of exactly n x max_leg_m isn't cut
 # into n + 1 pieces.

@@ -2,6 +2,7 @@ import pytest
 from gpx2fit.core.models import SportType, Track
 from gpx2fit.core.pacing import surface as surface_module
 from gpx2fit.core.pacing.surface import (
+    SHAPE_SPACING_M,
     SURFACE_SPIKE_HALF_WINDOW_M,
     _leg_category_multiplier,
     _leg_sac_scale_multiplier,
@@ -14,8 +15,18 @@ from tests.core.conftest import point
 
 
 def _track(coords: list[tuple[float, float]]) -> Track:
-    """Build a Track from (lat, lon) pairs, one per point."""
-    return Track(points=[point(lat=lat, lon=lon) for lat, lon in coords])
+    """Build a Track from (lat, lon) pairs, one per point, 100 m apart (so every point is a shape point)."""
+    return Track(points=[
+        point(lat=lat, lon=lon, distance_from_start=index * 100.0) for index, (lat, lon) in enumerate(coords)
+    ])
+
+
+def _dense_track(length_m: float, leg_m: float) -> Track:
+    """A straight track of `leg_m` legs, like gpx_reader's densified ones."""
+    count = round(length_m / leg_m)
+    return Track(points=[
+        point(lat=46.0 + index * leg_m * 9e-6, lon=14.0, distance_from_start=index * leg_m) for index in range(count + 1)
+    ])
 
 
 def _matched(edge_index: int | None) -> dict:
@@ -73,6 +84,84 @@ class TestBuildTraceAttributesPayload:
     def test_empty_track_raises_value_error(self):
         with pytest.raises(ValueError):
             build_trace_attributes_payload(Track(points=[]))
+
+
+def _surface_only(weight: float) -> float:
+    """The multiplier of an edge with only a `surface` tag: the other families fall back to 1.0."""
+    share = surface_module._FAMILY_WEIGHTS["surface"]
+    return share * weight + (1 - share)
+
+
+class TestShapeThinning:
+    """A densified track sends Valhalla a point every SHAPE_SPACING_M, not every 2 m leg."""
+
+    def test_a_dense_track_sends_points_at_least_the_spacing_apart(self):
+        track = _dense_track(1000.0, 2.0)
+        shape = build_trace_attributes_payload(track)["shape"]
+        by_lat = {p.lat: p.distance_from_start for p in track.points}
+        distances = [by_lat[entry["lat"]] for entry in shape]
+        assert distances[0] == 0.0
+        assert distances[-1] == 1000.0
+        assert all(b - a >= SHAPE_SPACING_M for a, b in zip(distances, distances[1:-1]))
+        assert len(shape) <= 1000.0 / SHAPE_SPACING_M + 2
+
+    def test_a_sparse_track_sends_every_point(self):
+        track = _dense_track(1000.0, 50.0)
+        assert len(build_trace_attributes_payload(track)["shape"]) == len(track.points)
+
+    def test_multipliers_still_come_one_per_dense_leg(self, monkeypatch):
+        _patch_tables(monkeypatch, surface={"a": 0.8})
+        track = _dense_track(600.0, 2.0)
+        shape_count = len(build_trace_attributes_payload(track)["shape"])
+        response = {"edges": [_edge(600.0, surface="a")], "matched_points": [_matched(0)] * shape_count}
+        multipliers = calculate_surface_multipliers(track, response, SportType.HIKING)
+        assert len(multipliers) == len(track.points) - 1
+        assert multipliers == [pytest.approx(_surface_only(0.8))] * len(multipliers)
+
+    def test_each_dense_leg_takes_the_surface_of_the_shape_leg_it_lies_in(self, monkeypatch):
+        _patch_tables(monkeypatch, surface={"a": 0.8, "b": 0.5})
+        track = _dense_track(600.0, 2.0)
+        shape = build_trace_attributes_payload(track)["shape"]
+        by_lat = {p.lat: p.distance_from_start for p in track.points}
+        # Shape points up to 300 m matched to the first edge, the rest to the second.
+        matched = [_matched(0 if by_lat[entry["lat"]] <= 300.0 else 1) for entry in shape]
+        response = {"edges": [_edge(300.0, surface="a"), _edge(300.0, surface="b")], "matched_points": matched}
+
+        multipliers = calculate_surface_multipliers(track, response, SportType.HIKING)
+
+        starts = [p.distance_from_start for p in track.points[:-1]]
+        assert all(m == pytest.approx(_surface_only(0.8)) for m, d in zip(multipliers, starts) if d < 280.0)
+        assert all(m == pytest.approx(_surface_only(0.5)) for m, d in zip(multipliers, starts) if d > 320.0)
+
+
+    def test_an_unmatched_dense_route_gives_every_dense_leg_the_default(self, monkeypatch):
+        _patch_tables(monkeypatch, surface={"a": 0.5})
+        track = _dense_track(300.0, 2.0)
+        shape_count = len(build_trace_attributes_payload(track)["shape"])
+        response = {"edges": [_edge(300.0, surface="a")], "matched_points": [_matched(None)] * shape_count}
+
+        multipliers = calculate_surface_multipliers(track, response, SportType.HIKING, default_multiplier=0.7)
+
+        assert multipliers == [pytest.approx(0.7)] * (len(track.points) - 1)
+
+    def test_the_fallback_share_counts_the_whole_length_of_each_backwards_shape_leg(self, monkeypatch):
+        _patch_tables(monkeypatch, surface={"a": 0.5})
+        track = _dense_track(300.0, 2.0)
+        shape = build_trace_attributes_payload(track)["shape"]
+        by_lat = {p.lat: p.distance_from_start for p in track.points}
+        shape_distances = [by_lat[entry["lat"]] for entry in shape]
+        # Edges 0, 1, 0, 1, ...: every odd shape leg runs from edge 1 back to edge 0.
+        matched = [_matched(index % 2) for index in range(len(shape))]
+        response = {"edges": [_edge(150.0, surface="a"), _edge(150.0, surface="a")], "matched_points": matched}
+        backwards = sum(
+            b - a for index, (a, b) in enumerate(zip(shape_distances, shape_distances[1:])) if index % 2 == 1
+        )
+        warnings: list[str] = []
+
+        calculate_surface_multipliers(track, response, SportType.HIKING, warnings=warnings)
+
+        assert len(warnings) == 1
+        assert f"{backwards / 300.0:.0%}" in warnings[0]
 
 
 class TestResolvePointEdgeIndexes:
@@ -421,7 +510,9 @@ class TestCalculateSurfaceMultipliers:
             "edges": [_edge(50.0, surface="trail"), _edge(10.0, surface="paved"), _edge(50.0, surface="trail")],
             "matched_points": [_matched(0), _matched(1), _matched(1), _matched(2)],
         }
-        crossing = SURFACE_SPIKE_HALF_WINDOW_M / 2
+        # Long enough to keep its own shape point, short enough for the spike filter.
+        crossing = SHAPE_SPACING_M
+        assert crossing < SURFACE_SPIKE_HALF_WINDOW_M
         track = _track_with_legs([100.0, crossing, 100.0])
 
         multipliers = calculate_surface_multipliers(track, response, SportType.HIKING)
@@ -432,7 +523,10 @@ class TestCalculateSurfaceMultipliers:
 
 
 def _track_with_legs(leg_lengths: list[float]) -> Track:
-    """A Track whose legs have the given lengths (positions don't matter to surface.py's matching)."""
+    """A Track whose legs have the given lengths (positions don't matter to surface.py's matching).
+
+    Legs of at least SHAPE_SPACING_M keep every point a shape point, one per matched_points entry.
+    """
     distances = [0.0]
     for length in leg_lengths:
         distances.append(distances[-1] + length)
@@ -451,10 +545,10 @@ class TestSurfaceFallbackWarning:
         warnings: list[str] = []
 
         calculate_surface_multipliers(
-            _track_with_legs([100.0, 10.0, 100.0]), self._BACKWARDS_MIDDLE, SportType.HIKING, warnings=warnings,
+            _track_with_legs([1000.0, 100.0, 1000.0]), self._BACKWARDS_MIDDLE, SportType.HIKING, warnings=warnings,
         )
 
-        assert warnings == []  # 10 of 210 m
+        assert warnings == []  # 100 of 2100 m
 
     def test_a_large_backwards_share_warns_with_its_percentage(self, monkeypatch):
         _patch_tables(monkeypatch, surface={"a": 0.5})
@@ -474,7 +568,7 @@ class TestSurfaceFallbackWarning:
 
         # One leg in three runs backwards, but it is 80% of the route.
         calculate_surface_multipliers(
-            _track_with_legs([10.0, 80.0, 10.0]), self._BACKWARDS_MIDDLE, SportType.HIKING, warnings=warnings,
+            _track_with_legs([100.0, 800.0, 100.0]), self._BACKWARDS_MIDDLE, SportType.HIKING, warnings=warnings,
         )
 
         assert len(warnings) == 1

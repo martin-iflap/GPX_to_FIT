@@ -1,3 +1,4 @@
+import math
 from datetime import timedelta
 
 import pytest
@@ -339,7 +340,7 @@ class TestParseDensifies:
         track = parse_gpx_bytes(_gpx(_trkpt(45.0, 7.0, 100.0) + _trkpt(45.001, 7.0, 108.0)))
 
         legs = _legs(track.points)
-        assert len(legs) == 8  # ceil(111.2 / 15)
+        assert len(legs) == math.ceil(track.total_distance / MAX_LEG_M)  # 56 at 2 m
         assert max(legs) <= MAX_LEG_M
         assert min(legs) == pytest.approx(max(legs))
 

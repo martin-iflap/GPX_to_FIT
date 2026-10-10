@@ -6,6 +6,7 @@ from bisect import bisect_left, bisect_right
 from datetime import timedelta
 
 from gpx2fit.core.models import Anchor, InputError, ModeAStop, SportType, Track, TrackPoint
+from gpx2fit.core.pacing.acceleration import MAX_ACCELERATION_MPS2, limit_acceleration
 from gpx2fit.core.pacing.curve_selection import (
     DEFAULT_SMOOTHNESS,
     SMOOTHNESS_SCALES,
@@ -25,6 +26,12 @@ _MIN_SURFACE_MULTIPLIER = 0.05
 # Any positive value works: the compression bounds the leg to the segment's
 # median / max_speed_ratio however small it is.
 _MIN_RELATIVE_SPEED = 1e-9
+
+# _limit_leg_times stops once a round grows its rescale factor by less than
+# this share, which leaves the limit broken by at most about twice that.
+_LIMIT_FACTOR_TOLERANCE = 1e-12
+# Safety net on its rounds; a real segment settles in a handful.
+_MAX_LIMIT_ROUNDS = 100
 
 # A segment whose terrain-adjusted pace is this many times faster or slower
 # than the whole workout's is reported (see _implausible_pace_warnings).
@@ -87,6 +94,45 @@ def _compress_speed_toward_typical(speed: float, typical_speed: float, max_ratio
     return typical_speed * math.exp(compressed_log_ratio)
 
 
+def _limit_leg_times(
+    leg_distances: list[float],
+    leg_seconds: list[float],
+    active_time: float,
+    max_acceleration: float,
+) -> list[float]:
+    """Leg times whose speeds respect `max_acceleration` and still sum to `active_time`.
+
+    Acceleration needs absolute speeds, which a segment only has once its
+    modeled times are scaled to the anchors. Limiting only slows legs, so it
+    lengthens the total, and the rescale that puts the total back speeds every
+    leg up by one factor k ≥ 1. That steepens every change of speed by k², so
+    the limit is applied at max_acceleration / k² instead, which the rescale
+    brings back to exactly max_acceleration. k depends on what the limit
+    slowed, so it is found by fixed-point iteration from k = 1. Each round
+    limits the original speeds again, and k only grows. Ramps are a tiny
+    share of a segment, so k is barely above 1 and this settles in a few
+    rounds. A segment the limit doesn't touch keeps its times bit for bit.
+    """
+    speeds = [distance / seconds if seconds > 0 else 0.0 for distance, seconds in zip(leg_distances, leg_seconds)]
+    limited = limit_acceleration(leg_distances, speeds, max_acceleration)
+    if limited == speeds:
+        return leg_seconds
+
+    factor = 1.0
+    for _ in range(_MAX_LIMIT_ROUNDS):
+        limited_seconds = [
+            seconds if new == old else distance / new
+            for distance, seconds, new, old in zip(leg_distances, leg_seconds, limited, speeds)
+        ]
+        new_factor = sum(limited_seconds) / active_time
+        converged = new_factor <= factor * (1 + _LIMIT_FACTOR_TOLERANCE)
+        factor = new_factor
+        if converged:
+            break
+        limited = limit_acceleration(leg_distances, speeds, max_acceleration / (factor * factor))
+    return [seconds / factor for seconds in limited_seconds]
+
+
 def _pace_segment(
     segment_points: list[TrackPoint],
     segment_gradients: list[float],
@@ -98,6 +144,7 @@ def _pace_segment(
     segment_multipliers: list[float] | None = None,
     segment_mode_a_stops: list[ModeAStop] | None = None,
     segment_variation: list[float] | None = None,
+    max_acceleration: float | None = None,
 ) -> tuple[float, float] | None:
     """Assign timestamps to one anchor-to-anchor segment's points, in place.
 
@@ -107,7 +154,8 @@ def _pace_segment(
     own median leg speed (see _compress_speed_toward_typical).
     Then scales the modeled per-leg times so the segment's total *active* time
     (anchor-to-anchor duration minus any Mode A stop durations in this segment)
-    matches exactly, and stamps each point's timestamp accordingly. Each Mode A
+    matches exactly. Ramps any change of speed steeper than `max_acceleration`
+    (see _limit_leg_times), and stamps each point's timestamp accordingly. Each Mode A
     stop's duration is then added, at its own point, to every later timestamp
     in the segment.
 
@@ -136,6 +184,9 @@ def _pace_segment(
         segment_variation: Optional per-leg pace-variation multipliers, one
             per leg, sliced from the whole track's (see pacing.variation).
             Applied before the compression, so its bound still holds.
+        max_acceleration: The steepest change of speed between two legs, in
+            m/s² (see pacing.acceleration). None leaves every change instant.
+            Stops still start and end instantly either way.
 
     Returns:
         (active_seconds, modeled_time) for a segment it paced, or None when
@@ -224,12 +275,15 @@ def _pace_segment(
         )
 
     scale = active_time / modeled_total_time
+    leg_seconds = [modeled_leg_time * scale for modeled_leg_time in modeled_leg_times]
+    if max_acceleration is not None:
+        leg_seconds = _limit_leg_times(leg_distances, leg_seconds, active_time, max_acceleration)
 
     elapsed = 0.0
     extra = 0.0
     stop_index = 0
-    for index, modeled_leg_time in enumerate(modeled_leg_times, start=1):
-        elapsed += modeled_leg_time * scale
+    for index, seconds in enumerate(leg_seconds, start=1):
+        elapsed += seconds
         point_timestamp = start_anchor.timestamp + timedelta(seconds=elapsed + extra)
 
         if (
@@ -393,6 +447,7 @@ def combine(
     mode_a_stops: list[ModeAStop] | None = None,
     smoothness: int = DEFAULT_SMOOTHNESS,
     vary_pace: bool = True,
+    acceleration_limit: bool = True,
     *,
     warnings: list[str] | None = None,
 ) -> Track:
@@ -441,6 +496,11 @@ def combine(
             speed would otherwise stay constant (a flat road, a long even
             climb). Built once over the whole track and laid out by distance,
             like the gradients. False paces on the gradient model alone.
+        acceleration_limit: Ramp every change of speed (a surface change, a
+            hilltop) so it is never steeper than the sport's
+            pacing.acceleration.MAX_ACCELERATION_MPS2. Each segment is limited
+            on its own, so the change of pace at an anchor, and a stop's
+            start and end, stay instant. False leaves every change instant.
         warnings: If given, a user-facing message is appended for each
             segment of at least PLAUSIBILITY_MIN_SEGMENT_M whose anchors make
             its terrain-adjusted pace more than IMPLAUSIBLE_PACE_RATIO times
@@ -486,6 +546,7 @@ def combine(
         if vary_pace
         else None
     )
+    max_acceleration = MAX_ACCELERATION_MPS2[sport] if acceleration_limit else None
 
     paced_segments = []
     for i in range(len(anchors) - 1):
@@ -496,6 +557,7 @@ def combine(
             multipliers[lo: hi] if multipliers is not None else None,
             buckets[i],
             variation[lo: hi] if variation is not None else None,
+            max_acceleration,
         )
         if fit is not None:
             distance = anchors[i + 1].distance_from_start - anchors[i].distance_from_start

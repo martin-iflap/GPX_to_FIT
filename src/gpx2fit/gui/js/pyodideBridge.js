@@ -39,6 +39,7 @@ const CORE_FILES = [
   'pacing/combine.py',
   'pacing/stops.py',
   'pacing/variation.py',
+  'pacing/acceleration.py',
 ];
 
 let pyodidePromise = null;

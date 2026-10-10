@@ -106,7 +106,8 @@ flowchart TD
     gpxr["gpx_reader<br/>parse_gpx_bytes, densify_points, MAX_LEG_M"]
     grad["pacing.gradient<br/>calculate_gradient, minetti_/tobler_speeds_from_gradients,<br/>CurveShape, CurveExponents, GRADIENT_WINDOW_M"]
     cs["pacing.curve_selection<br/>constants, smoothstep, _verticality,<br/>MAX_SPEED_RATIO_BOUNDS"]
-    comb["pacing.combine<br/>_MIN_SURFACE_MULTIPLIER"]
+    comb["pacing.combine<br/>_MIN_SURFACE_MULTIPLIER, _limit_leg_times"]
+    acc["pacing.acceleration<br/>MAX_ACCELERATION_MPS2"]
     anc["pacing.anchors.distance_meters"]
   end
 
@@ -116,6 +117,7 @@ flowchart TD
   model --> grad
   model --> cs
   model --> comb
+  model --> acc
   fit --> cs
   main --> cs
 ```
@@ -409,7 +411,7 @@ flowchart TD
 ```
 
 Production's parser splits every leg longer than `gpx_reader.MAX_LEG_M`
-(15 m) with straight-line points, so the model paces the same densified track
+(2 m, since 2026-10-08; 15 m before) with straight-line points, so the model paces the same densified track
 here. Only the recorded points carry a real time. `densify_points` keeps them
 as the very same objects, which is how `recorded_indexes` finds them, and why
 the harness densifies by hand instead of with the parser's default.
@@ -468,6 +470,7 @@ every constant taken from a `PacingParams` instead.
 | `variation.local_spread`, `variation.pace_variation`            | `_varied`, scaled by `params.variation_scale`                                                                    | restated in numpy                                                   |
 | `combine._compress_speed_toward_typical`                        | `_compressed`                                                                                                    | restated in numpy                                                   |
 | `combine._pace_segment` scaling                                 | `elapsed_from_model`                                                                                             | restated, single segment only                                       |
+| `combine._limit_leg_times` (the acceleration limit)             | `_acceleration_limited`: numpy skips it when nothing breaks the limit, else core's function, scaled by `params.acceleration_scale` | borrowed (sequential passes have no numpy form)                     |
 
 So a change to the Minetti polynomial or Tobler's slope factor reaches the
 harness on its own. Minetti's descent cost slope is part of the curve, so
@@ -496,7 +499,10 @@ flowchart TD
   efm --> mul["× max(multipliers, _MIN_SURFACE_MULTIPLIER)"]
   efm --> var["_varied(model, speeds, scale)<br/>pace wander on steady stretches"]
   efm --> cmpd["_compressed(speeds, ratio)<br/>tanh around the median"]
-  efm --> scale["leg time = d / v, scaled so Σ = active_seconds,<br/>cumulative sum → elapsed per point"]
+  efm --> scale["leg time = d / v, scaled so Σ = active_seconds"]
+  scale --> acl["_acceleration_limited(distances, seconds, active, a)<br/>numpy check: no violated pair → unchanged"]
+  acl --> llt["core combine._limit_leg_times(distances, seconds, active, a)"]
+  acl --> cum["cumulative sum → elapsed per point"]
 ```
 
 `PacingParams` is a frozen dataclass whose defaults are the shipped
@@ -529,6 +535,17 @@ does too.
 - It is not a knob for `fit`. The noise is uncorrelated with the recorded
   deviations, so the objective can only get worse with it, and a search
   would always choose 0.
+
+The app also limits how fast the speed changes (`pacing/acceleration.py`),
+so the mirror does too, by calling core's `_limit_leg_times`.
+- `_acceleration_limited` checks in numpy, with the same floating-point
+  operations as core, whether any pair breaks the limit. With none, core
+  would return the times unchanged, so it isn't called. That spares the
+  Python passes on most segments.
+- `acceleration_scale` (default 1.0) multiplies `MAX_ACCELERATION_MPS2`,
+  and `0.0` turns the limit off.
+- It is not a knob for `fit` either, and `fit`'s search scores with it off
+  (§10.3).
 
 ---
 
@@ -666,7 +683,7 @@ flowchart TD
   ev --> gbs["group_by_shape(activities, evaluator.shapes())<br/>same-route groups"]
   gbs --> sc["split_corpus → train, test<br/>per sport, groups moved whole"]
   sc --> init["start values: base.for_sport(sport),<br/>else CURVE_FILLS / MAX_SPEED_RATIO_BOUNDS"]
-  init --> before["train_before, test_before"]
+  init --> before["train_before, test_before<br/>(with the acceleration limit)"]
   before --> rounds{{"round 1..rounds"}}
   rounds --> st1["'curve shape': uphill_fill × downhill_fill<br/>per sport, on that sport's train set"]
   st1 --> st1b["'descent cost': minetti_downhill_cost_slope<br/>shared, whole train set"]
@@ -674,9 +691,16 @@ flowchart TD
   st2 --> st3["'hilliness ramp': hilly_verticality<br/>shared, whole train set"]
   st3 --> moved{"anything moved?"}
   moved -- yes --> rounds
-  moved -- no --> after["train_after, test_after"]
+  moved -- no --> after["train_after, test_after<br/>(with the acceleration limit)"]
   after --> FR["FitResult<br/>global_params, sport_params, proposal, history, route_groups"]
 ```
+
+Every cell of the search, and the trace's training objective, is scored with
+`acceleration_scale` 0 (`build_for_search`). The limit ramps a change of
+speed over a few metres, far inside the ≥70 m buckets: on the corpus it moved
+no fitted constant and no objective, but made the search about three times
+slower. `train_before`/`train_after` and the held-out numbers run it on, as
+the app does.
 
 "Stage" here means one of the `STAGES` blocks inside `fit_constants`. Those
 do run in sequence, every round. Each stage calls `_search_block`, and each
@@ -804,7 +828,7 @@ built.
 | File                   | Covers                                                                                                                                                                                                  |
 |------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `conftest.py`          | `synthetic_activity` / `synthetic_fit_bytes` build recordings on rolling terrain with a known gradient response, written through `core`'s own `fit_writer`; `with_standing_pause` adds an unpaused stop |
-| `test_model_mirror.py` | **load-bearing**: `elapsed_from_model` at default `PacingParams` equals `combine()`'s timestamps, and `resolve` equals core's resolvers, across both sports and four terrains                           |
+| `test_model_mirror.py` | **load-bearing**: `elapsed_from_model` at default `PacingParams` equals `combine()`'s timestamps, and `resolve` equals core's resolvers, across both sports and five terrains                           |
 | `test_fit_reader.py`   | sport mapping, round trip of a file this project wrote, pause extraction, rejections                                                                                                                    |
 | `test_prepare.py`      | resampling, elevation rounding, reference timing, stop removal, trimming, GPX round trip                                                                                                                |
 | `test_compare.py`      | a self-consistent activity scores zero, a planted uphill weakness shows up, bucketing and bands                                                                                                         |
