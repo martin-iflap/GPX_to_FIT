@@ -44,7 +44,7 @@ class VariationSettings:
     sigma: float = 0.06
     steady_spread: float = 0.03
     steady_band: float = 0.02
-    window_m: float = 400.0
+    window_m: float = 150.0
     long_correlation_m: float = 600.0
     short_correlation_m: float = 80.0
     long_share: float = 0.8

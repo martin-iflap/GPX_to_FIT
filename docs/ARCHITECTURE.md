@@ -621,10 +621,10 @@ flat), which makes `active_seconds / modeled_time` a terrain-adjusted pace:
 ### 5.11 `fit_writer.py`
 
 ```
-write_fit(track, *, resample=True) -> bytes
+write_fit(track, *, resample=True, record_interval_s=None) -> bytes
   _build_content(track) -> _FitContent      every value decided here
     validate: every point has a timestamp, end > start
-    spans = _resample(points)         1 Hz grid of whole seconds, split at stops
+    spans = _resample(points, interval_s)  whole-second grid, RECORD_INTERVAL_S[sport] apart, split at stops
           | _per_point(points)        resample=False: one sample per point (tuning tests only)
   _encode(content) -> bytes                 fit_encoder.FitEncoder
     file_id (manufacturer/product = track.device_manufacturer/_product, or DEVELOPMENT/0 when None;
@@ -638,12 +638,13 @@ write_fit(track, *, resample=True) -> bytes
     → FitEncoder.to_bytes()
 ```
 
-Records are on a 1 Hz grid, because FIT timestamps are whole seconds: a
-record per point would give a dense GPX several records on one second (a
+Records are on a grid of whole seconds, `RECORD_INTERVAL_S[sport]` apart
+(running 2 s, hiking 3 s, running's when the track has no sport), because FIT timestamps are whole seconds: a record per point would give a dense GPX several records on one second (a
 distance jump in no time) and a sparse one records 30+ s apart. Each record
 is interpolated in time inside the leg it falls in and carries that leg's
 paced speed. A stop splits the track into spans, and nothing is recorded
-while stopped. Span ends round to the nearest second, and a stop that rounds
+while stopped. Span ends round to the nearest second and always get a record, even off
+the interval; the grid restarts at each span's start. A stop that rounds
 to no time isn't a pause. The records, timer events and summaries all use
 those rounded times. The timer events are what make Strava count stops as
 stopped rather than as slow moving time.

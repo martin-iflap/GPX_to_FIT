@@ -146,9 +146,9 @@ def test_write_fit_matches_the_fit_tool_encoding(name, resample):
 
 def test_a_long_paced_hike_matches_the_fit_tool_encoding():
     track = _paced_hike()
-    ours = write_fit(track)
+    ours = write_fit(track, record_interval_s=1)
     assert sum(1 for record in FitFile.from_bytes(ours).records if record.message.global_id == 20) > 14000
-    _assert_same_file(ours, fit_tool_reference.encode(_build_content(track, resample=True)))
+    _assert_same_file(ours, fit_tool_reference.encode(_build_content(track, resample=True, record_interval_s=1)))
 
 
 @pytest.mark.parametrize("name", list(_TRACKS))

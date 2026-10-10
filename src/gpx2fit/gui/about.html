@@ -67,6 +67,12 @@
             blends the two automatically depending on how steep and how fast the activity is. For example, a slow day in the
             mountains paces like a hike even if you picked "Running".
           </li>
+          <li id="elevation">
+            <strong>Elevation comes from your GPX only.</strong> If the file has no elevation, the route is paced
+            as if it were flat, and the FIT file has no altitude. The tool never looks elevation up anywhere else,
+            and "Adjust pace for trail surface" doesn't add it either, whether it's on or off. Most route planners
+            include elevation when you export a GPX.
+          </li>
           <li>
             <strong>Slope averaging.</strong> Slope is averaged over several dozen meters instead of point to point, so
             small bumps in the elevation data don't cause sudden jumps in speed.
@@ -74,7 +80,7 @@
           <li id="smoothness">
             <strong>Pace smoothness.</strong> Real people push a bit on climbs and ease off on descents, so their
             speed changes less than the slope alone would suggest. The tool limits how far your speed can swing
-            from your usual pace. By default (level 5), the limit depends on the route and sport: flat routes and
+            from your usual pace. By default, (level 5), the limit depends on the route and sport: flat routes and
             hikes vary less than hilly runs. The slider moves that limit. Higher numbers give a more even pace, and
             10 is almost constant. Lower numbers follow the terrain more closely. Your start, end and anchor times
             are still matched exactly at every level.

@@ -23,8 +23,18 @@ from gpx2fit.core.fit_encoder import (
     SPORT_WALKING,
     FitEncoder,
 )
-from gpx2fit.core.models import Track, TrackPoint
+from gpx2fit.core.models import SportType, Track, TrackPoint
 from gpx2fit.core.pacing.gradient import elevation_gain
+
+
+# Seconds between two records while moving, per sport. FIT timestamps are
+# whole seconds, so these are whole numbers too. Each moving span still gets a
+# record at its exact start and end, whether they fall on the interval.
+# Runs get shorter intervals for more accurate corners.
+RECORD_INTERVAL_S = {
+    SportType.RUNNING: 2,
+    SportType.HIKING: 3,
+}
 
 
 def _fit_timestamp(value: datetime) -> int:
@@ -75,29 +85,39 @@ def _leg_speeds(distances: list[float], times: list[float]) -> list[float]:
     return filled
 
 
-def _resample(points: list[TrackPoint]) -> list[list[_Sample]]:
-    """Resample a paced track onto a 1 Hz grid of whole epoch seconds, one list per moving span.
+def _resample(points: list[TrackPoint], interval_s: int) -> list[list[_Sample]]:
+    """Resample a paced track onto a grid of whole epoch seconds, one list per moving span.
 
     FIT timestamps are whole seconds, so a record per track point would give a
     dense GPX several records on one second (a distance jump in no time) and a
-    sparse one records 30+ s apart. Instead, every whole second gets a record,
-    interpolated in time inside the leg it falls in, with that leg's speed (the
-    leg ending on the tick where one ends there; the first tick takes the
-    first leg).
+    sparse one records 30+ s apart. Instead, a record is written every
+    `interval_s` seconds, interpolated in time inside the leg it falls in, with
+    that leg's speed (the leg ending on the tick where one ends there; the
+    first tick takes the first leg).
 
     A stop (a zero-distance leg that takes time) splits the track into spans,
     and no record is written while stopped. Each span's first and last ticks
     are its first and last points' times rounded to the nearest second, and
-    times between those and the exact ones are clamped to the end points. A
+    times between those and the exact ones are clamped to the end points. The
+    grid starts again at each span's first tick, and the last tick is always
+    written, even when it's closer than `interval_s` to the one before. A
     stop that rounds to no time at all isn't a pause.
 
     Args:
         points: At least one point, every one with a timestamp, in route order
             with non-decreasing times.
+        interval_s: Whole seconds between two records inside a span.
     Returns:
-        The spans in order, each a non-empty list of samples one second apart.
-        A span's last second is always before the next span's first.
+        The spans in order, each a non-empty list of samples at most
+        `interval_s` apart. A span's last second is always before the next
+        span's first.
+    Raises:
+        ValueError: If interval_s isn't a positive whole number.
     """
+    if not isinstance(interval_s, int) or interval_s < 1:
+        raise ValueError(f"interval_s must be a positive whole number of seconds, got {interval_s!r}.")
+
+
     times = [_fit_timestamp(p.timestamp) / 1000 for p in points if p.timestamp is not None]
     distances = [p.distance_from_start for p in points]
     speeds = _leg_speeds(distances, times)
@@ -113,7 +133,11 @@ def _resample(points: list[TrackPoint]) -> list[list[_Sample]]:
     for lo, hi in zip(span_starts, span_ends):
         samples = []
         leg = lo  # the leg [leg, leg + 1] the current tick falls in
-        for second in range(_nearest_second(times[lo]), _nearest_second(times[hi]) + 1):
+        first_second, last_second = _nearest_second(times[lo]), _nearest_second(times[hi])
+        ticks = list(range(first_second, last_second + 1, interval_s))
+        if ticks[-1] != last_second:
+            ticks.append(last_second)
+        for second in ticks:
             t = min(max(float(second), times[lo]), times[hi])
             # Move on past legs that end before this tick, and past zero-duration ones.
             while leg < hi - 1 and (times[leg + 1] < t or times[leg + 1] <= times[leg]):
@@ -169,12 +193,13 @@ def _per_point(points: list[TrackPoint]) -> list[list[_Sample]]:
     return spans
 
 
-def write_fit(track: Track, *, resample: bool = True) -> bytes:
+def write_fit(track: Track, *, resample: bool = True, record_interval_s: int | None = None) -> bytes:
     """Write a .fit file from a fully-paced track.
 
-    Builds a FileIdMessage and SportMessage, one RecordMessage per second of
-    moving time (position/elevation/distance/timestamp/speed, interpolated
-    along the track — see _resample), and a LapMessage, SessionMessage, and
+    Builds a FileIdMessage and SportMessage, one RecordMessage per
+    `record_interval_s` seconds of moving time (position/elevation/distance/
+    timestamp/speed, interpolated along the track — see _resample), and a
+    LapMessage, SessionMessage, and
     ActivityMessage summarizing the whole activity.
     Records are wrapped in timer events the way a real device writes them:
     START before the first, STOP_ALL after the last, and a STOP_ALL/START
@@ -198,10 +223,15 @@ def write_fit(track: Track, *, resample: bool = True) -> bytes:
     Args:
         track: A track whose points all have a timestamp, in route order.
         resample: False writes one record per track point at its own time
-            instead of the 1 Hz grid, the way a watches "smart recording" does.
-            The app always resamples. The tuning harness's tests write their
-            synthetic recordings this way: they read them back with fit_tool,
-            which decodes slowly, and 1 Hz would mean hours of records each.
+            instead of the whole-second grid, the way a watches "smart
+            recording" does. The app always resamples. The tuning harness's
+            tests write their synthetic recordings this way: they read them
+            back with fit_tool, which decodes slowly, and 1 Hz would mean
+            hours of records each.
+        record_interval_s: Whole seconds between records when resampling.
+            None (what the app passes) takes RECORD_INTERVAL_S for the
+            track's sport, a run's when it has none. Ignored when resample
+            is False.
     Returns:
         The complete .fit file contents as bytes.
     Raises:
@@ -210,7 +240,7 @@ def write_fit(track: Track, *, resample: bool = True) -> bytes:
             than the first, or if any point in between is missing a
             timestamp.
     """
-    return _encode(_build_content(track, resample=resample))
+    return _encode(_build_content(track, resample=resample, record_interval_s=record_interval_s))
 
 
 @dataclass(frozen=True)
@@ -237,7 +267,7 @@ class _FitContent:
     max_speed: float
 
 
-def _build_content(track: Track, *, resample: bool) -> _FitContent:
+def _build_content(track: Track, *, resample: bool, record_interval_s: int | None = None) -> _FitContent:
     """Validate the track and decide every value write_fit puts in the file (see write_fit)."""
     if not track.points:
         raise RuntimeError("Track must contain at least one point for fit file creation.")
@@ -258,7 +288,9 @@ def _build_content(track: Track, *, resample: bool) -> _FitContent:
     if track.sport is not None and track.sport.value == "hiking":
         sport = SPORT_WALKING
 
-    spans = _resample(track.points) if resample else _per_point(track.points)
+    if record_interval_s is None:
+        record_interval_s = RECORD_INTERVAL_S[track.sport or SportType.RUNNING]
+    spans = _resample(track.points, record_interval_s) if resample else _per_point(track.points)
     first_ms = spans[0][0].timestamp_ms
     last_ms = spans[-1][-1].timestamp_ms
     paused_ms = sum(

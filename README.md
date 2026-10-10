@@ -179,6 +179,9 @@ The full pipeline works end to end in the browser. Known limitations:
 - Surface lookup depends on the public Valhalla demo server, which has no
   uptime guarantee. If the request fails, the conversion still completes,
   without surface-based pacing.
+- Elevation comes only from the GPX. A file without it is paced as flat and
+  the FIT gets no altitude. Nothing looks elevation up elsewhere: the surface
+  lookup (on or off) doesn't add it.
 - Only running and hiking are supported.
 - The device picker lists Garmin, COROS, Suunto, Polar and Wahoo models.
   Only Garmin's Forerunner 245 has been confirmed to show up on Strava.

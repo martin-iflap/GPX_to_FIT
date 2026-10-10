@@ -66,7 +66,11 @@ class TestRecoversAPlantedResponse:
         assert all(band.shape_residual < 0 for band in descents)
 
     def test_the_residual_shape_is_monotonic_in_gradient(self):
-        report = compare(_prepared(uphill_factor=5.0, downhill_factor=0.5, amplitude=120))
+        # Without the model's pace wander, which the planted athlete doesn't
+        # have, so its noise can't reorder neighboring bands.
+        report = compare(
+            _prepared(uphill_factor=5.0, downhill_factor=0.5, amplitude=120), PacingParams(variation_scale=0.0)
+        )
         shapes = [band.shape_residual for band in report.bands]
         # Near flat, this athlete's response is almost level, so adjacent
         # bands can tie to within rounding noise.

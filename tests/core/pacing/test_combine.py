@@ -273,7 +273,7 @@ class TestCombineBoundsExtremeSpeedRatio:
             / _compress_speed_toward_typical(min(raw_speeds), typical_raw_speed, max_ratio)
         )
 
-        result = combine(track, anchors, SportType.RUNNING)
+        result = combine(track, anchors, SportType.RUNNING, vary_pace=False)
 
         assert result.points[-1].timestamp == end_time
         leg_paces = [
@@ -616,8 +616,11 @@ class TestCombinePaceVariation:
         assert first == [p.timestamp for p in self._paced(self._flat()).points]
 
     def test_rolling_terrain_is_left_exactly_as_the_gradient_paces_it(self):
+        # 100 m climbs and descents, so every window the steadiness is
+        # judged over (VariationSettings.window_m) spans a change of slope.
+        # Longer even climbs count as steady and are varied on purpose.
         def rolling() -> Track:
-            return rolling_track(distance=5000.0, climb_per_km=100.0)
+            return rolling_track(distance=5000.0, climb_per_km=100.0, leg_m=25.0)
 
         varied = [p.timestamp for p in self._paced(rolling()).points]
         assert varied == [p.timestamp for p in self._paced(rolling(), vary_pace=False).points]
@@ -883,7 +886,7 @@ class TestCombineSurfaceMultipliers:
         end_time = START + timedelta(seconds=700)
         anchors = [anchor(0.0, START), anchor(300.0, end_time)]
 
-        result = combine(track, anchors, SportType.RUNNING, multipliers=[1.0, 2.0, 4.0])
+        result = combine(track, anchors, SportType.RUNNING, multipliers=[1.0, 2.0, 4.0], vary_pace=False)
 
         times = [timestamp_of(p) for p in result.points]
         leg_seconds = [(b - a).total_seconds() for a, b in zip(times, times[1:])]
@@ -925,7 +928,7 @@ class TestCombineSurfaceMultipliers:
         end_time = mid_time + timedelta(seconds=300)
         anchors = [anchor(0.0, START), anchor(200.0, mid_time), anchor(400.0, end_time)]
 
-        result = combine(track, anchors, SportType.RUNNING, multipliers=[1.0, 1.0, 1.0, 2.0])
+        result = combine(track, anchors, SportType.RUNNING, multipliers=[1.0, 1.0, 1.0, 2.0], vary_pace=False)
 
         times = [timestamp_of(p) for p in result.points]
         # First segment: no differentiating multiplier -> even split.
@@ -1358,7 +1361,7 @@ def test_a_sparse_route_has_no_sudden_jump_in_its_1hz_records(sport, seconds):
 
     combine(track, anchors, sport, multipliers=multipliers, vary_pace=False)
 
-    (records,) = _resample(track.points)
+    (records,) = _resample(track.points, interval_s=1)
     per_second = [b.distance - a.distance for a, b in zip(records, records[1:])]
     worst_change = max(abs(later - earlier) for earlier, later in zip(per_second, per_second[1:]))
     # Unlimited, the step is about 0.55 m/s in one second hiking and 0.9 running.

@@ -10,7 +10,7 @@ from fit_tool.profile.messages.record_message import RecordMessage
 from fit_tool.profile.messages.session_message import SessionMessage
 from fit_tool.profile.profile_type import Event, EventType, Manufacturer, Sport
 
-from gpx2fit.core.fit_writer import _fit_timestamp, write_fit
+from gpx2fit.core.fit_writer import RECORD_INTERVAL_S, _fit_timestamp, write_fit
 from gpx2fit.core.models import SportType, Track
 from tests.core.conftest import point, timestamp_of
 
@@ -117,9 +117,7 @@ class TestWriteFitOutput:
 
     def test_sea_level_elevation_is_written_as_altitude(self):
         # The middle point sits at 0.0 m: a real height on a track that has elevation.
-        track = self._build_track(SportType.RUNNING)
-        decoded = FitFile.from_bytes(write_fit(track))
-        records = [r.message for r in decoded.records if isinstance(r.message, RecordMessage)]
+        records = _records(self._build_track(SportType.RUNNING))
 
         assert records[0].altitude == pytest.approx(100.0, abs=0.2)
         assert records[30].altitude == pytest.approx(0.0, abs=0.2)
@@ -240,12 +238,13 @@ class TestWriteFitOutput:
         assert lap.max_speed == pytest.approx(150.0 / 30.0, abs=0.01)
 
 
-def _decoded_messages(track: Track) -> list:
-    return [r.message for r in FitFile.from_bytes(write_fit(track)).records]
+def _decoded_messages(track: Track, record_interval_s: int = 1) -> list:
+    """Decoded messages at an explicit interval (1 Hz unless given), so the tests don't follow RECORD_INTERVAL_S."""
+    return [r.message for r in FitFile.from_bytes(write_fit(track, record_interval_s=record_interval_s)).records]
 
 
-def _records(track: Track) -> list[RecordMessage]:
-    return [m for m in _decoded_messages(track) if isinstance(m, RecordMessage)]
+def _records(track: Track, record_interval_s: int = 1) -> list[RecordMessage]:
+    return [m for m in _decoded_messages(track, record_interval_s) if isinstance(m, RecordMessage)]
 
 
 def _record_seconds(messages: list) -> list[int]:
@@ -424,6 +423,49 @@ class TestWriteFitOneHertzGrid:
         assert session.max_speed == pytest.approx(150.0 / 30.0, abs=0.01)
 
 
+class TestWriteFitRecordInterval:
+    # record_interval_s spaces the records out; each span still ends exactly
+    # where it did at 1 Hz, so timer events and summaries don't move.
+
+    def test_records_are_written_every_interval_and_at_each_span_end(self):
+        # Moving 0-60 s and 660-720 s: 61 s per span isn't a multiple of 7.
+        messages = _decoded_messages(_track_with_stop(), record_interval_s=7)
+
+        assert _record_seconds(messages) == [*range(0, 60, 7), 60, *range(660, 720, 7), 720]
+
+    def test_records_land_on_the_same_positions_as_at_1hz(self):
+        track = TestWriteFitOutput()._build_track(SportType.RUNNING)
+        every_second = _records(track)
+        every_third = _records(track, record_interval_s=3)
+
+        assert [r.timestamp for r in every_third] == [r.timestamp for r in every_second[::3]]
+        assert [r.distance for r in every_third] == pytest.approx([r.distance for r in every_second[::3]])
+
+    def test_timer_events_and_summaries_do_not_depend_on_the_interval(self):
+        at_1hz = _decoded_messages(_track_with_stop())
+        sparse = _decoded_messages(_track_with_stop(), record_interval_s=7)
+
+        assert _timer_events(sparse) == _timer_events(at_1hz)
+        for summary_type in (LapMessage, SessionMessage):
+            ours, theirs = (next(m for m in ms if isinstance(m, summary_type)) for ms in (sparse, at_1hz))
+            assert ours.total_elapsed_time == theirs.total_elapsed_time
+            assert ours.total_timer_time == theirs.total_timer_time
+            assert ours.avg_speed == theirs.avg_speed
+
+    @pytest.mark.parametrize("sport", [SportType.RUNNING, SportType.HIKING, None])
+    def test_by_default_the_interval_follows_the_sport(self, sport):
+        track = TestWriteFitOutput()._build_track(sport)  # 0-60 s, one span
+        interval = RECORD_INTERVAL_S[sport or SportType.RUNNING]
+        records = [m for m in _decoded_messages_of(track, resample=True) if isinstance(m, RecordMessage)]
+
+        assert _record_seconds(records) == sorted({*range(0, 60, interval), 60})
+
+    @pytest.mark.parametrize("interval", [0, -1, 1.5])
+    def test_an_interval_that_is_not_a_positive_whole_number_is_refused(self, interval):
+        with pytest.raises(ValueError):
+            write_fit(_track_with_stop(), record_interval_s=interval)
+
+
 class TestWriteFitPerPoint:
     # resample=False: one record per point at its own time, as a watches smart
     # recording writes. The tuning harness's synthetic recordings use it.
@@ -451,6 +493,6 @@ class TestWriteFitPerPoint:
         assert session.total_timer_time == pytest.approx(120.0)
 
 
-def _decoded_messages_of(track: Track) -> list:
-    """Like _decoded_messages, but one record per point."""
-    return [r.message for r in FitFile.from_bytes(write_fit(track, resample=False)).records]
+def _decoded_messages_of(track: Track, *, resample: bool = False) -> list:
+    """Like _decoded_messages, but at write_fit's own defaults: by default one record per point."""
+    return [r.message for r in FitFile.from_bytes(write_fit(track, resample=resample)).records]

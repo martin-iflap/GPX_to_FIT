@@ -1638,10 +1638,16 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   min-width: 150px;
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-md);
-  background: var(--bg-base);
+  /* See-through enough to follow the curves underneath. The slight blur
+     softens a line passing behind the text so it can't cross a digit, and
+     the halo keeps the text off whatever shows through. */
+  background: color-mix(in srgb, var(--bg-base) 62%, transparent);
+  -webkit-backdrop-filter: blur(1.5px);
+  backdrop-filter: blur(1.5px);
   box-shadow: var(--glass-edge), var(--glass-shadow);
   font-size: 0.76rem;
   font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 3px var(--bg-base), 0 0 1px var(--bg-base);
   pointer-events: none;
 }
 
@@ -2356,6 +2362,13 @@ html.glass-refraction .day-selector-dropdown {
   html.glass-refraction #sidebar .profile-show-button {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
+  }
+
+  .profile-tooltip {
+    background: var(--bg-base);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    text-shadow: none;
   }
 }
 
