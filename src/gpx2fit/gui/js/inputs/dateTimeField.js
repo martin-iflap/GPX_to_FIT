@@ -1,0 +1,379 @@
+// Custom replacements for native <input type="time"> / <input type="datetime-local">.
+// Neither their popup's tiny spinner buttons nor (for datetime-local) the
+// lack of any confirm step can be styled reliably across browsers, so time
+// entry gets its own typeable "HH:MM" field. Where a quick-pick list makes
+// sense (Start/End time — see quickPicks below), it opens right under the
+// field on focus: every half-hour of the day, scrolled so the one closest
+// to right now is the first one visible. The date part stays a native
+// <input type="date"> — day-picking there mostly works fine, and a full
+// custom calendar felt like overkill — just with a bigger click target on
+// its calendar icon (see styles.css).
+
+import { pad } from '../util/format.js';
+import { toDateInputValue } from '../util/dates.js';
+import { createFocusDropdown } from './focusDropdown.js';
+
+const SLOT_STEP_MINUTES = 30;
+const SLOTS_PER_DAY = (24 * 60) / SLOT_STEP_MINUTES;
+
+/**
+ * Whether `input`'s caret sits exactly at `position` with nothing selected.
+ * A range selection deliberately counts as "not at the edge": the arrow key
+ * that follows one collapses it, which is the browser's own behavior and
+ * shouldn't also hop to the neighboring box.
+ */
+function caretIsAt(input, position) {
+  return input.selectionStart === position && input.selectionEnd === position;
+}
+
+/**
+ * Focuses `input` and puts the caret after its last character rather than
+ * selecting the whole value. This is the right landing for *backwards*
+ * navigation: the ArrowLeft that brought focus here should keep operating one
+ * character at a time, and whatever is typed or deleted next has to apply to
+ * the end of the existing value, not replace it. Forward auto-advance still
+ * selects (see createTimeField below) — there, replacing the old value
+ * wholesale is exactly what typing a new one should do.
+ */
+export function focusSegmentEnd(input) {
+  input.focus();
+  const end = input.value.length;
+  input.setSelectionRange(end, end);
+}
+
+/**
+ * Wires caret movement across two adjacent segment boxes (hours, then
+ * minutes) so the pair behaves like one field instead of two unrelated
+ * inputs: ArrowLeft at the start of `second` jumps to the end of `first`, and
+ * ArrowRight at the end of `first` jumps to the start of `second`. Anywhere
+ * else in either value the arrows stay native.
+ *
+ * Deliberately *not* wired to Backspace. An empty-and-jump rule there reads
+ * well in isolation but not while holding the key down to clear the field:
+ * focus lands in the hours box mid-repeat and the same press starts eating
+ * digits the user never meant to touch.
+ *
+ * Both boxes must be text-backed (`type="text"` with `inputMode="numeric"`) —
+ * `type="number"` doesn't support `selectionStart` (Chrome and Firefox throw
+ * InvalidStateError), so there is no way to tell an arrow at the edge from
+ * one in the middle. That is why the duration boxes in timeInput.js are text
+ * inputs with their own stepping rather than number inputs.
+ *
+ * @param {HTMLInputElement} first
+ * @param {HTMLInputElement} second
+ */
+export function linkSegmentPair(first, second) {
+  second.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowLeft' && caretIsAt(second, 0)) {
+      // Without this the arrow would also move the caret inside `first`,
+      // stepping one character further left than the user asked for.
+      event.preventDefault();
+      focusSegmentEnd(first);
+    }
+  });
+
+  first.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowRight' && caretIsAt(first, first.value.length)) {
+      event.preventDefault();
+      second.focus();
+      second.setSelectionRange(0, 0);
+    }
+  });
+}
+
+/** Every half-hour slot of the day in order: [{hours:0,minutes:0}, {hours:0,minutes:30}, ..., {hours:23,minutes:30}]. */
+export function buildDaySlots() {
+  return Array.from({ length: SLOTS_PER_DAY }, (_, i) => {
+    const totalMinutes = i * SLOT_STEP_MINUTES;
+    return { hours: Math.floor(totalMinutes / 60), minutes: totalMinutes % 60 };
+  });
+}
+
+/** Index into `buildDaySlots()`'s result of the slot closest to `now` (ties/midnight wrap to slot 0). */
+export function nearestSlotIndex(now) {
+  const totalMinutes = now.getHours() * 60 + now.getMinutes();
+  return Math.round(totalMinutes / SLOT_STEP_MINUTES) % SLOTS_PER_DAY;
+}
+
+/**
+ * A typeable "HH" / "MM" pair of boxes, optionally with a scrollable
+ * dropdown of every half-hour of the day as a click-to-fill shortcut.
+ *
+ * Each box only ever holds a value valid for its own range (0-23 / 0-59):
+ * a digit that can't start a valid two-digit value in that range (3-9 for
+ * hours, 6-9 for minutes) is treated as already complete rather than making
+ * the user type a second digit, and a completed hour auto-advances focus to
+ * the minutes box. This is what lets entry work without a literal ":"
+ * keystroke, without the ambiguity a single free-typed "HH:MM" field would
+ * have to guess around.
+ *
+ * @param {object} opts
+ * @param {HTMLElement} opts.container
+ * @param {string} [opts.ariaLabel]
+ * @param {boolean} [opts.quickPicks] - show the half-hour dropdown on focus
+ *   (default true). Turn this off where the user is expected to enter a
+ *   precise time rather than pick a round one (e.g. anchor arrival times).
+ * @param {(value: {hours: number, minutes: number}|null) => void} opts.onChange -
+ *   called with the value once both boxes hold one, or null while either
+ *   box is incomplete (including empty)
+ * @returns {{ setValue: (hours: number, minutes: number) => void }}
+ */
+export function createTimeField({ container, ariaLabel = 'Time', quickPicks = true, onChange }) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'time-field';
+
+  const boxes = document.createElement('div');
+  boxes.className = 'time-field-boxes';
+
+  const hoursInput = document.createElement('input');
+  hoursInput.type = 'text';
+  hoursInput.inputMode = 'numeric';
+  hoursInput.maxLength = 2;
+  hoursInput.placeholder = 'HH';
+  hoursInput.className = 'text-input time-field-box';
+  hoursInput.setAttribute('aria-label', `${ariaLabel} hours`);
+
+  const colon = document.createElement('span');
+  colon.className = 'time-field-colon';
+  colon.textContent = ':';
+  colon.setAttribute('aria-hidden', 'true');
+
+  const minutesInput = document.createElement('input');
+  minutesInput.type = 'text';
+  minutesInput.inputMode = 'numeric';
+  minutesInput.maxLength = 2;
+  minutesInput.placeholder = 'MM';
+  minutesInput.className = 'text-input time-field-box';
+  minutesInput.setAttribute('aria-label', `${ariaLabel} minutes`);
+
+  boxes.append(hoursInput, colon, minutesInput);
+  wrapper.append(boxes);
+  container.append(wrapper);
+
+  function pairValue() {
+    if (!/^\d{2}$/.test(hoursInput.value) || !/^\d{2}$/.test(minutesInput.value)) {
+      return null;
+    }
+    return { hours: Number(hoursInput.value), minutes: Number(minutesInput.value) };
+  }
+
+  function notifyChange() {
+    onChange(pairValue());
+  }
+
+  hoursInput.addEventListener('input', () => {
+    const digits = hoursInput.value.replace(/\D/g, '').slice(0, 2);
+    if (digits.length === 2) {
+      hoursInput.value = pad(Math.min(Number(digits), 23));
+      minutesInput.focus();
+      minutesInput.select();
+    } else if (digits.length === 1 && Number(digits) >= 3) {
+      // No valid two-digit hour starts with 3-9 (30-99 is out of range), so
+      // a single such digit is already an unambiguous, complete hour.
+      hoursInput.value = pad(Number(digits));
+      minutesInput.focus();
+      minutesInput.select();
+    } else {
+      hoursInput.value = digits;
+    }
+    notifyChange();
+  });
+
+  minutesInput.addEventListener('input', () => {
+    const digits = minutesInput.value.replace(/\D/g, '').slice(0, 2);
+    if (digits.length === 2) {
+      minutesInput.value = pad(Math.min(Number(digits), 59));
+    } else if (digits.length === 1 && Number(digits) >= 6) {
+      // No valid two-digit minute starts with 6-9 (60-99 is out of range).
+      minutesInput.value = pad(Number(digits));
+    } else {
+      minutesInput.value = digits;
+    }
+    notifyChange();
+  });
+
+  linkSegmentPair(hoursInput, minutesInput);
+
+  if (quickPicks) {
+    // Focus moving between the two boxes (the auto-advance after the hour)
+    // keeps it open.
+    const dropdown = createFocusDropdown({
+      triggers: [hoursInput, minutesInput],
+      className: 'time-field-dropdown',
+      optionClassName: 'time-field-option',
+      getOptions: () => buildDaySlots().map((slot) => ({ label: `${pad(slot.hours)}:${pad(slot.minutes)}`, value: slot })),
+      getScrollIndex: () => nearestSlotIndex(new Date()),
+      onPick: ({ hours, minutes }) => {
+        hoursInput.value = pad(hours);
+        minutesInput.value = pad(minutes);
+        notifyChange();
+      },
+    });
+    wrapper.append(dropdown.el);
+  }
+
+  return {
+    setValue(hours, minutes) {
+      hoursInput.value = pad(hours);
+      minutesInput.value = pad(minutes);
+      onChange({ hours, minutes });
+    },
+  };
+}
+
+/**
+ * A thin single-button day selector: shows "Day N · <date>" for the
+ * currently selected day and opens a dropdown of every day the activity
+ * spans on click — no typing, no calendar widget, just the valid choices.
+ * Used only above a 'timeOfDay' field on multi-day activities (see
+ * timeInput.js); the caller hides it entirely via `setDayCount(1, ...)`
+ * when the activity fits in a single day, so single-day activities see no
+ * change at all.
+ *
+ * @param {object} opts
+ * @param {HTMLElement} opts.container
+ * @param {(dayIndex: number) => void} opts.onChange - fired only when the
+ *   user actively picks a different day from the dropdown (0-based offset
+ *   from the activity's first day)
+ * @returns {{ setDayCount: (count: number, referenceDate: Date|null, desiredIndex?: number) => void, getDayIndex: () => number }}
+ */
+export function createDaySelector({ container, onChange }) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'day-selector hidden';
+
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'day-selector-button';
+  wrapper.append(button);
+
+  container.append(wrapper);
+
+  let dayIndex = 0;
+  let dayCount = 1;
+  let reference = null;
+
+  function dayDate(offset) {
+    const date = new Date(reference);
+    date.setDate(date.getDate() + offset);
+    return date;
+  }
+
+  function dayLabel(offset) {
+    const dateStr = dayDate(offset).toLocaleDateString(undefined, {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+    });
+    return `Day ${offset + 1} · ${dateStr}`;
+  }
+
+  function renderButton() {
+    button.textContent = reference ? dayLabel(dayIndex) : 'Day 1';
+  }
+
+  const dropdown = createFocusDropdown({
+    triggers: [button],
+    openOn: 'click',
+    className: 'day-selector-dropdown',
+    optionClassName: 'day-selector-option',
+    getOptions: () => Array.from({ length: dayCount }, (_, i) => ({ label: dayLabel(i), value: i })),
+    onPick: (index) => {
+      dayIndex = index;
+      renderButton();
+      onChange(dayIndex);
+    },
+  });
+  wrapper.append(dropdown.el);
+
+  return {
+    // Re-derives which days are selectable. Clamps silently (no onChange
+    // call) if the previously-selected day no longer exists — this only
+    // happens if the reference/duration changes while the popover is open,
+    // which the caller re-derives on every keystroke anyway.
+    //
+    // `desiredIndex`, when given, forces the selection to that day (clamped
+    // into range) instead of preserving whatever was selected before. Used
+    // once, by createTimeToggle, to open a popover on the day an estimated
+    // time actually falls on rather than always day 1.
+    setDayCount(count, referenceDate, desiredIndex) {
+      dayCount = Math.max(1, count);
+      reference = referenceDate;
+      if (typeof desiredIndex === 'number') {
+        dayIndex = Math.min(Math.max(desiredIndex, 0), dayCount - 1);
+      } else if (dayIndex >= dayCount) {
+        dayIndex = 0;
+      }
+      wrapper.classList.toggle('hidden', dayCount <= 1);
+      if (dayCount <= 1) {
+        dropdown.close();
+      }
+      renderButton();
+    },
+    getDayIndex: () => dayIndex,
+  };
+}
+
+/**
+ * Pairs a native <input type="date"> with a `createTimeField`, exposing the
+ * combination as a single Date.
+ *
+ * @param {object} opts
+ * @param {HTMLElement} opts.container
+ * @param {string} [opts.dateAriaLabel]
+ * @param {string} [opts.timeAriaLabel]
+ * @param {(date: Date|null) => void} opts.onChange
+ * @returns {{ getValue: () => Date|null, setValue: (date: Date) => void, prefillDateIfEmpty: (date: Date) => void }}
+ */
+export function createDateTimeField({ container, dateAriaLabel = 'Date', timeAriaLabel = 'Time', onChange }) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'date-time-field';
+
+  const dateInput = document.createElement('input');
+  dateInput.type = 'date';
+  dateInput.className = 'text-input date-time-field-date';
+  dateInput.setAttribute('aria-label', dateAriaLabel);
+
+  const timeContainer = document.createElement('div');
+  timeContainer.className = 'date-time-field-time';
+
+  wrapper.append(dateInput, timeContainer);
+  container.append(wrapper);
+
+  let timeValue = null;
+
+  function currentValue() {
+    if (!dateInput.value || !timeValue) {
+      return null;
+    }
+    const [year, month, day] = dateInput.value.split('-').map(Number);
+    return new Date(year, month - 1, day, timeValue.hours, timeValue.minutes, 0, 0);
+  }
+
+  dateInput.addEventListener('input', () => onChange(currentValue()));
+
+  const timeField = createTimeField({
+    container: timeContainer,
+    ariaLabel: timeAriaLabel,
+    onChange: (value) => {
+      timeValue = value;
+      onChange(currentValue());
+    },
+  });
+
+  return {
+    getValue: currentValue,
+    setValue(date) {
+      dateInput.value = toDateInputValue(date);
+      timeField.setValue(date.getHours(), date.getMinutes());
+    },
+    // Sets just the date (not the time) as a starting-point default, but
+    // only if the user hasn't already picked one — used to default "End
+    // time" to the same day as the start without ever clobbering an edit.
+    prefillDateIfEmpty(date) {
+      if (!dateInput.value) {
+        dateInput.value = toDateInputValue(date);
+        onChange(currentValue());
+      }
+    },
+  };
+}

@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 
 CORE = Path(__file__).resolve().parents[2] / "src" / "gpx2fit" / "core"
-BRIDGE = CORE.parent / "gui" / "js" / "pyodideBridge.js"
+BRIDGE = CORE.parent / "gui" / "js" / "bridge" / "pyodideBridge.js"
 
 
 def _listed() -> set[str]:

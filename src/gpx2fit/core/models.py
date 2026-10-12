@@ -219,11 +219,15 @@ class ResolvedPhotoAnchor:
         status: "ok" if the match is usable as an anchor. Otherwise, in the
             order they're checked: "outside_activity_time" if the photo's
             timestamp isn't strictly inside the activity's time span,
-            "too_far" if the match is beyond MAX_MATCH_DISTANCE_M, or
+            "too_far" if the match is beyond MAX_MATCH_DISTANCE_M,
             "at_route_end" if it's the route's first or last point, where
-            the start/end anchors already sit (see
-            pacing.photo_anchors.resolve_photo_anchors).
+            the start/end anchors already sit, or "ambiguous" if the route
+            passes the spot more than once and the user has to pick which
+            pass (see pacing.photo_anchors.resolve_photo_anchors).
         gap_m: Distance in meters between the photo's raw GPS and the matched point.
+        passes: Every pass of the route near the photo that could carry it,
+            as nearest_point_candidates dicts ("distance_from_start", "lat",
+            "lon") in route order. Route ends are left out.
     """
     distance_from_start: float
     lat: float
@@ -231,6 +235,7 @@ class ResolvedPhotoAnchor:
     timestamp: datetime
     status: str
     gap_m: float
+    passes: list[dict]
 
 
 @dataclass

@@ -70,10 +70,24 @@ src/gpx2fit/
     ├── about.html                static About/privacy page
     ├── styles.css                all styles, light + dark tokens
     └── js/                       plain ES modules, no build (see §7)
+        ├── main.js               entry point and wiring
+        ├── config.js             Thunderforest key (gitignored; the deploy writes it here)
+        ├── bridge/               pyodideBridge.js: the Pyodide runtime and every call into core/
+        ├── state/                appState.js, settings.js, storage.js
+        ├── route/                map.js, markerList.js, anchors.js, stops.js,
+        │                         activityWindow.js, anchorOrder.js
+        ├── placement/            anchorPopovers.js, photoPlacement.js, photoAnchors.js
+        ├── inputs/               timeInput.js, dateTimeField.js, numericInput.js,
+        │                         focusDropdown.js, segmented.js, dropzone.js
+        ├── profile/              profileChart.js, profilePanel.js
+        ├── devices/              devices.js, devicePicker.js
+        ├── shell/                theme.js, glass.js, rangeFill.js, mobileLayout.js,
+        │                         shortcuts.js, status.js
+        └── util/                 format.js, dates.js, cssVars.js
 
 tuning/                           dev-only calibration harness (see TUNING_ARCHITECTURE.md)
 tests/core/  tests/tuning/        pytest
-tests/gui/                        node --test + jsdom
+tests/gui/                        node --test + jsdom, one folder per js/ folder
 docs/                             this file and TUNING_ARCHITECTURE.md
 valhalla_spike.html               standalone spike that proved Valhalla is CORS-open
 ```
@@ -89,26 +103,28 @@ separate offline tool that imports `core/` directly.
 flowchart TB
   subgraph Browser["Browser tab"]
     direction TB
-    subgraph GUI["GUI (gui/js/*.js)"]
-      main["main.js<br/>wiring + app state"]
+    subgraph GUI["GUI (gui/js/**/*.js)"]
+      main["main.js<br/>wiring, upload + convert"]
       ui["map / anchors / stops / photos /<br/>time inputs / profile panel / shortcuts"]
     end
     bridge["pyodideBridge.js<br/>parseGpx · resolveAnchorCandidates ·<br/>resolvePhotoAnchors · convert"]
     subgraph Py["Pyodide runtime (WASM)"]
-      track[("_track global<br/>parsed once per upload")]
+      api["core/bridge_api.py<br/>parse · nearest_candidates · resolve_photos ·<br/>trace_payload · surface_multipliers · convert"]
+      track[("bridge_api._track<br/>parsed once per upload")]
       core["gpx2fit.core<br/>models · gpx_reader · pacing/* ·<br/>fit_writer · activity_profile"]
     end
     main --> ui
     main --> bridge
     ui --> bridge
-    bridge -- "globals.set + runPythonAsync" --> core
-    core --- track
+    bridge -- "one function call per export<br/>(toPy in, toJs out)" --> api
+    api --> core
+    api --- track
   end
 
-  CDN["jsdelivr / unpkg / PyPI<br/>Pyodide, Leaflet, exifr,<br/>gpxpy"] -. "page load" .-> Browser
+  CDN["jsdelivr / unpkg / PyPI<br/>Pyodide, Leaflet, exifr,<br/>gpxpy"] -. "page load (Pyodide once idle)" .-> Browser
   TF["Thunderforest tiles"] -. "map.js" .-> ui
   VH["Valhalla trace_attributes<br/>(optional)"] <-. "convert(): route shape → edges" .-> bridge
-  Static["static file server<br/>(repo root)"] -. "fetch ../../core/*.py" .-> bridge
+  Static["static file server<br/>(repo root)"] -. "fetch ../../../core/*.py" .-> bridge
 
   subgraph Offline["Developer machine only"]
     tuning["tuning/ harness<br/>(TUNING_ARCHITECTURE.md)"] --> core2["gpx2fit.core<br/>(imported directly)"]
@@ -118,10 +134,14 @@ flowchart TB
 
 Ownership in short:
 
-- **`main.js`** owns app state: route points, total distance, chosen sport,
-  start-time result, and the GPX file name.
-- **`pyodideBridge.js`** owns the Python runtime and is the only file that
-  talks to Python.
+- **`appState.js`** holds the app's shared state: the parsed route (points,
+  total distance, GPX file name), the chosen sport, and the start time with
+  the start-time control's result, from which it derives the activity window.
+  `main.js` creates the one instance, writes to it, and hands it to the
+  modules that read it.
+- **`pyodideBridge.js`** owns the Python runtime and is the only JS file that
+  talks to Python. **`core/bridge_api.py`** is the only Python the bridge
+  calls, and holds the parsed route.
 - **Python** owns every calculation, including distances, nearest-point
   lookups, pacing and encoding. JS never computes a route distance itself.
 
@@ -686,47 +706,64 @@ here, in Python.
 
 ---
 
-## 6. The bridge: `pyodideBridge.js`
+## 6. The bridge: `pyodideBridge.js` and `core/bridge_api.py`
 
-This is the only file that talks to Python. It exports four calls and two
-helpers:
+`pyodideBridge.js` is the only JS file that talks to Python, and every
+call it makes goes to one function in `core/bridge_api.py`. That module
+holds all the Python orchestration (building dataclasses from the GUI's
+dicts, merging anchors and stops, the pipeline in [§8.3](#83-inside-convert)),
+so pytest and pyrefly cover it like any other `core/` module
+(`tests/core/test_bridge_api.py`). It takes and returns plain dicts, lists,
+numbers, strings and bytes. Its dict keys are the GUI's camelCase, except a
+nearest-point candidate's, which is `nearest_point_candidates`' own dict.
 
-| Export                                  | Python it runs                                 | Returns                                                   |
-|-----------------------------------------|------------------------------------------------|-----------------------------------------------------------|
-| `parseGpx(bytes)`                       | `_track = parse_gpx_bytes(...)`                | `{points, summary, warnings}` for the map and sidebar     |
-| `resolveAnchorCandidates(lat, lon)`     | `nearest_point_candidates(_track, …)`          | 1–4 candidates                                            |
-| `resolvePhotoAnchors(readings, window)` | `resolve_photo_anchors(_track, …)`             | status per photo                                          |
-| `convert({...})`                        | the full pipeline ([§8.3](#83-inside-convert)) | `{fitBytes, profile, warnings}`                           |
-| `classifyPyError(err)`                  | none                                           | tags `InputError`s ([§9](#9-errors))                      |
-| `describeSurfaceFailure(err)`           | none                                           | the warning for a failed surface lookup ([§9](#9-errors)) |
+| Export                              | `bridge_api` call                                      | Returns                                                   |
+|-------------------------------------|--------------------------------------------------------|-----------------------------------------------------------|
+| `parseGpx(bytes)`                   | `parse(bytes)`, which keeps the route as `_track`      | `{points, summary, warnings}` for the map and sidebar     |
+| `resolveAnchorCandidates(lat, lon)` | `nearest_candidates(lat, lon)`                         | 1–4 candidates                                            |
+| `resolvePhotoAnchors(readings)`     | `resolve_photos(readings)`, with no activity window    | status per photo                                          |
+| `convert({...})`                    | `trace_payload`, `surface_multipliers`, then `convert` | `{fitBytes, profile, warnings}`                           |
+| `warmUpPyodide()`                   | none                                                   | starts loading the runtime once the page is idle          |
+| `classifyPyError(err)`              | none                                                   | tags `InputError`s ([§9](#9-errors))                      |
+| `describeSurfaceFailure(err)`       | none                                                   | the warning for a failed surface lookup ([§9](#9-errors)) |
 
-Three mechanisms keep the bridge working:
+Four mechanisms keep the bridge working:
 
-1. **Lazy startup (`ensurePyodide`).** The first call does all the
-   setup:
-   - `loadPyodide` from jsdelivr
+1. **Startup (`ensurePyodide`).** `main.js` calls `warmUpPyodide()` on
+   page load, which starts this once the page is idle (`requestIdleCallback`,
+   skipped when the browser asks to save data), so the first upload rarely
+   waits. Otherwise the first call does it. The setup:
+   - add Pyodide's `<script>` from jsdelivr, pinned by `PYODIDE_VERSION`
+     (the only place the version is written; `index.html` has no tag for it)
    - `micropip.install` `gpxpy`, pinned to the `uv.lock` version
      (`GPXPY_VERSION`)
-   - fetch every file in `CORE_FILES` over HTTP from `../../core/`, resolved
+   - fetch every file in `CORE_FILES` over HTTP from `../../../core/`, resolved
      against the bridge module's own URL (`import.meta.url`), so the site
      works whether the repo root or `src/gpx2fit/` is served
-   - write them into `/workspace/src` in Pyodide's virtual filesystem, and
-     prepend that directory to `sys.path`
+   - write them into `/workspace/src` in Pyodide's virtual filesystem
+     (`FS.writeFile`), prepend that directory to `sys.path`, and
+     `pyimport` `gpx2fit.core.bridge_api`
 
+   A failed load (offline, a CDN hiccup) is forgotten, and a script tag that
+   failed is removed, so the next call tries again.
    **A `core/` file that isn't in `CORE_FILES` doesn't exist in the
    browser**, and nothing warns about it until an import fails there.
-2. **One shared namespace.** Every `runPythonAsync` call runs in the same
-   `__main__`. JS passes inputs through `runtime.globals.set(...)`, Python
-   leaves its results in globals, and JS reads them back with
-   `globals.get(...).toJs(...)`. `_track` stays alive between calls, so a
-   GPX file is parsed once and then reused for clicks, photos and every
-   conversion.
-3. **Serial queue (`enqueue`).** Calls are chained on one promise, so two
-   overlapping calls can't overwrite each other's globals. A failed call
-   rejects only for its own caller, and the next call in the queue still
-   runs. `fetchSurfaceMultipliers` isn't exported and receives `runtime`
-   directly, because it runs inside `convert`'s queued task. Queueing it
+2. **Plain values across, no proxies left behind (`callBridge`).** An
+   object or array argument goes over with `pyodide.toPy` (a `Uint8Array`
+   arrives as a memoryview, `undefined` as `None`), and the result comes
+   back with `toJs` (dicts as plain objects, `bytes` as a `Uint8Array`).
+   The argument proxies, the function proxy and the result proxy are all
+   destroyed before the call returns, so no conversion's data stays alive in
+   Python. Only the parsed route does, in `bridge_api._track`, so a GPX file
+   is parsed once and reused for clicks, photos and every conversion.
+3. **Serial queue (`enqueue`).** Calls are chained on one promise.
+   `convert` awaits the Valhalla request between `trace_payload` and
+   `convert`, and a parse landing in that gap would swap the route under
+   it. A failed call rejects only for its own caller, and the next call in
+   the queue still runs. `fetchSurfaceMultipliers` isn't exported and isn't
+   queued, because it runs inside `convert`'s queued task. Queueing it
    again would deadlock.
+4. **Errors are classified once, in `enqueue`** ([§9](#9-errors)).
 
 ---
 
@@ -736,7 +773,10 @@ Three mechanisms keep the bridge working:
 
 ```mermaid
 flowchart TD
-  main["main.js<br/>entry, app state, upload + convert handlers"]
+  main["main.js<br/>entry, wiring, upload + convert handlers"]
+  as["appState.js<br/>route, sport, start time, activity window"]
+  stt["status.js<br/>the status line"]
+  set["settings.js<br/>surface + smoothness, remembered"]
   bridge["pyodideBridge.js"]
   map["map.js<br/>Leaflet map, route, pins, hover marker, popups"]
   ap["anchorPopovers.js<br/>route-click flow: candidate picker →<br/>anchor-or-stop → time popover,<br/>placePhoto card for a location-less photo,<br/>choosePhotoPass for an ambiguous one,<br/>confirm a dragged photo pin's move"]
@@ -760,9 +800,24 @@ flowchart TD
   rf["rangeFill.js<br/>smoothness slider's center-biased fill"]
   fmt["format.js<br/>formatting + describeError"]
   cfg["config.js<br/>Thunderforest key (gitignored)"]
+  subgraph shared["shared UI helpers"]
+    seg["segmented.js<br/>segmented tabs"]
+    fd["focusDropdown.js<br/>quick-pick lists"]
+    num["numericInput.js<br/>digits-only boxes, Up/Down"]
+    dz["dropzone.js<br/>drop + click-to-browse"]
+    dates["dates.js<br/>calendar-day arithmetic"]
+    st["storage.js<br/>remembered settings"]
+    css["cssVars.js<br/>theme colour tokens"]
+  end
 
   main --> bridge
   main --> map
+  main --> as
+  main --> stt
+  main --> set
+  as --> aw
+  set --> st
+  set --> rf
   main --> ti
   main --> dtf
   main --> anchors
@@ -773,21 +828,21 @@ flowchart TD
   main --> sc
   main --> dp
   dp --> dev
-  dp --> ti
+  dp --> num
+  dp --> st
+  main --> seg
+  main --> dz
   main --> th
   main --> gl
-  main --> rf
   main --> fmt
   main --> mob
   mob -. "mapModule injected" .-> map
   map --> mob
   ml --> mob
-  ap --> bridge
-  ap --> map
-  ap --> anchors
-  ap --> stops
+  ap -. "appState, anchors, stops, map,<br/>resolveAnchorCandidates, revealMap,<br/>setStatus injected by main" .-> bridge
   ap --> ti
-  ap --> dtf
+  ap --> seg
+  ap --> dates
   anchors --> ml
   stops --> ml
   anchors --> aw
@@ -796,26 +851,40 @@ flowchart TD
   ap --> ppl
   ap --> ao
   ao --> fmt
-  ap --> mob
   main --> aw
   ml --> map
   pp --> pc
+  pp --> seg
+  photo --> dz
   pp -. "mapModule injected" .-> map
-  photo -. "resolvePhotoAnchors, addAnchor<br/>injected by main" .-> bridge
+  photo -. "appState, resolvePhotoAnchors, addAnchor,<br/>setStatus injected by main" .-> bridge
   photo -. "placePhoto, cancelPhotoPlacement,<br/>choosePhotoPass injected by main" .-> ap
   anchors -. "drag-end listener<br/>set by main" .-> ap
   ti --> dtf
+  ti --> seg
+  ti --> fd
+  ti --> num
+  ti --> dates
+  dtf --> fd
+  dtf --> dates
   th --> map
+  th --> st
+  th --> css
+  map --> css
   map --> cfg
   pc --> fmt
   photo --> fmt
   ti --> fmt
 ```
 
-Dependencies are injected in two places. `photoAnchors.js` receives
-`resolvePhotoAnchors`, `addAnchor`, `placePhoto`, `cancelPhotoPlacement`
-and `choosePhotoPass` as arguments rather than importing them, so its tests
-can pass in fakes. Every photo anchor, GPS-matched or placed by hand, is
+`anchorPopovers.js` and `photoAnchors.js` follow one rule: pure helpers
+(formatting, the time controls, the order and window rules) are imported,
+and everything with state or side effects is passed in by `main.js`.
+`createAnchorPlacer` receives `appState`, the `anchors` and `stops` lists,
+`map`, `resolveAnchorCandidates`, `revealMap` and `setStatus`.
+`photoAnchors.js` receives `appState`, `resolvePhotoAnchors`, `addAnchor`,
+`placePhoto`, `cancelPhotoPlacement`, `choosePhotoPass` and `setStatus`, so
+its tests pass in fakes (and a real `createAppState()`). Every photo anchor, GPS-matched or placed by hand, is
 added there, with its `thumbnailUrl` and an `onRemove` hook
 (`markerList.add(fields, { onRemove })`) that drops the photo when the
 anchor is deleted from the anchor list. A photo that became an anchor is
@@ -830,29 +899,32 @@ only `isPhoneLayout` from it, and `markerList.js` only `revealMap`.
 
 | State                                              | Owner                                                                                           | Read by                                                                                                                      |
 |----------------------------------------------------|-------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------|
-| route points, total distance, GPX file name, sport | `main.js` (module variables)                                                                    | convert handler; getters passed to `anchorPopovers`, `photoAnchors`, `timeInput`                                             |
-| start date/time                                    | `dateTimeField` instance in `main.js`                                                           | `getStartTime()`                                                                                                             |
-| duration / end / avg-speed result                  | `createTimeToggle` instance (`startTimeToggle`)                                                 | `startTimeResult` cache and `getResult()` at convert time                                                                    |
+| route points, total distance, GPX file name, sport | `appState` (`setRoute` once a parse succeeds, `setSport`)                                       | convert handler, `anchorPopovers`, `photoAnchors`; `timeInput` through `speedMode` getters                                   |
+| start date/time (as typed)                         | `dateTimeField` instance in `main.js`                                                           | `main.js`'s `getStartTime()`, for the toggle while it works out its result                                                   |
+| start time + duration / end / avg-speed result     | `appState.setTime(start, result)`, from `startTimeToggle`'s `onChange`                          | `appState.startTime`/`timeResult`/`activityWindow()`/`durationSeconds()`; `getResult()` again at convert time               |
 | anchors                                            | `anchors.js`, backed by `markerList`                                                            | `getActiveAnchors()` at convert time                                                                                         |
 | stops                                              | `stops.js`, backed by `markerList`                                                              | `getActiveStops()` at convert time; `getStops()` for the avg-speed stop total; the change listener refreshes the time toggle |
-| activity window (start–end)                        | pushed by `startTimeToggle`'s `onChange` into `anchors.js` and `stops.js` (`setActivityWindow`) | each module's `isInactive` check and `getActive*()`                                                                          |
-| parsed `Track`                                     | Python global `_track`                                                                          | every bridge call                                                                                                            |
-| theme, surface toggle, smoothness                  | `localStorage`                                                                                  | `theme.js`, `main.js`                                                                                                        |
+| activity window (start–end)                        | derived by `appState`; `onWindowChange` pushes it into `anchors.js`/`stops.js` → `markerList`  | `markerList`'s `isActive` check, `getActive()` and the row text                                                              |
+| parsed `Track`                                     | `bridge_api._track` (Python module state)                                                       | every bridge call                                                                                                            |
+| theme, surface toggle, smoothness, device          | `localStorage`, through `storage.js`                                                             | `theme.js`, `settings.js`, `devicePicker.js`                                                                                  |
 
 `main.js` calls `startTimeToggle.refresh()` whenever the average-speed
 duration could change: after a GPX parses, on a sport change, and on any
 stop change. The convert handler calls `getResult()` again rather than
 trusting the cached value.
 
-Every time that toggle's result changes (including a start-time edit),
-`main.js` pushes the new `{start, end}` into `anchors.setActivityWindow` and
-`stops.setActivityWindow`. Each module re-checks its items with
-`activityWindow.js` (strictly inside, the same rule as Python's photo check).
+Every time that toggle reports (including after a start-time edit),
+`main.js` records it with `appState.setTime(start, result)`: the start and
+its result are stored together, so the window never pairs a new start with
+an old end. If the window changed (`sameWindow` says otherwise), `appState`'s
+`onWindowChange` listener, registered by `main.js`, pushes it into
+`anchors.setActivityWindow` and `stops.setActivityWindow`, which hand it to
+their `markerList`. The list re-checks every item with its `isActive`
+predicate (`activityWindow.js`'s `isAnchorActive`/`isStopActive`: strictly
+inside, the same rule as Python's photo check) and re-renders the rows
+without renumbering the pins, since a time change can't reorder them.
 Photo anchors are included: a photo outside the window at drop time is
-still added (see "Dropping photos" below), so this re-check can bring it back.
-A window with the same times as before (`sameWindow`) is ignored, and the
-re-render (`markerList.refresh`) rebuilds the rows without renumbering the
-pins, since a time change can't reorder them. An item outside is kept but marked `.is-inactive`, its pin is dimmed
+still added (see "Dropping photos" below), so this re-check can bring it back. An item outside is kept but marked `.is-inactive`, its pin is dimmed
 (`map.setMarkerDimmed`), and it is left out of `getActive*()`. Moving the
 window back makes it active again. The convert status then reports how
 many were left out (`format.leftOutNote`). An anchor or stop time entered
@@ -877,7 +949,7 @@ sequenceDiagram
   U->>M: click on route polyline
   M->>AP: handleRouteClick(lat, lon)
   AP->>B: resolveAnchorCandidates(lat, lon)
-  B->>P: nearest_point_candidates(_track, …)
+  B->>P: bridge_api.nearest_candidates(lat, lon)
   P-->>AP: 1..4 candidates
   alt more than one pass
     AP->>U: openCandidatePicker
@@ -936,6 +1008,17 @@ map.addMarker({draggable})          (markerList's isDraggable: anchors.js says s
 
 ### 7.4 Smaller modules
 
+- **`appState.js`**: `createAppState({sport})`. Plain getters (`route`,
+  `sport`, `startTime`, `timeResult`), one setter each (`setRoute`,
+  `setSport`, `setTime(start, result)`), the derived `activityWindow()` and
+  `durationSeconds()`, and `onWindowChange(fn)`, which fires only when the
+  window really moved. Tested.
+- **`status.js`**: `createStatus(statusEl)` returns `setStatus(message,
+  kind)`. An `'error'` or `'input'` status goes back to "Ready." after
+  `STATUS_ERROR_TIMEOUT_MS`; a `'warning'` stays. Tested with mocked timers.
+- **`settings.js`**: `initSurfaceLookupSetting(checkbox)` and
+  `initSmoothnessSetting(slider, valueEl)` restore and store the two
+  remembered conversion settings (`surfaceLookup`, `smoothness`). Tested.
 - **`timeInput.js`**: `createTimeToggle({variant, speedMode?})`.
   - Variants are `durationOrEnd` (the main control), `durationOrTimeOfDay`
     (the anchor popover) and `durationOnly` (a stop's duration).
@@ -945,6 +1028,22 @@ map.addMarker({draggable})          (markerList's isDraggable: anchors.js says s
 - **`dateTimeField.js`**: custom date and time fields with quick-pick
   dropdowns. `linkSegmentPair` makes the arrow keys move between the
   hours and minutes boxes.
+- **Shared UI helpers**, each tested:
+  - `segmented.js`: `wireSegmented(control, onSelect)` for the tab strips in
+    `index.html` (sport, chart unit and axis) and `createSegmented` for the
+    ones built at runtime (start-time modes, the stop popover's modes).
+  - `focusDropdown.js`: `createFocusDropdown`, the list under the time
+    fields, the speed presets and the day selector. It opens on focus (or a
+    click), fills on a click and closes once focus leaves.
+  - `numericInput.js`: `wireNumericBox` and `createNumericInput`, text
+    boxes with digits-only entry and Up/Down stepping (see CLAUDE.md for why
+    they aren't `type="number"`).
+  - `dropzone.js`: `wireDropzone`/`wireFileInput` for the GPX and photo
+    dropzones.
+  - `dates.js`: `dayOffsetBetween`, `computeDayCount`, `toDateInputValue`.
+  - `storage.js`: `readSetting`/`writeSetting`, which never throw.
+  - `cssVars.js`: `readCssVar` and `accentColor`, for what CSS can't style
+    (Leaflet's route line and hover dot, the toolbar's theme-color).
 - **`shortcuts.js`**: each entry in one `SHORTCUTS` array both binds a key
   and renders a row in the "?" panel. Each action calls `.click()` on the
   existing control, or focuses an existing box. Besides the sport, convert,
@@ -1017,26 +1116,27 @@ sequenceDiagram
   participant PP as profilePanel.js
 
   Note over Main: page load: init lists, map, theme, profile panel,<br/>shortcuts, time toggle, anchor placer, photo drop
+  Main->>B: warmUpPyodide()
+  B->>B: once idle: ensurePyodide()<br/>load runtime, micropip, fetch core/*.py, import bridge_api
   U->>Main: drop GPX
   Main->>B: parseGpx(bytes)
-  B->>B: ensurePyodide() on first call:<br/>load runtime, micropip, fetch core/*.py
-  B->>Py: _track = parse_gpx_bytes(bytes, warnings=_parse_warnings)
-  Py-->>Main: points + {total_distance, total_elevation_gain = elevation_gain(_track)} + warnings
+  B->>Py: bridge_api.parse(bytes) keeps _track = parse_gpx_bytes(...)
+  Py-->>Main: points + {total_distance, total_elevation_gain} + warnings
   Main->>Main: reset anchors/stops/photos, hideProfile,<br/>renderRoute, refresh time toggle
   U->>Main: set start + duration/end/speed, place anchors/stops, drop photos
   Note over Main,Py: resolveAnchorCandidates / resolvePhotoAnchors (§7.3)
   U->>Main: Convert (button or Ctrl+Enter)
   Main->>Main: getResult() again, build anchor + stop payloads (ISO strings)
-  Main->>B: convert({startIso, durationSeconds, sportEnumName,<br/>anchors, stops, device, surfaceLookup, smoothness})
+  Main->>B: convert({startIso, durationSeconds, sport,<br/>anchors, stops, device, surfaceLookup, smoothness})
   opt surfaceLookup
-    B->>Py: build_trace_attributes_payload(_track)
+    B->>Py: bridge_api.trace_payload()
     B->>V: POST trace_attributes (30 s timeout)
     V-->>B: edges + matched_points
-    B->>Py: calculate_surface_multipliers(...)
+    B->>Py: bridge_api.surface_multipliers(answer, sport)
     Note over B: on any failure: describeSurfaceFailure → warning, continue with no multipliers
   end
-  B->>Py: pipeline (§8.3)
-  Py-->>B: fit_bytes, _profile_samples, _convert_warnings
+  B->>Py: bridge_api.convert(request) (§8.3)
+  Py-->>B: {fitBytes, profile, warnings}
   B-->>Main: {fitBytes, profile, warnings}
   Main->>U: Blob → download link (name from GPX)
   Main->>PP: showProfile(profile, sport)
@@ -1080,10 +1180,12 @@ flowchart TD
 
 ### 8.3 Inside `convert()`
 
-This is the literal order of the Python that `convert()` runs. The bridge
-converts JSON and ISO strings into dataclasses first. Before the surface
-fetch it resets `_convert_warnings = []`, which `calculate_surface_multipliers`
-and `combine` both append to.
+This is the order `bridge_api.convert(request)` runs in. It first turns
+the request's dicts and ISO strings into dataclasses, and the sport name
+(`"running"`/`"hiking"`, the GUI's own) into a `SportType`. `combine`
+appends to a fresh `warnings` list per call, and the JS side puts the
+surface lookup's warnings (from `bridge_api.surface_multipliers`, or
+`describeSurfaceFailure`) ahead of them.
 
 1. `boundary = add_start_end_anchors(_track, start, duration=…)`
 2. `mid_route = build_user_anchors(_track, raw_anchors, existing_anchors=boundary)`.
@@ -1093,15 +1195,15 @@ and `combine` both append to.
 4. `resolved_mode_b, mode_a_stops = resolve_stops(_track, raw_stops, hard_anchors)`
 5. `all_anchors = sorted(hard_anchors + stop_arrival/departure anchors)`
 6. `working_track = Track(expand_track_with_stops(_track.points, all_stops), sport, device, name, has_elevation)`,
-   where `device` is `device_name or _track.device` plus the three device IDs.
+   where `device` is the request's `device.name` or `_track.device`, plus the three device IDs.
    They go on the working track, never on `_track`, so clearing the device
    between two conversions of one route really clears it
-7. `working_multipliers = expand_multipliers_with_stops(...)` (if surface
-   data was fetched)
-8. `combine(working_track, all_anchors, sport, working_multipliers, mode_a_stops, smoothness, warnings=_convert_warnings)`
-9. `fit_bytes = write_fit(working_track)`
-10. `_profile_samples = build_activity_profile(working_track)`, converted
-    to camelCase dicts
+7. `working_multipliers = expand_multipliers_with_stops(...)` (if the
+   request carries `surfaceMultipliers`)
+8. `combine(working_track, all_anchors, sport, working_multipliers, mode_a_stops, smoothness, warnings=warnings)`
+9. `write_fit(working_track)` → `fitBytes`
+10. `build_activity_profile(working_track)`, converted to camelCase dicts
+    → `profile`
 
 Surface multipliers are computed against `_track` (not yet expanded), and
 only then expanded to match `working_track`. Every conversion builds a fresh
@@ -1135,9 +1237,12 @@ not as the user meant. Same writing rules as an `InputError` message.
   optional keyword `warnings: list[str]` and append to it. Their return
   values don't change, so callers that don't care (tests, the tuning
   harness) pass nothing.
-- The bridge returns them as `warnings` from `parseGpx` and `convert`.
-  `convert` puts its own JS-side ones first (`describeSurfaceFailure`: a
-  timeout, an HTTP error with Valhalla's own `error` text, no network).
+- `bridge_api` returns them as `warnings` from `parse`,
+  `surface_multipliers` and `convert`, and the bridge from `parseGpx` and
+  `convert`. `convert` puts the surface lookup's first: Python's, or the
+  JS side's own when the lookup failed (`describeSurfaceFailure`: a
+  timeout, an HTTP error with Valhalla's own `error` text, no network, or an
+  answer Python couldn't use).
 - `format.statusWithWarnings` appends them to the success message as kind
   `'warning'`: amber (`.status-warning`) and, unlike `'input'`/`'error'`,
   not cleared on a timer.
@@ -1175,9 +1280,9 @@ It touches the app in exactly three places:
 
 | Suite           | Location                            | Covers                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 |-----------------|-------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| pytest, `core/` | `tests/core/`, `tests/core/pacing/` | every `core` module, plus `test_bridge_core_files.py` (every `core/` file is in `pyodideBridge.js`'s `CORE_FILES`). Shared track builders live in `tests/core/conftest.py`                                                                                                                                                                                                                                                                            |
+| pytest, `core/` | `tests/core/`, `tests/core/pacing/` | every `core` module, including `bridge_api` (`test_bridge_api.py`: each call's result shape and the route kept between calls), plus `test_bridge_core_files.py` (every `core/` file is in `pyodideBridge.js`'s `CORE_FILES`). Shared track builders live in `tests/core/conftest.py`                                                                                                                                                                                                                                                                            |
 | pytest, harness | `tests/tuning/`                     | see [TUNING_ARCHITECTURE.md §13](TUNING_ARCHITECTURE.md#13-tests)                                                                                                                                                                                                                                                                                                                                                                                     |
-| node, GUI       | `tests/gui/*.test.js`               | `format`, `dateTimeField`, `timeInput`, `markerList`, `activityWindow`, `anchors` + `stops` (`anchorsAndStops`: the activity-window re-check and `getActive*()`, with `map.js` mocked), `photoAnchors` (incl. `initPhotoDrop`'s per-status rows, the missing-location/missing-time split, thumbnails and both pickers), `photoPlacement` (the pending "Place on map" photo and its time pre-fill), `anchorOrder` (the time-order rule for a photo's point), `pyodideBridge` (against a fake Pyodide), `shortcuts`, `profileChart`, `devices`, `devicePickerNav` (`moveFocusIndex`), `glass`, `rangeFill`, `mobileLayout`. `testUtils/domSetup.js` sets up jsdom |
+| node, GUI       | `tests/gui/<folder>/*.test.js`      | `format`, `dateTimeField`, `timeInput`, `markerList` (incl. the window re-check, `getActive`, `countInactive`), `activityWindow`, `anchors` + `stops` (`anchorsAndStops`: the activity-window re-check and `getActive*()`, with `map.js` mocked), `photoAnchors` (incl. `initPhotoDrop`'s per-status rows, the missing-location/missing-time split, thumbnails and both pickers), `photoPlacement` (the pending "Place on map" photo and its time pre-fill), `anchorOrder` (the time-order rule for a photo's point), `pyodideBridge` (against a fake Pyodide and a fake `bridge_api` that checks every proxy is destroyed), `shortcuts`, `profileChart`, `devices`, `devicePickerNav` (`moveFocusIndex`), `glass`, `rangeFill`, `mobileLayout`, `appState`, `status`, `settings`, and the shared helpers `segmented`, `focusDropdown`, `numericInput`, `dropzone`, `dates`, `storage`. `testUtils/domSetup.js` sets up jsdom |
 | untested        | none                                | `map.js`, `anchorPopovers.js`, `profilePanel.js`, `main.js` (Leaflet and popover UI), plus the row/pin rendering side of `anchors.js`/`stops.js`, which have to be checked by hand in a browser                                                                                                                                                                                                                                                       |
 
 ---
@@ -1186,6 +1291,9 @@ It touches the app in exactly three places:
 
 **Adding a module under `core/`**
 - Add it to `CORE_FILES` in `pyodideBridge.js` (`tests/core/test_bridge_core_files.py` fails until you do).
+- If the GUI needs to call it, add a function to `bridge_api.py` (with a
+  test) and one export to `pyodideBridge.js` that `callBridge`s it. Don't
+  run Python source from JS.
 - Keep it free of I/O and native extensions.
 - Use `models.py` types.
 
@@ -1206,14 +1314,25 @@ It touches the app in exactly three places:
 - Add the sport to every `SportType`-keyed table: `TOBLER_THRESHOLDS`,
   `MAX_SPEED_RATIO_BOUNDS`, `MAX_ACCELERATION_MPS2` and `surface_weights.json`.
 - Update the sport mapping in `fit_writer`.
-- Add a segment in the GUI's sport control and update `sportEnumName` in
-  `main.js`.
+- Add a segment in the GUI's sport control whose `data-value` is the
+  `SportType` value (`bridge_api` reads the sport as `SportType(value)`).
 - Cycling also needs its own speed model in `gradient.py`.
+
+**Adding a GUI module**
+- Put it in the `js/` folder for its concern (§2), and its test in the
+  matching `tests/gui/` folder. Only `main.js` and `config.js` sit at the
+  root of `js/`: the deploy's build command writes `gui/js/config.js`.
+- Add it to the graph in §7.1 and, if small, to §7.4.
+
+**Adding shared GUI state**
+- Add it to `appState.js` (a getter and a setter), not as a variable in
+  `main.js`, and pass `appState` to the module that reads it.
 
 **Adding a keyboard shortcut**
 - Add one entry to `SHORTCUTS` in `shortcuts.js`. It should `.click()` an
   existing control.
 
 **Adding a persisted setting**
-- Wrap the `localStorage` access in try/catch.
+- Read and write it through `storage.js`, and validate what you read. A
+  conversion setting goes in `settings.js`, with a test.
 - Update the "Only four settings" line in `about.html#privacy`.

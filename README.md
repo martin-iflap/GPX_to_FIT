@@ -132,7 +132,7 @@ Then open <http://localhost:8000/src/gpx2fit/gui/index.html>.
 
 Serve a folder that contains both `gui/` and `core/` (the repository root or
 `src/gpx2fit/`), not the `gui/` folder alone. At startup the browser fetches
-the Python sources from `../../core/…`, relative to `gui/js/`. That is also
+the Python sources from `../../../core/…`, relative to `gui/js/bridge/`. That is also
 why opening `index.html` directly from disk (`file://`) won't work. The first
 load takes a few seconds while Pyodide and the Python packages download.
 

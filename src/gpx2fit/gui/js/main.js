@@ -1,25 +1,31 @@
-// App entry point: wires DOM elements to the other modules and owns the
-// small bits of state (parsed route, chosen sport, chosen start time) that
-// several of them need to read. Anything that grows into its own concern
-// (theme, anchor-popover UI) gets split into its own module rather than
-// growing this file — see theme.js and anchorPopovers.js.
+// App entry point: wires DOM elements to the other modules, creates the
+// shared app state (appState.js) they read, and runs the two flows that
+// touch everything: loading a GPX and converting. Anything that grows into
+// its own concern (the status line, remembered settings, anchor-popover UI)
+// gets split into its own module rather than growing this file.
 
-import { parseGpx, convert, resolvePhotoAnchors } from './pyodideBridge.js';
-import * as mapModule from './map.js';
-import { createTimeToggle } from './timeInput.js';
-import { createDateTimeField } from './dateTimeField.js';
-import * as anchorsModule from './anchors.js';
-import * as stopsModule from './stops.js';
-import { effectiveStopTimes } from './activityWindow.js';
-import { initTheme } from './theme.js';
-import { initGlass } from './glass.js';
-import { initCenterBiasedRange } from './rangeFill.js';
-import { initShortcuts } from './shortcuts.js';
-import { initDevicePicker } from './devicePicker.js';
-import { createAnchorPlacer } from './anchorPopovers.js';
-import { initPhotoDrop, resetPhotoDrop } from './photoAnchors.js';
-import { initProfilePanel, showProfile, hideProfile } from './profilePanel.js';
-import { coveredMapHeight, initMobileLayout, revealMap } from './mobileLayout.js';
+import {
+  parseGpx, convert, resolveAnchorCandidates, resolvePhotoAnchors, warmUpPyodide,
+} from './bridge/pyodideBridge.js';
+import * as mapModule from './route/map.js';
+import { createAppState } from './state/appState.js';
+import { createStatus } from './shell/status.js';
+import { initSmoothnessSetting, initSurfaceLookupSetting } from './state/settings.js';
+import { createTimeToggle } from './inputs/timeInput.js';
+import { createDateTimeField } from './inputs/dateTimeField.js';
+import * as anchorsModule from './route/anchors.js';
+import * as stopsModule from './route/stops.js';
+import { effectiveStopTimes } from './route/activityWindow.js';
+import { initTheme } from './shell/theme.js';
+import { initGlass } from './shell/glass.js';
+import { initShortcuts } from './shell/shortcuts.js';
+import { initDevicePicker } from './devices/devicePicker.js';
+import { createAnchorPlacer } from './placement/anchorPopovers.js';
+import { initPhotoDrop, resetPhotoDrop } from './placement/photoAnchors.js';
+import { wireDropzone } from './inputs/dropzone.js';
+import { wireSegmented } from './inputs/segmented.js';
+import { initProfilePanel, showProfile, hideProfile } from './profile/profilePanel.js';
+import { coveredMapHeight, initMobileLayout, revealMap } from './shell/mobileLayout.js';
 import {
   describeError,
   fitFileNameFromGpx,
@@ -27,7 +33,7 @@ import {
   formatFileSize,
   leftOutNote,
   statusWithWarnings,
-} from './format.js';
+} from './util/format.js';
 
 const dropzone = document.getElementById('dropzone');
 const gpxFileInput = document.getElementById('gpxFileInput');
@@ -73,21 +79,25 @@ const profileShowButtonEl = document.getElementById('profileShowButton');
 const mapPanelEl = document.getElementById('mapPanel');
 const sidebarEl = document.getElementById('sidebar');
 
-// Route data from the most recently parsed GPX file, and the current values
-// of the sport/start-time controls. Read by the convert handler and by the
-// anchor placer (via the getters passed to createAnchorPlacer below).
-let routePoints = null;
-let totalDistance = null;
-// Name of the GPX file behind routePoints, used to name the FIT download after
-// it. Set only once a parse succeeds, so a failed upload can't rename the
-// output of the route that is still loaded.
-let gpxFileName = null;
-let sportValue = 'hiking';
-let startTimeResult = { isValid: false };
+// The parsed route, the sport and the start time, read by the convert
+// handler, the anchor placer and the photo drop.
+const appState = createAppState({
+  sport: sportControlEl.querySelector('.segmented-option.is-active')?.dataset.value,
+});
+const setStatus = createStatus(statusEl);
 
 anchorsModule.initAnchorList(anchorListEl, anchorEmptyStateEl);
 stopsModule.initStopList(stopListEl, stopEmptyStateEl);
+// Every placed anchor and stop is re-checked against a new start–end at
+// once, so one that no longer fits shows as inactive now rather than failing
+// the conversion later.
+appState.onWindowChange((activityWindow) => {
+  anchorsModule.setActivityWindow(activityWindow);
+  stopsModule.setActivityWindow(activityWindow);
+});
 mapModule.initMap('map');
+// Every visitor uploads a GPX next, so start loading Python now.
+warmUpPyodide();
 initTheme(themeToggle);
 initGlass();
 initProfilePanel({
@@ -127,122 +137,21 @@ initShortcuts({
   profileShowButton: profileShowButtonEl,
 });
 
-/* ---------- status ---------- */
+/* ---------- remembered settings ---------- */
 
-const STATUS_ERROR_TIMEOUT_MS = 10000;
-let statusTimeoutId = null;
-
-/**
- * Updates the status line.
- *
- * @param {string} message
- * @param {'error'|'input'|'warning'|false} [kind] - `'error'` for an unexpected/
- *   internal failure (styled red — see describeError in format.js), `'input'`
- *   for a problem traceable to something the user entered or hasn't set up
- *   yet (styled amber, so it visibly reads as "fix this" rather than "this
- *   app is broken"), `'warning'` for a step that succeeded with a caveat
- *   (also amber; see statusWithWarnings in format.js), or omitted/false for a
- *   normal, non-error status.
- *
- * Errors are transient nudges, not permanent state, so they clear themselves
- * after a few seconds instead of sitting there until the next unrelated
- * status update happens to overwrite them. A warning stays: it explains the
- * route or file the user is looking at, and is gone with the next status.
- */
-function setStatus(message, kind = false) {
-  statusEl.textContent = message;
-  statusEl.classList.toggle('status-error', kind === 'error');
-  statusEl.classList.toggle('status-input', kind === 'input');
-  statusEl.classList.toggle('status-warning', kind === 'warning');
-
-  if (statusTimeoutId) {
-    clearTimeout(statusTimeoutId);
-    statusTimeoutId = null;
-  }
-  if (kind === 'error' || kind === 'input') {
-    statusTimeoutId = setTimeout(() => {
-      statusEl.textContent = 'Ready.';
-      statusEl.classList.remove('status-error', 'status-input');
-      statusTimeoutId = null;
-    }, STATUS_ERROR_TIMEOUT_MS);
-  }
-}
-
-/* ---------- sport segmented control ---------- */
-
-sportControlEl.querySelectorAll('.segmented-option').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    sportControlEl.querySelectorAll('.segmented-option').forEach((b) => {
-      b.classList.toggle('is-active', b === btn);
-      b.setAttribute('aria-selected', String(b === btn));
-    });
-    sportValue = btn.dataset.value;
-    // The avg-speed mode's default unit follows the sport (min/km for
-    // running, km/h otherwise) until the user picks one themselves.
-    startTimeToggle.refresh();
-  });
-});
-
-/* ---------- surface lookup toggle ---------- */
-
-// The one setting that sends route data off the device (to Valhalla), so the
-// user's choice is remembered across visits. Storage can throw or come back
-// empty (private window, blocked site data); then it's just on by default.
-const SURFACE_LOOKUP_STORAGE_KEY = 'surfaceLookup';
-
-try {
-  if (localStorage.getItem(SURFACE_LOOKUP_STORAGE_KEY) === 'off') {
-    surfaceLookupToggleEl.checked = false;
-  }
-} catch {
-  // Keep the default.
-}
-
-surfaceLookupToggleEl.addEventListener('change', () => {
-  try {
-    localStorage.setItem(SURFACE_LOOKUP_STORAGE_KEY, surfaceLookupToggleEl.checked ? 'on' : 'off');
-  } catch {
-    // Not remembered this time; the checkbox itself still applies.
-  }
-});
-
-/* ---------- pace smoothness slider ---------- */
-
-// Remembered like the surface toggle: someone who prefers a smoother (or
-// rougher) pace likely wants it for every route. The slider's own min/max
-// bound the value, so only a stored value inside them is restored.
-const SMOOTHNESS_STORAGE_KEY = 'smoothness';
-
-try {
-  const stored = Number(localStorage.getItem(SMOOTHNESS_STORAGE_KEY));
-  if (Number.isInteger(stored) && stored >= Number(smoothnessSliderEl.min) && stored <= Number(smoothnessSliderEl.max)) {
-    smoothnessSliderEl.value = String(stored);
-  }
-} catch {
-  // Keep the default.
-}
-smoothnessValueEl.textContent = smoothnessSliderEl.value;
-// The fill grows out of the HTML default (5 = automatic), not the left end.
-initCenterBiasedRange(smoothnessSliderEl, Number(smoothnessSliderEl.defaultValue));
-
-smoothnessSliderEl.addEventListener('input', () => {
-  smoothnessValueEl.textContent = smoothnessSliderEl.value;
-});
-
-smoothnessSliderEl.addEventListener('change', () => {
-  try {
-    localStorage.setItem(SMOOTHNESS_STORAGE_KEY, smoothnessSliderEl.value);
-  } catch {
-    // Not remembered this time; the slider itself still applies.
-  }
-});
+initSurfaceLookupSetting(surfaceLookupToggleEl);
+initSmoothnessSetting(smoothnessSliderEl, smoothnessValueEl);
 
 /* ---------- start time control ---------- */
 
 function updateConvertAvailability() {
-  runButton.disabled = !(routePoints && startTimeResult.isValid);
+  runButton.disabled = !(appState.route && appState.timeResult.isValid);
 }
 
+// The field and the toggle refer to each other: the toggle measures from the
+// field's value, and the field refreshes the toggle. The field is built first,
+// which is safe because createDateTimeField never calls onChange while it is
+// being built, only on a later edit or setValue (by then the toggle exists).
 const startTimeField = createDateTimeField({
   container: startTimeFieldEl,
   dateAriaLabel: 'Start date',
@@ -250,6 +159,9 @@ const startTimeField = createDateTimeField({
   onChange: () => startTimeToggle.refresh(),
 });
 
+// The field's value as it is now. appState.startTime only catches up once the
+// toggle reports, so anything the toggle itself calls while working out its
+// result (the reference time, the stop total) reads the field.
 function getStartTime() {
   return startTimeField.getValue();
 }
@@ -278,20 +190,14 @@ const startTimeToggle = createTimeToggle({
   variant: 'durationOrEnd',
   getReferenceTime: getStartTime,
   speedMode: {
-    getTotalDistance: () => totalDistance,
+    getTotalDistance: () => appState.route?.totalDistance ?? null,
     getStopSeconds: totalStopSeconds,
-    getSport: () => sportValue,
+    getSport: () => appState.sport,
   },
   onChange: (result) => {
-    startTimeResult = result;
+    // Re-checks the anchors and stops too, if the window moved (see onWindowChange above).
+    appState.setTime(getStartTime(), result);
     updateConvertAvailability();
-    // Every placed anchor and stop is re-checked against the new start–end
-    // at once, so one that no longer fits shows as inactive now rather than
-    // failing the conversion later.
-    const start = getStartTime();
-    const activityWindow = result.isValid && start ? { start, end: result.resolvedDate } : null;
-    anchorsModule.setActivityWindow(activityWindow);
-    stopsModule.setActivityWindow(activityWindow);
   },
 });
 
@@ -302,12 +208,25 @@ stopsModule.setStopsChangeListener(() => startTimeToggle.refresh());
 startTimeField.setValue(new Date(Date.now() + 60_000));
 startTimeToggle.refresh();
 
+/* ---------- sport segmented control ---------- */
+
+// After the start-time toggle, which a sport change refreshes.
+wireSegmented(sportControlEl, (sport) => {
+  appState.setSport(sport);
+  // The avg-speed mode's default unit follows the sport (min/km for
+  // running, km/h otherwise) until the user picks one themselves.
+  startTimeToggle.refresh();
+});
+
 /* ---------- anchor placement ---------- */
 
 const anchorPlacer = createAnchorPlacer({
-  getStartTime,
-  getStartTimeResult: () => startTimeResult,
-  getTotalDistance: () => totalDistance,
+  appState,
+  anchors: anchorsModule,
+  stops: stopsModule,
+  map: mapModule,
+  resolveAnchorCandidates,
+  revealMap,
   setStatus,
   placementBannerEl: document.getElementById('photoPlacementBanner'),
 });
@@ -324,9 +243,7 @@ initPhotoDrop({
   listEl: photoListEl,
   emptyStateEl: photoEmptyStateEl,
   summaryEl: document.getElementById('photoSummary'),
-  isTrackReady: () => routePoints !== null,
-  getStartTime,
-  getStartTimeResult: () => startTimeResult,
+  appState,
   resolvePhotoAnchors,
   addAnchor: anchorsModule.addAnchor,
   placePhoto: anchorPlacer.placePhoto,
@@ -343,8 +260,6 @@ async function handleFile(file) {
   }
   try {
     setStatus('Parsing GPX…');
-    fileNameEl.textContent = file.name;
-    fileNameEl.hidden = false;
 
     const bytes = new Uint8Array(await file.arrayBuffer());
     const { points, summary, warnings } = await parseGpx(bytes);
@@ -357,9 +272,11 @@ async function handleFile(file) {
     resetPhotoDrop();
     hideProfile();
 
-    routePoints = points;
-    totalDistance = summary.total_distance;
-    gpxFileName = file.name;
+    appState.setRoute({ points, totalDistance: summary.total_distance, fileName: file.name });
+    // Only now: a file that fails to parse leaves the previous route loaded,
+    // and it should still show that route's name.
+    fileNameEl.textContent = file.name;
+    fileNameEl.hidden = false;
 
     summaryDistanceEl.textContent = formatDistanceKm(summary.total_distance);
     summaryElevationEl.textContent = `${Math.round(summary.total_elevation_gain)} m`;
@@ -386,44 +303,22 @@ async function handleFile(file) {
   updateConvertAvailability();
 }
 
-dropzone.addEventListener('click', () => gpxFileInput.click());
-dropzone.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter' || event.key === ' ') {
-    event.preventDefault();
-    gpxFileInput.click();
-  }
-});
 // handleFile is async but fire-and-forget here: it reports its own errors via
 // setStatus and never rejects, so there's nothing for the caller to await.
-gpxFileInput.addEventListener('change', () => {
-  const file = gpxFileInput.files[0];
-  // Cleared so that choosing the same file again (e.g. to start over) still
-  // fires 'change'. The File object stays readable after this.
-  gpxFileInput.value = '';
-  void handleFile(file);
-});
-
-['dragenter', 'dragover'].forEach((eventName) => {
-  dropzone.addEventListener(eventName, (event) => {
-    event.preventDefault();
-    dropzone.classList.add('is-dragover');
-  });
-});
-['dragleave', 'drop'].forEach((eventName) => {
-  dropzone.addEventListener(eventName, (event) => {
-    event.preventDefault();
-    dropzone.classList.remove('is-dragover');
-  });
-});
-dropzone.addEventListener('drop', (event) => {
-  const file = event.dataTransfer.files && event.dataTransfer.files[0];
-  void handleFile(file);
-});
+wireDropzone(dropzone, gpxFileInput, (files) => void handleFile(files[0]));
 
 /* ---------- convert ---------- */
 
 runButton.addEventListener('click', async () => {
-  if (!startTimeResult.isValid || !routePoints) {
+  // Re-resolved here rather than reusing appState.timeResult: in
+  // avg-speed mode the duration is derived from the route and the stop list,
+  // so this is the one place guaranteed to be reading them as they are right
+  // now. getResult() is pure — it only re-reads the fields.
+  const resolvedTime = startTimeToggle.getResult();
+  if (!resolvedTime.isValid || !appState.route) {
+    // The cached result was stale; re-render it so the button and preview
+    // say why, instead of starting a conversion that can't run.
+    startTimeToggle.refresh();
     return;
   }
 
@@ -440,15 +335,6 @@ runButton.addEventListener('click', async () => {
 
   try {
     setStatus('Converting…');
-    // Re-resolved here rather than reusing the cached startTimeResult: in
-    // avg-speed mode the duration is derived from the route and the stop
-    // list, so this is the one place guaranteed to be reading them as they
-    // are right now. getResult() is pure — it only re-reads the fields.
-    const resolvedTime = startTimeToggle.getResult();
-    if (!resolvedTime.isValid) {
-      return;
-    }
-    const sportEnumName = sportValue === 'running' ? 'RUNNING' : 'HIKING';
     // Only the anchors and stops inside the current start–end; the rest stay
     // in their lists, marked inactive, and are reported below.
     const anchorsPayload = anchorsModule.getActiveAnchors().map((a) => ({
@@ -463,12 +349,14 @@ runButton.addEventListener('click', async () => {
       endIso: s.mode === 'startEnd' ? s.departure.toISOString() : undefined,
     }));
 
-    // Captured now, so flipping the sport toggle afterward can't relabel this run's chart.
-    const convertedSport = sportValue;
+    // Captured now, so flipping the sport toggle afterward can't relabel this
+    // run's chart, and a GPX loaded meanwhile can't rename its file.
+    const convertedSport = appState.sport;
+    const { fileName } = appState.route;
     const { fitBytes, profile, warnings } = await convert({
       startIso: startTimeField.getValue().toISOString(),
       durationSeconds: resolvedTime.durationSeconds,
-      sportEnumName,
+      sport: convertedSport,
       anchors: anchorsPayload,
       stops: stopsPayload,
       device: devicePicker.getConvertDevice(),
@@ -478,7 +366,7 @@ runButton.addEventListener('click', async () => {
 
     const blob = new Blob([fitBytes], { type: 'application/octet-stream' });
     downloadLink.href = URL.createObjectURL(blob);
-    downloadLink.download = fitFileNameFromGpx(gpxFileName);
+    downloadLink.download = fitFileNameFromGpx(fileName);
     downloadLink.hidden = false;
     downloadLink.textContent = `Download FIT (${formatFileSize(blob.size)})`;
     showProfile(profile, convertedSport);

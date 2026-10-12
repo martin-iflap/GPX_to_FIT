@@ -42,7 +42,7 @@
         </div>
 
         <!-- Slides up over the bottom of the map (rather than shrinking it)
-             once js/profilePanel.js adds .has-profile to #appShell. -->
+             once js/profile/profilePanel.js adds .has-profile to #appShell. -->
         <section id="profilePanel" class="profile-panel" aria-label="Activity profile" aria-hidden="true" inert>
           <header class="profile-panel-header">
             <!-- Legend items double as show/hide toggles for their series. -->
@@ -120,7 +120,7 @@
               </svg>
             </button>
             <button id="themeToggle" class="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
-            <!-- Panel itself is built by js/shortcuts.js, like #startTimeToggle. -->
+            <!-- Panel itself is built by js/shell/shortcuts.js, like #startTimeToggle. -->
             <div id="shortcutsPanel"></div>
           </div>
         </header>
@@ -336,7 +336,6 @@
     </dialog>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="https://cdn.jsdelivr.net/pyodide/v0.27.3/full/pyodide.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/full.umd.min.js"></script>
     <script type="module" src="js/main.js"></script>
   </body>
