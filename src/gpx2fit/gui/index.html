@@ -75,6 +75,14 @@
           <div id="profileChart" class="profile-chart-area"></div>
         </section>
 
+        <!-- Shown while a photo waits to be placed by hand (anchorPopovers.js):
+             which photo, what to do, and a way out. -->
+        <div id="photoPlacementBanner" class="placement-banner" role="status" hidden>
+          <img class="placement-banner-thumb" alt="" hidden />
+          <span class="placement-banner-text"></span>
+          <button type="button" class="placement-banner-cancel">Cancel</button>
+        </div>
+
         <!-- Shown only while a profile exists but the panel is hidden. -->
         <button id="profileShowButton" type="button" class="profile-show-button" hidden>
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -232,12 +240,23 @@
               <span class="control-label">Photos</span>
             </div>
             <div id="photoDropzone" class="dropzone" tabindex="0">
-              <input id="photoFileInput" type="file" accept="image/*" multiple class="visually-hidden" />
+              <!-- The made-up application/x-gpx2fit-photo type is deliberate: when
+                   every accepted type is an image, Chrome on Android opens the
+                   system Photo Picker, which strips the GPS position and renames
+                   the file to a number. One non-image type makes it open the
+                   file chooser instead, which keeps them. (Not
+                   application/octet-stream: that drops the image filter.) -->
+              <input id="photoFileInput" type="file" accept="image/*,.heic,.heif,application/x-gpx2fit-photo" multiple class="visually-hidden" />
               <div class="dropzone-content">
                 <span class="dropzone-icon">📷</span>
                 <p class="dropzone-text"><span class="copy-pointer">Drag &amp; drop photos, or <span class="dropzone-link">browse</span></span><span class="copy-touch"><span class="dropzone-link">Tap to add photos</span></span></p>
               </div>
             </div>
+            <!-- The phone's gallery picker, for photos that are only there: it
+                 removes the location, so those photos get placed on the map by
+                 hand (photoAnchors.js). -->
+            <input id="photoGalleryInput" type="file" accept="image/*" multiple class="visually-hidden" />
+            <p class="photo-gallery-hint"><span class="copy-touch">Can't find them? <button id="photoGalleryLink" type="button" class="photo-gallery-link">Pick from the gallery</button> instead. The gallery removes the location, so you'll tap each photo's spot on the map.</span></p>
             <ul id="photoList" class="anchor-list"></ul>
             <p id="photoEmptyState" class="anchor-empty">No photos yet — geotagged photos become anchors automatically. <a href="about.html#photos" target="_blank" rel="opener">How it works</a></p>
           </section>

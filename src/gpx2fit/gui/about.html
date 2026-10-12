@@ -127,15 +127,35 @@
         </p>
         <h3>When a photo is skipped</h3>
         <ul>
-          <li><strong>No location/timestamp data.</strong> The photo has no GPS position or capture time. This is common with screenshots, photos shared over messaging apps (which strip metadata) and cameras without GPS.</li>
-          <li><strong>Outside the activity's time.</strong> It was taken more than 15&nbsp;minutes before the start or after the end you entered.</li>
+          <li><strong>No location.</strong> The photo has a capture time but no GPS position. Phones usually remove it when a photo is shared (see below), and some cameras have no GPS. The photo isn't lost: press <strong>Place on map</strong> on its row, tap the route where you took it, then <strong>Place photo here</strong>. The anchor gets the photo's own time, to the second.</li>
+          <li><strong>No capture time.</strong> Without a time a photo can't be an anchor, even if it knows where it was taken. Screenshots and photos sent through messaging apps often have none.</li>
           <li><strong>Too far from route.</strong> It was taken more than 150&nbsp;m from the route.</li>
+          <li><strong>At the route's start or finish.</strong> Your start and end time already cover that point.</li>
         </ul>
+        <p>A photo taken before the start or after the end you entered is still added as an anchor, but it's dimmed and not used. It's checked again whenever you change the start time or duration, and it's used as soon as it falls between them.</p>
+        <p>If a photo's pin landed in the wrong spot (phone GPS can be tens of metres off), drag it along the route. It only moves once you confirm, and its time never changes.</p>
+        <h3>Photos from a phone</h3>
+        <p>
+          Phones protect your location by removing it from photos on the way out. On Android, the gallery picker,
+          email, Bluetooth, Quick Share and messaging apps all strip it. The capture time usually survives. This happens
+          on the phone, before the browser ever sees the photo, so this page can't get it back. Some ways to keep it:
+        </p>
+        <ul>
+          <li><strong>Use the main "Tap to add photos" button.</strong> It opens the phone's file chooser rather than the
+            gallery. Browse to the camera folder (usually <em>DCIM/Camera</em>). The file chooser normally hands the photo
+            over unchanged, location included, and with its real file name. If a photo still says "No location", place it
+            on the map.</li>
+          <li><strong>Copy the photos to a computer by cable</strong> and add them there. That always keeps everything.</li>
+          <li>On an iPhone, check the photo picker's <em>Options</em> for a location setting and leave it on.</li>
+        </ul>
+        <p>
+          The "Pick from the gallery" link under the button opens the gallery anyway, for photos that are only there.
+          Each of those photos then needs placing on the map by hand.
+        </p>
         <h3>Tips</h3>
         <ul>
           <li>Phone photos work best, since they save GPS and an accurate time automatically.</li>
           <li>If every photo shows up as "outside the activity's time", check the camera's clock and time zone.</li>
-          <li>Set the start time and duration before adding photos, since they're checked against them.</li>
         </ul>
       </section>
 

@@ -5,6 +5,7 @@ import {
   describeError,
   fitFileNameFromGpx,
   formatClock,
+  formatClockSeconds,
   formatDateTime,
   formatDistanceKm,
   formatDuration,
@@ -31,6 +32,13 @@ describe('formatClock', () => {
   it('formats hours and minutes as 24h HH:MM', () => {
     assert.equal(formatClock(new Date(2024, 0, 1, 9, 5)), '09:05');
     assert.equal(formatClock(new Date(2024, 0, 1, 23, 59)), '23:59');
+  });
+});
+
+describe('formatClockSeconds', () => {
+  it('formats a 24h HH:MM:SS, zero-padding each part', () => {
+    assert.equal(formatClockSeconds(new Date(2024, 0, 1, 9, 5, 7)), '09:05:07');
+    assert.equal(formatClockSeconds(new Date(2024, 0, 1, 23, 59, 59)), '23:59:59');
   });
 });
 

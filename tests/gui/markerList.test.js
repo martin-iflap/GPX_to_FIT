@@ -14,6 +14,7 @@ const mapCallLog = [];
 const mapMocks = {
   addMarker: mock.fn(),
   removeMarker: mock.fn(),
+  moveMarker: mock.fn(),
   renumberMarkers: mock.fn(() => mapCallLog.push('renumberMarkers')),
   panToMarker: mock.fn(),
   highlightMarker: mock.fn(),
@@ -24,13 +25,14 @@ mock.module('../../src/gpx2fit/gui/js/map.js', { namedExports: mapMocks });
 
 const { createMarkerList } = await import('../../src/gpx2fit/gui/js/markerList.js');
 
-function mount({ idOffset, isInactive, renderRowText = () => [] } = {}) {
+function mount({ idOffset, isInactive, isDraggable, renderRowText = () => [] } = {}) {
   const list = createMarkerList({
     idOffset,
     markerKind: () => 'anchor',
     deleteAriaLabel: 'Remove',
     renderRowText,
     isInactive,
+    isDraggable,
   });
   const listEl = document.createElement('ul');
   const emptyEl = document.createElement('p');
@@ -245,6 +247,169 @@ describe('createMarkerList', () => {
       const id = list.add({ lat: 1, lon: 1, distanceFromStart: 10 });
       list.remove(id);
       assert.deepEqual(list.getAll(), []);
+    });
+
+    it('fires on move', () => {
+      const { list } = mount();
+      const id = list.add({ lat: 1, lon: 1, distanceFromStart: 10 });
+      let calls = 0;
+      list.setChangeListener(() => {
+        calls += 1;
+      });
+      list.move(id, { lat: 2, lon: 2, distanceFromStart: 20 });
+      assert.equal(calls, 1);
+    });
+  });
+
+  describe('onRemove hook', () => {
+    it('runs once when its item is removed, after the list has dropped it', () => {
+      const { list } = mount();
+      let seenLength = null;
+      let calls = 0;
+      const id = list.add({ lat: 1, lon: 1, distanceFromStart: 10 }, {
+        onRemove: () => {
+          calls += 1;
+          seenLength = list.getAll().length;
+        },
+      });
+      list.remove(id);
+      list.remove(id);
+
+      assert.equal(calls, 1);
+      assert.equal(seenLength, 0);
+    });
+
+    it('runs from the row\'s own delete button', () => {
+      const { list, listEl } = mount();
+      let calls = 0;
+      const id = list.add({ lat: 1, lon: 1, distanceFromStart: 10 }, { onRemove: () => { calls += 1; } });
+      listEl.querySelector(`.anchor-row[data-id="${id}"] .anchor-row-delete`).click();
+
+      assert.equal(calls, 1);
+    });
+
+    it('runs only for the removed item', () => {
+      const { list } = mount();
+      const calls = [];
+      const a = list.add({ lat: 1, lon: 1, distanceFromStart: 10 }, { onRemove: () => calls.push('a') });
+      list.add({ lat: 2, lon: 2, distanceFromStart: 20 }, { onRemove: () => calls.push('b') });
+      list.remove(a);
+
+      assert.deepEqual(calls, ['a']);
+    });
+
+    it('does not run on reset, nor for an item added after it', () => {
+      const { list } = mount();
+      let calls = 0;
+      list.add({ lat: 1, lon: 1, distanceFromStart: 10 }, { onRemove: () => { calls += 1; } });
+      list.reset();
+      const later = list.add({ lat: 2, lon: 2, distanceFromStart: 20 });
+      list.remove(later);
+
+      assert.equal(calls, 0);
+    });
+
+    it('never reaches getAll', () => {
+      const { list } = mount();
+      list.add({ lat: 1, lon: 1, distanceFromStart: 10 }, { onRemove: () => {} });
+
+      assert.deepEqual(Object.keys(list.getAll()[0]).sort(), ['distanceFromStart', 'id']);
+    });
+  });
+
+  describe('move', () => {
+    it('moves the pin, takes the new distance and re-sorts and renumbers', () => {
+      const { list } = mount();
+      const a = list.add({ lat: 1, lon: 1, distanceFromStart: 100 });
+      const b = list.add({ lat: 2, lon: 2, distanceFromStart: 200 });
+      list.move(a, { lat: 3, lon: 4, distanceFromStart: 300 });
+
+      assert.deepEqual(mapMocks.moveMarker.mock.calls.at(-1).arguments, [a, 3, 4]);
+      assert.deepEqual(list.getAll().map((i) => [i.id, i.distanceFromStart]), [[b, 200], [a, 300]]);
+      assert.deepEqual(mapMocks.renumberMarkers.mock.calls.at(-1).arguments[0], [b, a]);
+    });
+
+    it('keeps the item\'s other fields', () => {
+      const { list } = mount();
+      const id = list.add({ lat: 1, lon: 1, distanceFromStart: 100, source: 'photo' });
+      list.move(id, { lat: 2, lon: 2, distanceFromStart: 150 });
+
+      assert.equal(list.getAll()[0].source, 'photo');
+    });
+
+    it('ignores an unknown id', () => {
+      const { list } = mount();
+      list.add({ lat: 1, lon: 1, distanceFromStart: 100 });
+      list.move(999, { lat: 2, lon: 2, distanceFromStart: 150 });
+
+      assert.equal(mapMocks.moveMarker.mock.callCount(), 0);
+      assert.equal(list.getAll()[0].distanceFromStart, 100);
+    });
+  });
+
+  describe('draggable pins', () => {
+    function markerOptions(id) {
+      return mapMocks.addMarker.mock.calls.find((c) => c.arguments[0] === id).arguments[4];
+    }
+
+    it('asks isDraggable per item', () => {
+      const { list } = mount({ isDraggable: (item) => item.source === 'photo' });
+      const photo = list.add({ lat: 1, lon: 1, distanceFromStart: 10, source: 'photo' });
+      const user = list.add({ lat: 2, lon: 2, distanceFromStart: 20, source: 'user' });
+
+      assert.equal(markerOptions(photo).draggable, true);
+      assert.equal(markerOptions(user).draggable, false);
+    });
+
+    it('is off without an isDraggable option', () => {
+      const { list } = mount();
+      const id = list.add({ lat: 1, lon: 1, distanceFromStart: 10 });
+
+      assert.equal(markerOptions(id).draggable, false);
+    });
+
+    it('hands a drop to the drag-end listener with a copy of the current item and the revert', () => {
+      const { list } = mount({ isDraggable: () => true });
+      const id = list.add({ lat: 1, lon: 1, distanceFromStart: 10, source: 'photo' });
+      list.move(id, { lat: 1, lon: 1, distanceFromStart: 15 });
+      const received = [];
+      list.setDragEndListener((...args) => received.push(args));
+      const revert = mock.fn();
+      markerOptions(id).onDragEnd(id, 5, 6, revert);
+
+      assert.equal(received.length, 1);
+      const [item, lat, lon, passedRevert] = received[0];
+      assert.deepEqual(item, { id, distanceFromStart: 15, source: 'photo' });
+      assert.equal(lat, 5);
+      assert.equal(lon, 6);
+      assert.equal(passedRevert, revert);
+      assert.equal(revert.mock.callCount(), 0);
+
+      item.distanceFromStart = 999;
+      assert.equal(list.getAll()[0].distanceFromStart, 15);
+    });
+
+    it('reverts the drop when there is no listener', () => {
+      const { list } = mount({ isDraggable: () => true });
+      const id = list.add({ lat: 1, lon: 1, distanceFromStart: 10 });
+      const revert = mock.fn();
+      markerOptions(id).onDragEnd(id, 5, 6, revert);
+
+      assert.equal(revert.mock.callCount(), 1);
+    });
+
+    it('reverts a drop of an item that is gone', () => {
+      const { list } = mount({ isDraggable: () => true });
+      const id = list.add({ lat: 1, lon: 1, distanceFromStart: 10 });
+      const listener = mock.fn();
+      list.setDragEndListener(listener);
+      const { onDragEnd } = markerOptions(id);
+      list.remove(id);
+      const revert = mock.fn();
+      onDragEnd(id, 5, 6, revert);
+
+      assert.equal(listener.mock.callCount(), 0);
+      assert.equal(revert.mock.callCount(), 1);
     });
   });
 });

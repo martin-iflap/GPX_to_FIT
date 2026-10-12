@@ -50,6 +50,8 @@ const stopListEl = document.getElementById('stopList');
 const stopEmptyStateEl = document.getElementById('stopEmptyState');
 const photoDropzoneEl = document.getElementById('photoDropzone');
 const photoFileInputEl = document.getElementById('photoFileInput');
+const photoGalleryInputEl = document.getElementById('photoGalleryInput');
+const photoGalleryLinkEl = document.getElementById('photoGalleryLink');
 const photoListEl = document.getElementById('photoList');
 const photoEmptyStateEl = document.getElementById('photoEmptyState');
 const runButton = document.getElementById('runButton');
@@ -307,13 +309,18 @@ const anchorPlacer = createAnchorPlacer({
   getStartTimeResult: () => startTimeResult,
   getTotalDistance: () => totalDistance,
   setStatus,
+  placementBannerEl: document.getElementById('photoPlacementBanner'),
 });
+// A dragged photo pin only moves once the user confirms where.
+anchorsModule.setAnchorDragEndListener(anchorPlacer.handleAnchorDrag);
 
 /* ---------- photo drop ---------- */
 
 initPhotoDrop({
   dropzoneEl: photoDropzoneEl,
   inputEl: photoFileInputEl,
+  galleryInputEl: photoGalleryInputEl,
+  galleryLinkEl: photoGalleryLinkEl,
   listEl: photoListEl,
   emptyStateEl: photoEmptyStateEl,
   isTrackReady: () => routePoints !== null,
@@ -322,6 +329,8 @@ initPhotoDrop({
   resolvePhotoAnchors,
   addAnchor: anchorsModule.addAnchor,
   removeAnchor: anchorsModule.removeAnchor,
+  placePhoto: anchorPlacer.placePhoto,
+  cancelPhotoPlacement: anchorPlacer.cancelPhotoPlacement,
   setStatus,
 });
 

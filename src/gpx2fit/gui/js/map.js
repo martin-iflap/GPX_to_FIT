@@ -49,6 +49,12 @@ const markers = new Map();
 let getBottomInset = () => 0;
 // The phone layout's stand-in for the Leaflet popup; see openAnchorPopup.
 let routeDialog = null;
+// The `onClose` of whatever openAnchorPopup last put in #routeDialog, until
+// it has run. See openRouteDialog.
+let routeDialogOnClose = null;
+// Set while a photo waits to be placed (setPlacementMode): the route then
+// shows where a tap would land.
+let placementMode = false;
 
 // Screen-pixel width of the invisible click target drawn on top of the
 // visible route line — the visible stroke (weight 4) is too thin to click
@@ -134,20 +140,61 @@ export function renderRoute(points, onRouteClick) {
   const latLngs = points.map((p) => [p.lat, p.lon]);
   const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#0088ff';
 
-  routeLine = L.polyline(latLngs, { color: accent, weight: 4, opacity: 0.9 }).addTo(map);
+  routeLine = L.polyline(latLngs, { color: accent, weight: 4, opacity: 0.9, className: 'route-line' }).addTo(map);
 
   routeHitLine = L.polyline(latLngs, {
     color: '#000',
     weight: ROUTE_HIT_WEIGHT,
     opacity: 0.001,
+    className: 'route-hit-line',
   }).addTo(map);
   routeHitLine.on('click', (event) => {
     L.DomEvent.stopPropagation(event);
     onRouteClick(event.latlng.lat, event.latlng.lng);
   });
+  // While placing a photo, the profile's hover dot shows the point on the
+  // line a click would pick (a mouse only: touch has no hover).
+  routeHitLine.on('mousemove', (event) => {
+    if (placementMode) {
+      const snapped = snapToRoute(event.latlng);
+      showHoverMarker(snapped.lat, snapped.lng);
+    }
+  });
+  routeHitLine.on('mouseout', () => {
+    if (placementMode) {
+      hideHoverMarker();
+    }
+  });
 
   map.invalidateSize();
   map.fitBounds(routeLine.getBounds(), { paddingTopLeft: [32, 32], paddingBottomRight: [32, 32 + getBottomInset()] });
+}
+
+/**
+ * The point on the drawn route nearest `latlng`, on screen. Only for where a
+ * pin or the hover dot sits while the pointer moves: the route point an
+ * anchor actually gets is still resolved in Python
+ * (`resolveAnchorCandidates`).
+ * @param {L.LatLng} latlng
+ * @returns {L.LatLng}
+ */
+function snapToRoute(latlng) {
+  const point = routeLine?.closestLayerPoint(map.latLngToLayerPoint(latlng));
+  return point ? map.layerPointToLatLng(point) : latlng;
+}
+
+/**
+ * Turns "a photo is waiting to be placed" on or off: a crosshair over the
+ * route, the route line pulsing (styles.css, `.is-placing`), and the hover
+ * dot following the pointer along it.
+ * @param {boolean} on
+ */
+export function setPlacementMode(on) {
+  placementMode = on;
+  map.getContainer().classList.toggle('is-placing', on);
+  if (!on) {
+    hideHoverMarker();
+  }
 }
 
 /** Shows (or moves) the dot marking the profile chart's hovered position on the route. */
@@ -214,20 +261,60 @@ function iconForKind(kind, number) {
  * Adds a numbered pin to the map — an anchor pin (round), a stop pin
  * (square), or a photo pin, depending on `kind`.
  *
+ * A `draggable` pin can only be dragged along the route: it snaps to the
+ * line on every move. Once dropped somewhere new, `onDragEnd` gets where,
+ * and a `revert()` that puts the pin back where the drag started; the pin
+ * stays at the drop point until the caller either reverts it or moves it
+ * properly (`moveMarker`). Without an `onDragEnd` every drop reverts.
+ *
  * @param {number} id - caller-assigned id (typically the anchor's/stop's id), used to look the marker back up
  * @param {number} lat
  * @param {number} lon
  * @param {number} number - the number drawn inside the pin
- * @param {{onClick?: (id: number) => void, kind?: 'anchor'|'stop'|'photo'}} [opts]
+ * @param {{
+ *   onClick?: (id: number) => void,
+ *   kind?: 'anchor'|'stop'|'photo',
+ *   draggable?: boolean,
+ *   onDragEnd?: (id: number, lat: number, lon: number, revert: () => void) => void,
+ * }} [opts]
  * @returns {L.Marker}
  */
-export function addMarker(id, lat, lon, number, { onClick, kind = 'anchor' } = {}) {
-  const marker = L.marker([lat, lon], { icon: iconForKind(kind, number) }).addTo(map);
+export function addMarker(id, lat, lon, number, { onClick, kind = 'anchor', draggable = false, onDragEnd } = {}) {
+  const marker = L.marker([lat, lon], {
+    icon: iconForKind(kind, number),
+    draggable,
+    title: draggable ? 'Drag along the route to move' : '',
+  }).addTo(map);
   if (onClick) {
     marker.on('click', () => onClick(id));
   }
+  if (draggable) {
+    let dragStart = null;
+    marker.on('dragstart', () => {
+      dragStart = L.latLng(marker.getLatLng());
+    });
+    marker.on('drag', (event) => marker.setLatLng(snapToRoute(event.latlng)));
+    marker.on('dragend', () => {
+      const start = dragStart;
+      const end = marker.getLatLng();
+      const revert = () => marker.setLatLng(start);
+      if (start.equals(end)) {
+        return;
+      }
+      if (onDragEnd) {
+        onDragEnd(id, end.lat, end.lng, revert);
+      } else {
+        revert();
+      }
+    });
+  }
   markers.set(id, { marker, kind });
   return marker;
+}
+
+/** Puts an existing pin somewhere else (an anchor that was moved), keeping its number. */
+export function moveMarker(id, lat, lon) {
+  markers.get(id)?.marker.setLatLng([lat, lon]);
 }
 
 /** Removes the pin with the given id, if one exists. */
@@ -300,13 +387,16 @@ export function setMarkerDimmed(id, dimmed) {
  *   popup against the map — call it after changing the content's size (e.g.
  *   the stop popover's width transition) so Leaflet doesn't leave it
  *   mis-anchored relative to its tip
+ * @param {{ onClose?: () => void }} [opts] - `onClose` runs once when this
+ *   content goes away, however that happens: its own `close()`, the popup's
+ *   ×, a click elsewhere, Esc, or another popup replacing it
  */
-export function openAnchorPopup(lat, lon, buildContent) {
+export function openAnchorPopup(lat, lon, buildContent, { onClose } = {}) {
   // On a phone a popup is squeezed into the part of the map above the sheet,
   // so the same content goes in a modal dialog instead. The builders only
   // ever see a container, close() and updateLayout(), so they don't change.
   if (isPhoneLayout()) {
-    openRouteDialog(buildContent);
+    openRouteDialog(buildContent, onClose);
     return;
   }
   const container = document.createElement('div');
@@ -315,12 +405,22 @@ export function openAnchorPopup(lat, lon, buildContent) {
   // "Start & end time" mode), so raising this doesn't change how any other
   // popover renders — it only stops Leaflet clamping the widened one back down.
   const popup = L.popup({ closeButton: true, className: 'anchor-popover', maxWidth: 500 }).setLatLng([lat, lon]);
-  buildContent(container, () => map.closePopup(), () => popup.update());
+  if (onClose) {
+    popup.once('remove', onClose);
+  }
+  buildContent(container, () => map.closePopup(popup), () => popup.update());
   popup.setContent(container).openOn(map);
 }
 
+/** Runs the current #routeDialog content's onClose, at most once. */
+function endRouteDialogContent() {
+  const onClose = routeDialogOnClose;
+  routeDialogOnClose = null;
+  onClose?.();
+}
+
 /** The phone layout's version of openAnchorPopup: the same content in `#routeDialog`. */
-function openRouteDialog(buildContent) {
+function openRouteDialog(buildContent, onClose) {
   if (!routeDialog) {
     routeDialog = document.getElementById('routeDialog');
     routeDialog.querySelector('[data-route-close]').addEventListener('click', () => routeDialog.close());
@@ -331,11 +431,25 @@ function openRouteDialog(buildContent) {
         routeDialog.close();
       }
     });
+    // The close event comes a task after close(). By then a builder that
+    // closed itself to open the next step (the pass picker, then a card) has
+    // reopened the dialog, and that isn't the new content closing.
+    routeDialog.addEventListener('close', () => {
+      if (!routeDialog.open) {
+        endRouteDialogContent();
+      }
+    });
   }
+  // Content replaced while the dialog is still open has gone too.
+  endRouteDialogContent();
+  routeDialogOnClose = onClose ?? null;
   const body = routeDialog.querySelector('.route-dialog-body');
   body.replaceChildren();
   // A dialog sizes itself to its content, so there is no layout to update.
-  buildContent(body, () => routeDialog.close(), () => {});
+  buildContent(body, () => {
+    endRouteDialogContent();
+    routeDialog.close();
+  }, () => {});
   if (!routeDialog.open) {
     routeDialog.showModal();
   }

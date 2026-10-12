@@ -2,12 +2,46 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import './testUtils/domSetup.js';
-import { buildDaySlots, createDateTimeField, createDaySelector, createTimeField, nearestSlotIndex } from '../../src/gpx2fit/gui/js/dateTimeField.js';
+import {
+  buildDaySlots,
+  createDateTimeField,
+  createDaySelector,
+  createTimeField,
+  dayOffsetBetween,
+  nearestSlotIndex,
+} from '../../src/gpx2fit/gui/js/dateTimeField.js';
+
+// Pinned so the DST case in dayOffsetBetween's tests means the same on every
+// machine: Node reads TZ afresh for each Date conversion.
+process.env.TZ = 'Europe/Prague';
 
 function setValueAndDispatchInput(input, value) {
   input.value = value;
   input.dispatchEvent(new Event('input', { bubbles: true }));
 }
+
+describe('dayOffsetBetween', () => {
+  it('is 0 on the same calendar day, whatever the times', () => {
+    assert.equal(dayOffsetBetween(new Date(2024, 5, 1, 0, 0), new Date(2024, 5, 1, 23, 59)), 0);
+    assert.equal(dayOffsetBetween(new Date(2024, 5, 1, 23, 59), new Date(2024, 5, 1, 0, 0)), 0);
+  });
+
+  it('counts calendar days, not 24-hour spans', () => {
+    assert.equal(dayOffsetBetween(new Date(2024, 5, 1, 22, 0), new Date(2024, 5, 2, 0, 15)), 1);
+    assert.equal(dayOffsetBetween(new Date(2024, 5, 1, 8, 0), new Date(2024, 5, 4, 7, 0)), 3);
+  });
+
+  it('goes negative for a day before the reference', () => {
+    assert.equal(dayOffsetBetween(new Date(2024, 5, 2, 6, 0), new Date(2024, 5, 1, 23, 50)), -1);
+  });
+
+  // Spring forward makes 31 March 2024 a 23-hour day in Prague, so its
+  // midnight and the next are 23 h apart: still one calendar day.
+  it('counts a day across a daylight-saving change as one day', () => {
+    assert.equal(dayOffsetBetween(new Date(2024, 2, 31, 22, 0), new Date(2024, 3, 1, 9, 0)), 1);
+    assert.equal(dayOffsetBetween(new Date(2024, 9, 27, 22, 0), new Date(2024, 9, 28, 9, 0)), 1);
+  });
+});
 
 describe('buildDaySlots', () => {
   it('returns every half-hour of the day in order', () => {

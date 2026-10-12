@@ -32,7 +32,8 @@ your device.
 - **Photo anchors.** Drop photos from the activity. Their GPS position and
   capture time (read from EXIF) become anchors automatically. Photos taken
   too far from the route, or outside the activity's time window, are flagged
-  rather than used.
+  rather than used. A photo whose location was stripped (as phones do when
+  sharing) can be placed on the map by hand, at its own capture time.
 - **Stops.** Add real pauses, either as a duration ("20 minutes here") or as
   explicit arrival and departure times. They're written as timer pauses, so
   Strava counts them as stopped time instead of slow moving time.
@@ -189,6 +190,10 @@ The full pipeline works end to end in the browser. Known limitations:
   because most brands don't publish their product IDs.
 - Photo anchors read EXIF from JPEG and HEIC images. Video files aren't
   supported.
+- Phones often remove a photo's location before the browser sees it
+  (Android's gallery picker, email, Bluetooth, Quick Share). The page can't
+  get it back. The photo button opens the file chooser instead, which
+  normally keeps it, and a photo without location can be placed by hand.
 
 ## Tech stack
 

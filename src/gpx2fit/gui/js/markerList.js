@@ -23,18 +23,34 @@ import { revealMap } from './mobileLayout.js';
  *   is kept but currently not used (e.g. an anchor outside the activity's
  *   time); its row gets `.is-inactive` and its pin is dimmed. Re-evaluated
  *   on every render, so call `refresh()` when what it reads changes.
+ * @param {(item: object) => boolean} [opts.isDraggable] - true for an item
+ *   whose pin can be dragged along the route; decided once, when it's added.
+ *   A drop goes to the `setDragEndListener` listener, which decides whether
+ *   the item really moves (see `move`).
  */
-export function createMarkerList({ idOffset = 0, markerKind, deleteAriaLabel, renderRowText, isInactive = () => false }) {
+export function createMarkerList({
+  idOffset = 0,
+  markerKind,
+  deleteAriaLabel,
+  renderRowText,
+  isInactive = () => false,
+  isDraggable = () => false,
+}) {
   let items = [];
   let nextId = idOffset + 1;
   let listEl = null;
   let emptyStateEl = null;
-  // Fired on add/remove/reset for callers that derive something from the list
-  // (the start-time control's avg-speed mode needs the total stopped time).
-  // Deliberately not fired from render(), which init() also calls at mount —
-  // a listener registered later would then miss it, and one registered
-  // earlier would run before the caller's own state exists.
+  // Fired on add/remove/move/reset for callers that derive something from the
+  // list (the start-time control's avg-speed mode needs the total stopped
+  // time). Deliberately not fired from render(), which init() also calls at
+  // mount — a listener registered later would then miss it, and one
+  // registered earlier would run before the caller's own state exists.
   let changeListener = null;
+  // Per-item callbacks for whoever created the item and needs to hear that
+  // it's gone (a photo's row). Kept off the items themselves, so they never
+  // reach getAll() and, through it, convert().
+  const removeCallbacks = new Map();
+  let dragEndListener = null;
 
   /** Item ids in route order (nearest-to-start first) — matches the numbering shown on the map pins and sidebar rows. */
   function sortedIds() {
@@ -127,15 +143,29 @@ export function createMarkerList({ idOffset = 0, markerKind, deleteAriaLabel, re
    * @param {object} fields - all fields of the item, including `lat`/`lon`
    *   (consumed here for the pin, not stored) and `distanceFromStart`
    *   (used for sidebar/pin ordering)
+   * @param {{ onRemove?: () => void }} [hooks] - `onRemove` runs once the
+   *   item is removed by `remove` (its row's ×, or the caller), not on `reset`.
    * @returns {number} the assigned id, for later `remove` calls
    */
-  function add({ lat, lon, ...rest }) {
+  function add({ lat, lon, ...rest }, { onRemove } = {}) {
     const id = nextId++;
     const item = { id, ...rest };
     items.push(item);
+    if (onRemove) {
+      removeCallbacks.set(id, onRemove);
+    }
     mapModule.addMarker(id, lat, lon, items.length, {
       kind: markerKind(item),
       onClick: (clickedId) => highlightRow(clickedId),
+      draggable: isDraggable(item),
+      onDragEnd: (droppedId, droppedLat, droppedLon, revert) => {
+        const dropped = items.find((i) => i.id === droppedId);
+        if (dropped && dragEndListener) {
+          dragEndListener({ ...dropped }, droppedLat, droppedLon, revert);
+        } else {
+          revert();
+        }
+      },
     });
     render();
     changeListener?.();
@@ -148,12 +178,38 @@ export function createMarkerList({ idOffset = 0, markerKind, deleteAriaLabel, re
     mapModule.removeMarker(id);
     render();
     changeListener?.();
+    // Last, so the callback already sees the list without this item.
+    const onRemove = removeCallbacks.get(id);
+    removeCallbacks.delete(id);
+    onRemove?.();
   }
 
-  /** Removes every item and its map pin (e.g. before loading a new route) and re-renders the list. */
+  /**
+   * Moves an item to another point on the route: its pin, its distance and
+   * so its place in the numbering. Unknown ids are ignored.
+   * @param {number} id
+   * @param {{ lat: number, lon: number, distanceFromStart: number }} position
+   */
+  function move(id, { lat, lon, distanceFromStart }) {
+    const item = items.find((i) => i.id === id);
+    if (!item) {
+      return;
+    }
+    item.distanceFromStart = distanceFromStart;
+    mapModule.moveMarker(id, lat, lon);
+    render();
+    changeListener?.();
+  }
+
+  /**
+   * Removes every item and its map pin (e.g. before loading a new route) and
+   * re-renders the list. No `onRemove` runs: whoever registered one is being
+   * reset along with the route.
+   */
   function reset() {
     items.forEach((i) => mapModule.removeMarker(i.id));
     items = [];
+    removeCallbacks.clear();
     render();
     changeListener?.();
   }
@@ -163,9 +219,20 @@ export function createMarkerList({ idOffset = 0, markerKind, deleteAriaLabel, re
     return items.map((i) => ({ ...i }));
   }
 
-  /** Registers the single listener called after every add/remove/reset. */
+  /** Registers the single listener called after every add/remove/move/reset. */
   function setChangeListener(fn) {
     changeListener = fn;
+  }
+
+  /**
+   * Registers the single listener for a draggable pin dropped somewhere
+   * new. It gets a copy of the item, where the pin was dropped (already on
+   * the route), and `revert()`, which puts the pin back; it should end in
+   * either `move` or `revert`. Without a listener every drop reverts.
+   * @param {(item: object, lat: number, lon: number, revert: () => void) => void} fn
+   */
+  function setDragEndListener(fn) {
+    dragEndListener = fn;
   }
 
   /**
@@ -179,5 +246,5 @@ export function createMarkerList({ idOffset = 0, markerKind, deleteAriaLabel, re
     render(false);
   }
 
-  return { init, add, remove, reset, getAll, setChangeListener, refresh };
+  return { init, add, remove, move, reset, getAll, setChangeListener, setDragEndListener, refresh };
 }

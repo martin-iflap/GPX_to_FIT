@@ -1104,6 +1104,65 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   color: var(--warning);
 }
 
+/* Photo rows: the embedded EXIF thumbnail, since a phone picker's file name
+   is just a number, and the "Place on map" button for a photo whose
+   location was stripped (photoAnchors.js). */
+.photo-thumb {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.photo-place-button {
+  align-self: flex-start;
+  margin-top: var(--space-1);
+  padding: 2px var(--space-3);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--transition);
+}
+
+.photo-place-button:hover {
+  background: var(--accent-soft);
+}
+
+/* Only has content on touch screens (.copy-touch), so no margin of its own
+   when that's hidden. */
+.photo-gallery-hint {
+  margin: 0;
+  font-size: 0.76rem;
+  color: var(--text-tertiary);
+}
+
+.photo-gallery-hint .copy-touch {
+  display: none;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .photo-gallery-hint .copy-touch {
+    display: block;
+    padding: var(--space-2) var(--space-1) 0;
+  }
+}
+
+.photo-gallery-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
 .anchor-empty {
   margin: 0;
   padding: var(--space-4) var(--space-2);
@@ -1378,6 +1437,155 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 .candidate-estimate {
   font-size: 0.76rem;
   color: var(--text-tertiary);
+}
+
+/* The pass whose estimate is nearest a photo's time (photoPlacement.js's
+   suggestCandidate): a suggestion, so it's only marked, never preselected. */
+.candidate-option.is-suggested {
+  border-color: var(--accent);
+}
+
+.candidate-badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+/* ---------- photo placement (anchorPopovers.js) ---------- */
+
+/* The header of the "Place photo here" and "Move photo" cards: the photo,
+   its fixed time, and where on the route. */
+.photo-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.photo-card-thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  background: var(--bg-elevated-2);
+  font-size: 1.4rem;
+}
+
+.photo-card .popover-hint {
+  margin-top: 2px;
+}
+
+.popover-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.popover-actions .popover-confirm {
+  width: auto;
+}
+
+.popover-secondary {
+  padding: 0.55rem 0.8rem;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--transition);
+}
+
+.popover-secondary:hover {
+  background: var(--accent-soft);
+}
+
+/* While a photo waits for its tap: a crosshair over the route, and the line
+   itself pulsing so it's clear where to tap. */
+#map.is-placing .route-hit-line {
+  cursor: crosshair;
+}
+
+#map.is-placing .route-line {
+  animation: route-placing-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes route-placing-pulse {
+  50% {
+    stroke-width: 7px;
+  }
+}
+
+/* A photo pin can be dragged along the route. */
+.photo-pin-wrapper.leaflet-marker-draggable {
+  cursor: grab;
+}
+
+.photo-pin-wrapper.leaflet-marker-draggable:active {
+  cursor: grabbing;
+}
+
+/* Over the top of the map (not the bottom: on a phone the sheet covers that,
+   and the profile panel does on a desktop), clear of the zoom buttons. */
+.placement-banner {
+  position: absolute;
+  top: var(--space-3);
+  left: 50%;
+  z-index: 1050;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: max-content;
+  max-width: calc(100% - 112px);
+  padding: 0.4rem 0.4rem 0.4rem 0.9rem;
+  border-radius: var(--radius-pill);
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+  box-shadow: var(--glass-edge), var(--glass-shadow);
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.placement-banner[hidden] {
+  display: none;
+}
+
+.placement-banner-thumb {
+  width: 28px;
+  height: 28px;
+  margin-left: -0.5rem;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.placement-banner-thumb[hidden] {
+  display: none;
+}
+
+.placement-banner-cancel {
+  flex-shrink: 0;
+  padding: 0.3rem 0.8rem;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.placement-banner-cancel:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* ---------- activity profile panel ---------- */
@@ -2318,6 +2526,7 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
    a map pan) and run off the edge of the screen, where there is no rim. */
 html.glass-refraction .leaflet-popup-content-wrapper,
 html.glass-refraction .profile-show-button,
+html.glass-refraction .placement-banner,
 html.glass-refraction .device-dialog-panel,
 html.glass-refraction .time-field-dropdown,
 html.glass-refraction .day-selector-dropdown {
@@ -2351,11 +2560,13 @@ html.glass-refraction .day-selector-dropdown {
   .leaflet-popup-content-wrapper,
   .leaflet-popup-tip,
   .profile-show-button,
+  .placement-banner,
   .device-dialog-panel,
   .time-field-dropdown,
   .day-selector-dropdown,
   html.glass-refraction .leaflet-popup-content-wrapper,
   html.glass-refraction .profile-show-button,
+  html.glass-refraction .placement-banner,
   html.glass-refraction .device-dialog-panel,
   html.glass-refraction .time-field-dropdown,
   html.glass-refraction .day-selector-dropdown,
@@ -2379,6 +2590,10 @@ html.glass-refraction .day-selector-dropdown {
 
   .profile-show-button:active {
     transform: translateX(-50%);
+  }
+
+  #map.is-placing .route-line {
+    animation: none;
   }
 
   .range-input:active::-webkit-slider-thumb {

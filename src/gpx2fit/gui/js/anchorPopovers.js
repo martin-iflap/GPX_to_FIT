@@ -4,13 +4,21 @@ import * as mapModule from './map.js';
 import * as anchorsModule from './anchors.js';
 import * as stopsModule from './stops.js';
 import { createTimeToggle } from './timeInput.js';
-import { isStrictlyInside } from './activityWindow.js';
-import { describeError, formatClock, formatDistanceKm } from './format.js';
+import { dayOffsetBetween } from './dateTimeField.js';
+import { effectiveAnchorTime, isStrictlyInside } from './activityWindow.js';
+import { describeError, formatClock, formatClockSeconds, formatDistanceKm } from './format.js';
+import { createPhotoPlacement, suggestCandidate } from './photoPlacement.js';
+import { revealMap } from './mobileLayout.js';
 
 // Shown under a time that the start/end anchors make unusable. The popover
 // catches it before the anchor or stop is added, so a later conversion never
 // has to reject it.
 const OUTSIDE_WINDOW_HINT = 'This time isn\'t between the activity\'s start and end.';
+// A photo's time can't be corrected, so a photo outside the window is still
+// placed, like a GPS-matched one, and anchors.js dims it until the window
+// covers it.
+const PHOTO_OUTSIDE_WINDOW_HINT = 'Taken outside the activity\'s time: it\'s added, '
+  + 'but not used until the start time and duration cover it.';
 
 /**
  * A result's offset from the start, for a time entered as "Duration since
@@ -22,23 +30,11 @@ function offsetSecondsOf(result) {
 }
 
 /**
- * How many calendar days after `reference`'s day `target`'s day falls on
- * (0 if same day, negative if earlier) — used to pre-select the right day in
- * an anchor/stop popover's day selector for a multi-day activity, instead of
- * always defaulting to day 1 regardless of where the estimated time actually
- * falls.
- * @param {Date} reference
- * @param {Date} target
- * @returns {number}
- */
-function dayOffsetBetween(reference, target) {
-  const referenceMidnight = new Date(reference.getFullYear(), reference.getMonth(), reference.getDate());
-  const targetMidnight = new Date(target.getFullYear(), target.getMonth(), target.getDate());
-  return Math.round((targetMidnight.getTime() - referenceMidnight.getTime()) / 86_400_000);
-}
-
-/**
- * Builds the route-click handler that drives anchor placement.
+ * Builds the route-click handler that drives anchor placement, including
+ * "Place on map" for a photo that kept its time but lost its location: while
+ * one is pending, a route tap opens a "Place photo here" card instead of the
+ * anchor/stop choice. Also handles a photo pin dragged along the route,
+ * which only moves once the user confirms.
  *
  * @param {object} deps
  * @param {() => Date|null} deps.getStartTime - current route start time, or null if unset/invalid
@@ -47,9 +43,44 @@ function dayOffsetBetween(reference, target) {
  * @param {() => number|null} deps.getTotalDistance - total route distance in
  *   meters, or null before a route is loaded
  * @param {(message: string, kind?: 'error'|'input') => void} deps.setStatus
- * @returns {{ handleRouteClick: (lat: number, lon: number) => Promise<void> }}
+ * @param {HTMLElement} [deps.placementBannerEl] - the banner over the map
+ *   shown while a photo waits for its tap (`#photoPlacementBanner`)
+ * @returns {{
+ *   handleRouteClick: (lat: number, lon: number) => Promise<void>,
+ *   handleAnchorDrag: (anchor: object, lat: number, lon: number, revert: () => void) => Promise<void>,
+ *   placePhoto: (photo: {timestamp: Date, thumbnailUrl?: string|null, onPlaced: (position: {lat: number, lon: number, distanceFromStart: number}) => void, onCancel?: () => void}) => void,
+ *   cancelPhotoPlacement: () => void,
+ * }}
  */
-export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalDistance, setStatus }) {
+export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalDistance, setStatus, placementBannerEl }) {
+  const photoPlacement = createPhotoPlacement({ onChange: showPlacementState });
+
+  // The map and the banner follow the pending photo: a crosshair and a
+  // pulsing route, and a banner saying which photo and how to back out.
+  // The sidebar status alone sits off-screen at the end of a phone's sheet.
+  function showPlacementState(photo) {
+    mapModule.setPlacementMode(Boolean(photo));
+    if (!placementBannerEl) {
+      return;
+    }
+    placementBannerEl.hidden = !photo;
+    if (!photo) {
+      return;
+    }
+    placementBannerEl.querySelector('.placement-banner-text').textContent = (
+      `Tap the route where the photo from ${formatClockSeconds(photo.timestamp)} was taken`
+    );
+    const thumb = placementBannerEl.querySelector('.placement-banner-thumb');
+    thumb.hidden = !photo.thumbnailUrl;
+    if (photo.thumbnailUrl) {
+      thumb.src = photo.thumbnailUrl;
+    } else {
+      thumb.removeAttribute('src');
+    }
+  }
+  placementBannerEl?.querySelector('.placement-banner-cancel')
+    .addEventListener('click', () => cancelPhotoPlacement());
+
   // The whole activity's total duration, so a time-of-day toggle can tell
   // whether it needs a day selector — not the estimate helpers below, which
   // are about a single anchor's ballpark position, not the route's overall span.
@@ -118,8 +149,8 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
 
   function openAnchorTimePopover(candidate) {
     mapModule.openAnchorPopup(candidate.lat, candidate.lon, (container, close) => {
-      const estimate = estimateArrivalDate(candidate.distance_from_start);
       const start = getStartTime();
+      const estimate = estimateArrivalDate(candidate.distance_from_start);
 
       const heading = document.createElement('p');
       heading.className = 'popover-heading';
@@ -173,23 +204,39 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
     });
   }
 
-  function openCandidatePicker(candidates) {
+  /**
+   * Asks which pass over an overlapping spot was meant. `onPick` is what a
+   * chosen pass opens: the anchor/stop choice, a photo's place card, or a
+   * dragged pin's move confirmation.
+   *
+   * @param {object[]} candidates
+   * @param {(candidate: object) => void} onPick
+   * @param {object} [opts]
+   * @param {Date} [opts.photoTime] - for a photo: shown in the hint, and the
+   *   pass whose estimate is nearest it is marked as likely
+   * @param {() => void} [opts.onDismiss] - the picker closed without a pick
+   */
+  function openCandidatePicker(candidates, onPick, { photoTime, onDismiss } = {}) {
     const first = candidates[0];
+    const suggestedIndex = photoTime ? suggestCandidate(candidates, photoTime, estimateArrivalDate) : null;
+    let picked = false;
     mapModule.openAnchorPopup(first.lat, first.lon, (container, close) => {
       const heading = document.createElement('p');
       heading.className = 'popover-heading';
-      heading.textContent = 'Multiple points found here';
+      heading.textContent = photoTime ? 'Which pass was the photo taken on?' : 'Multiple points found here';
       container.append(heading);
 
       const hint = document.createElement('p');
       hint.className = 'popover-hint';
-      hint.textContent = 'This spot is visited more than once (e.g. an out-and-back). Which one did you mean?';
+      hint.textContent = photoTime
+        ? `This spot is visited more than once (e.g. an out-and-back). The photo was taken at ${formatClockSeconds(photoTime)}.`
+        : 'This spot is visited more than once (e.g. an out-and-back). Which one did you mean?';
       container.append(hint);
 
       const list = document.createElement('div');
       list.className = 'candidate-list';
 
-      candidates.forEach((candidate) => {
+      candidates.forEach((candidate, index) => {
         const optionBtn = document.createElement('button');
         optionBtn.type = 'button';
         optionBtn.className = 'candidate-option';
@@ -203,33 +250,188 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
         estimateEl.textContent = estimateArrivalLabel(candidate.distance_from_start);
 
         optionBtn.append(distanceEl, estimateEl);
+        if (index === suggestedIndex) {
+          optionBtn.classList.add('is-suggested');
+          const badge = document.createElement('span');
+          badge.className = 'candidate-badge';
+          badge.textContent = 'Likely, by the photo\'s time';
+          optionBtn.append(badge);
+          // The content is in the page once openAnchorPopup returns.
+          setTimeout(() => optionBtn.focus({ preventScroll: true }));
+        }
         optionBtn.addEventListener('click', () => {
+          picked = true;
           close();
-          openKindChoicePopover(candidate);
+          onPick(candidate);
         });
         list.append(optionBtn);
       });
 
       container.append(list);
+    }, {
+      onClose: () => {
+        if (!picked) {
+          onDismiss?.();
+        }
+      },
+    });
+  }
+
+  /**
+   * Opens the "you picked the route's start/finish" explanation instead of a
+   * popover with inputs. `action` finishes "To …, pick a point": what the
+   * user was trying to do there.
+   */
+  function openRouteEndHint(candidate, action) {
+    mapModule.openAnchorPopup(candidate.lat, candidate.lon, (container) => {
+      const heading = document.createElement('p');
+      heading.className = 'popover-heading';
+      heading.textContent = formatDistanceKm(candidate.distance_from_start);
+      const hint = document.createElement('p');
+      hint.className = 'popover-hint';
+      hint.textContent = candidate.distance_from_start === 0
+        ? `This is the route's start, and its time is the start time you entered. To ${action}, pick a point a little further along.`
+        : `This is the route's finish, and its time is the activity's end. To ${action}, pick a point a little before it.`;
+      container.append(heading, hint);
+    });
+  }
+
+  // The photo's thumbnail (or a camera glyph without one), its fixed time
+  // and where on the route this is: the header of both photo cards.
+  function appendPhotoSummary(container, { thumbnailUrl, timestamp }, distanceText) {
+    const summary = document.createElement('div');
+    summary.className = 'photo-card';
+    let thumb;
+    if (thumbnailUrl) {
+      thumb = document.createElement('img');
+      thumb.src = thumbnailUrl;
+      thumb.alt = '';
+    } else {
+      thumb = document.createElement('span');
+      thumb.textContent = '📷';
+      thumb.setAttribute('aria-hidden', 'true');
+    }
+    thumb.className = 'photo-card-thumb';
+
+    const text = document.createElement('div');
+    const heading = document.createElement('p');
+    heading.className = 'popover-heading';
+    heading.textContent = `Photo taken ${formatClockSeconds(timestamp)}`;
+    const where = document.createElement('p');
+    where.className = 'popover-hint';
+    where.textContent = distanceText;
+    text.append(heading, where);
+
+    summary.append(thumb, text);
+    container.append(summary);
+  }
+
+  function appendOutsideWindowHint(container, timestamp) {
+    if (isStrictlyInside(timestamp, currentWindow())) {
+      return;
+    }
+    const hint = document.createElement('p');
+    hint.className = 'popover-hint is-warning';
+    hint.textContent = PHOTO_OUTSIDE_WINDOW_HINT;
+    container.append(hint);
+  }
+
+  // A card's two buttons: a quiet way out, and the one thing it's for.
+  function appendCardActions(container, cancelText, confirmText) {
+    const actions = document.createElement('div');
+    actions.className = 'popover-actions';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'popover-secondary';
+    cancelBtn.textContent = cancelText;
+    const confirmBtn = document.createElement('button');
+    confirmBtn.type = 'button';
+    confirmBtn.className = 'primary-button popover-confirm';
+    confirmBtn.textContent = confirmText;
+    actions.append(cancelBtn, confirmBtn);
+    container.append(actions);
+    return { cancelBtn, confirmBtn };
+  }
+
+  /**
+   * The card a tap opens while a photo waits to be placed. The photo's time
+   * is shown but can't be changed. "Not here" just closes the card: the
+   * photo stays armed for another tap.
+   */
+  function openPhotoPlaceCard(candidate, photo) {
+    if (isRouteEnd(candidate.distance_from_start)) {
+      openRouteEndHint(candidate, 'place this photo');
+      return;
+    }
+    mapModule.openAnchorPopup(candidate.lat, candidate.lon, (container, close) => {
+      appendPhotoSummary(container, photo, `At ${formatDistanceKm(candidate.distance_from_start)} along the route`);
+      appendOutsideWindowHint(container, photo.timestamp);
+      const { cancelBtn, confirmBtn } = appendCardActions(container, 'Not here', 'Place photo here');
+      cancelBtn.addEventListener('click', close);
+      confirmBtn.addEventListener('click', () => {
+        // Cancelled (or replaced by another photo) while this card was open:
+        // its row no longer expects an anchor.
+        if (photoPlacement.pending() !== photo) {
+          close();
+          return;
+        }
+        photoPlacement.consume();
+        photo.onPlaced({
+          lat: candidate.lat,
+          lon: candidate.lon,
+          distanceFromStart: candidate.distance_from_start,
+        });
+        setStatus('Photo placed. To move it, drag its pin along the route.');
+        close();
+      });
+    });
+  }
+
+  /**
+   * Asks before a dragged photo pin really moves: the pin waits at the drop
+   * point, and anything but "Move" (the other button, the ×, a click
+   * elsewhere, Esc) puts it back.
+   */
+  function openMoveConfirm(anchor, candidate, revert) {
+    let moved = false;
+    mapModule.openAnchorPopup(candidate.lat, candidate.lon, (container, close) => {
+      appendPhotoSummary(
+        container,
+        { thumbnailUrl: null, timestamp: anchor.timestamp },
+        `Move from ${formatDistanceKm(anchor.distanceFromStart)} to ${formatDistanceKm(candidate.distance_from_start)}? Its time stays the same.`,
+      );
+      appendOutsideWindowHint(container, effectiveAnchorTime(anchor, getStartTime()));
+      const { cancelBtn, confirmBtn } = appendCardActions(container, 'Keep it where it was', 'Move');
+      cancelBtn.addEventListener('click', close);
+      confirmBtn.addEventListener('click', () => {
+        moved = true;
+        anchorsModule.moveAnchor(anchor.id, {
+          lat: candidate.lat,
+          lon: candidate.lon,
+          distanceFromStart: candidate.distance_from_start,
+        });
+        setStatus(`Photo moved to ${formatDistanceKm(candidate.distance_from_start)}.`);
+        close();
+      });
+    }, {
+      onClose: () => {
+        if (!moved) {
+          revert();
+        }
+      },
     });
   }
 
   function openKindChoicePopover(candidate) {
+    if (isRouteEnd(candidate.distance_from_start)) {
+      openRouteEndHint(candidate, 'add an anchor or stop');
+      return;
+    }
     mapModule.openAnchorPopup(candidate.lat, candidate.lon, (container, close) => {
       const heading = document.createElement('p');
       heading.className = 'popover-heading';
       heading.textContent = formatDistanceKm(candidate.distance_from_start);
       container.append(heading);
-
-      if (isRouteEnd(candidate.distance_from_start)) {
-        const hint = document.createElement('p');
-        hint.className = 'popover-hint';
-        hint.textContent = candidate.distance_from_start === 0
-          ? 'This is the route\'s start, and its time is the start time you entered. To add an anchor or stop, pick a point a little further along.'
-          : 'This is the route\'s finish, and its time is the activity\'s end. To add an anchor or stop, pick a point a little before it.';
-        container.append(hint);
-        return;
-      }
 
       const list = document.createElement('div');
       list.className = 'candidate-list';
@@ -472,17 +674,23 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
    * `onRouteClick`.
    */
   async function handleRouteClick(lat, lon) {
-    if (!getStartTimeResult().isValid) {
+    // Read before the await, so a tap made for this photo places this photo
+    // even if the row is cancelled meanwhile (the card re-checks).
+    const photo = photoPlacement.pending();
+    // A photo brings its own time, and one outside the window is kept
+    // (dimmed), so only a typed-in anchor or stop needs a valid start–end.
+    if (!photo && !getStartTimeResult().isValid) {
       setStatus('Set a valid duration or end time before adding anchors.', 'input');
       return;
     }
 
+    const onPick = photo ? (candidate) => openPhotoPlaceCard(candidate, photo) : openKindChoicePopover;
     try {
       const candidates = await resolveAnchorCandidates(lat, lon);
       if (candidates.length > 1) {
-        openCandidatePicker(candidates);
+        openCandidatePicker(candidates, onPick, { photoTime: photo?.timestamp });
       } else {
-        openKindChoicePopover(candidates[0]);
+        onPick(candidates[0]);
       }
     } catch (error) {
       console.error(error);
@@ -491,5 +699,71 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
     }
   }
 
-  return { handleRouteClick };
+  /**
+   * A photo pin was dragged along the route and dropped at `lat`/`lon`
+   * (already snapped to the line). Resolves the drop to a route point, asks
+   * which pass if the spot is visited more than once, then asks to confirm.
+   * Every way of not confirming calls `revert()`, which puts the pin back.
+   * Pass this to `anchors.setAnchorDragEndListener`.
+   */
+  async function handleAnchorDrag(anchor, lat, lon, revert) {
+    let candidates;
+    try {
+      candidates = await resolveAnchorCandidates(lat, lon);
+    } catch (error) {
+      revert();
+      console.error(error);
+      const { message, kind } = describeError(error);
+      setStatus(message, kind);
+      return;
+    }
+
+    function confirmAt(candidate) {
+      if (candidate.distance_from_start === anchor.distanceFromStart) {
+        revert();
+        return;
+      }
+      if (isRouteEnd(candidate.distance_from_start)) {
+        revert();
+        openRouteEndHint(candidate, 'move this photo');
+        return;
+      }
+      openMoveConfirm(anchor, candidate, revert);
+    }
+
+    if (candidates.length > 1) {
+      openCandidatePicker(candidates, confirmAt, {
+        photoTime: effectiveAnchorTime(anchor, getStartTime()),
+        onDismiss: revert,
+      });
+    } else {
+      confirmAt(candidates[0]);
+    }
+  }
+
+  /**
+   * Arms "Place on map" for a photo with a time but no location: the next
+   * route tap opens a card to place it there, at the photo's own time. Only
+   * one photo waits at a time; arming another cancels the first (its
+   * `onCancel` runs). The banner over the map says what to do.
+   */
+  function placePhoto(photo) {
+    photoPlacement.arm(photo);
+    revealMap();
+  }
+
+  function cancelPhotoPlacement() {
+    photoPlacement.cancel();
+  }
+
+  // Esc cancels a pending placement, unless it's closing a dialog (the
+  // phone's anchor popover is one) or a Leaflet popup: then it does only that.
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || !photoPlacement.pending() || document.querySelector('dialog[open], .leaflet-popup')) {
+      return;
+    }
+    cancelPhotoPlacement();
+  });
+
+  return { handleRouteClick, handleAnchorDrag, placePhoto, cancelPhotoPlacement };
 }

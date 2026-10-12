@@ -735,7 +735,8 @@ flowchart TD
   main["main.js<br/>entry, app state, upload + convert handlers"]
   bridge["pyodideBridge.js"]
   map["map.js<br/>Leaflet map, route, pins, hover marker, popups"]
-  ap["anchorPopovers.js<br/>route-click flow: candidate picker →<br/>anchor-or-stop → time popover"]
+  ap["anchorPopovers.js<br/>route-click flow: candidate picker →<br/>anchor-or-stop → time popover,<br/>placePhoto card for a location-less photo,<br/>confirm a dragged photo pin's move"]
+  ppl["photoPlacement.js<br/>pending photo, likely pass by photo time"]
   anchors["anchors.js<br/>anchor list state"]
   stops["stops.js<br/>stop list state + change listener"]
   ml["markerList.js<br/>shared list+pin bookkeeping"]
@@ -781,16 +782,21 @@ flowchart TD
   ap --> anchors
   ap --> stops
   ap --> ti
+  ap --> dtf
   anchors --> ml
   stops --> ml
   anchors --> aw
   stops --> aw
   ap --> aw
+  ap --> ppl
+  ap --> mob
   main --> aw
   ml --> map
   pp --> pc
   pp -. "mapModule injected" .-> map
   photo -. "resolvePhotoAnchors, addAnchor<br/>injected by main" .-> bridge
+  photo -. "placePhoto, cancelPhotoPlacement<br/>injected by main" .-> ap
+  anchors -. "drag-end listener<br/>set by main" .-> ap
   ti --> dtf
   th --> map
   map --> cfg
@@ -800,8 +806,14 @@ flowchart TD
 ```
 
 Dependencies are injected in two places. `photoAnchors.js` receives
-`resolvePhotoAnchors`, `addAnchor` and `removeAnchor` as arguments rather
-than importing them, so its tests can pass in fakes. `profilePanel.js`
+`resolvePhotoAnchors`, `addAnchor`, `removeAnchor`, `placePhoto` and
+`cancelPhotoPlacement` as arguments rather than importing them, so its tests
+can pass in fakes. Every photo anchor, GPS-matched or placed by hand, is
+added there, with an `onRemove` hook (`markerList.add(fields, { onRemove })`)
+that puts the row back to "Place on map" or "Re-add" when the anchor is
+deleted from the anchor list. `main.js` also hands
+`anchorPlacer.handleAnchorDrag` to `anchors.setAnchorDragEndListener`, so a
+dropped photo pin goes through the same confirm flow. `profilePanel.js`
 receives `mapModule` so it can draw the hover marker. `mobileLayout.js`
 receives `mapModule` so it can move the attribution. `map.js` itself imports
 only `isPhoneLayout` from it, and `markerList.js` only `revealMap`.
@@ -827,7 +839,9 @@ trusting the cached value.
 Every time that toggle's result changes (including a start-time edit),
 `main.js` pushes the new `{start, end}` into `anchors.setActivityWindow` and
 `stops.setActivityWindow`. Each module re-checks its items with
-`activityWindow.js` (strictly inside, the same rule as the photo check).
+`activityWindow.js` (strictly inside, the same rule as Python's photo check).
+Photo anchors are included: a photo outside the window at drop time is
+still added (see "Dropping photos" below), so this re-check can bring it back.
 A window with the same times as before (`sameWindow`) is ignored, and the
 re-render (`markerList.refresh`) rebuilds the rows without renumbering the
 pins, since a time change can't reorder them. An item outside is kept but marked `.is-inactive`, its pin is dimmed
@@ -875,12 +889,33 @@ sequenceDiagram
 Dropping photos:
 
 ```
-photoAnchors.handleFiles
-  guard: a route is loaded and the start time is valid
-  readFile → readPhotoMetadata(file) → exifr: {lat, lon, DateTimeOriginal}
-  resolvePhotoAnchors(readings, {startIso, endIso})     (one batch, one bridge call)
-  per result: ok → addAnchor({..., source: 'photo'}) · too_far / outside_activity_time / at_route_end → row message only
+photoAnchors.handleFiles            (drop, the main input = file chooser, or the gallery input)
+  guard: a route is loaded
+  readFile: isLikelyPhotoFile (image/*, or an untyped photo extension) → readPhotoMetadata(file)
+    → exifr: {lat, lon, timestamp}, either half possibly null; plus the EXIF thumbnail for the row
+    no time                → row message only ("No capture time")
+    time but no GPS        → row with "Place on map" → anchorPopovers.placePhoto({timestamp, thumbnailUrl, onPlaced, onCancel})
+                             map: banner + crosshair + pulsing route (photoPlacement onChange → map.setPlacementMode)
+                             next route tap → (candidate picker, the photo's likely pass marked: suggestCandidate)
+                             → "Place photo here" card (time shown, not editable; outside start–end is allowed, dimmed)
+                             confirm → onPlaced({lat, lon, distanceFromStart}) → row's addAnchor({..., source: 'photo'}, {onRemove})
+  resolvePhotoAnchors(readings)     (photos with both; one batch, one bridge call, GPS only: no activity window)
+  per result: ok → addAnchor({..., source: 'photo'}) · too_far / at_route_end → row message only
+  ok but outside the current start–end → still added; one batch status says it's not used yet
   afterwards: a start/duration change re-checks the photo anchor like any other (anchors.setActivityWindow)
+  anchor deleted from the anchor list → its onRemove → row back to "Place on map" (by hand) or "Re-add" (GPS)
+  row removed (×, or a reset for a new GPX) while reading/matching → its photo is never matched or added
+```
+
+Moving a photo pin:
+
+```
+map.addMarker({draggable})          (markerList's isDraggable: anchors.js says source === 'photo')
+  drag     → the pin snaps to the drawn route (L.Polyline#closestLayerPoint)
+  dragend  → markerList → anchors.setAnchorDragEndListener → anchorPopovers.handleAnchorDrag(anchor, lat, lon, revert)
+             resolveAnchorCandidates → (candidate picker, likely pass marked) → "Move photo?" card
+             Move → anchors.moveAnchor → markerList.move (re-sort, renumber) → map.moveMarker
+             anything else (Keep, ×, click elsewhere, Esc, start/finish, same point) → revert()
 ```
 
 ### 7.4 Smaller modules
@@ -942,7 +977,13 @@ photoAnchors.handleFiles
   On phones, `map.js`'s `openAnchorPopup` builds the popover into the
   `#routeDialog` modal instead of a Leaflet popup. The builders in
   `anchorPopovers.js` get the same `(container, close, updateLayout)` either
-  way. The layout logic is tested against a stubbed `matchMedia`.
+  way, and an optional `onClose` runs once however the content goes (its
+  `close()`, the ×, a click elsewhere, Esc, or new content replacing it). The
+  dialog's `close` event arrives a task late, after a builder that closed
+  itself to open the next step has reopened the dialog. So `openRouteDialog`
+  ends the previous content itself, and ignores a `close` event while the
+  dialog is open again. The layout logic is tested against a stubbed
+  `matchMedia`.
 
 ---
 
@@ -1120,7 +1161,7 @@ It touches the app in exactly three places:
 |-----------------|-------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | pytest, `core/` | `tests/core/`, `tests/core/pacing/` | every `core` module, plus `test_bridge_core_files.py` (every `core/` file is in `pyodideBridge.js`'s `CORE_FILES`). Shared track builders live in `tests/core/conftest.py`                                                                                                                                                                                                                                                                            |
 | pytest, harness | `tests/tuning/`                     | see [TUNING_ARCHITECTURE.md §13](TUNING_ARCHITECTURE.md#13-tests)                                                                                                                                                                                                                                                                                                                                                                                     |
-| node, GUI       | `tests/gui/*.test.js`               | `format`, `dateTimeField`, `timeInput`, `markerList`, `activityWindow`, `anchors` + `stops` (`anchorsAndStops`: the activity-window re-check and `getActive*()`, with `map.js` mocked), `photoAnchors` (incl. `initPhotoDrop`'s per-status rows), `pyodideBridge` (against a fake Pyodide), `shortcuts`, `profileChart`, `devices`, `devicePickerNav` (`moveFocusIndex`), `glass`, `rangeFill`, `mobileLayout`. `testUtils/domSetup.js` sets up jsdom |
+| node, GUI       | `tests/gui/*.test.js`               | `format`, `dateTimeField`, `timeInput`, `markerList`, `activityWindow`, `anchors` + `stops` (`anchorsAndStops`: the activity-window re-check and `getActive*()`, with `map.js` mocked), `photoAnchors` (incl. `initPhotoDrop`'s per-status rows, the missing-location/missing-time split, thumbnails and both pickers), `photoPlacement` (the pending "Place on map" photo and its time pre-fill), `pyodideBridge` (against a fake Pyodide), `shortcuts`, `profileChart`, `devices`, `devicePickerNav` (`moveFocusIndex`), `glass`, `rangeFill`, `mobileLayout`. `testUtils/domSetup.js` sets up jsdom |
 | untested        | none                                | `map.js`, `anchorPopovers.js`, `profilePanel.js`, `main.js` (Leaflet and popover UI), plus the row/pin rendering side of `anchors.js`/`stops.js`, which have to be checked by hand in a browser                                                                                                                                                                                                                                                       |
 
 ---

@@ -79,6 +79,20 @@ export function linkSegmentPair(first, second) {
   });
 }
 
+/**
+ * How many calendar days after `reference`'s day `target`'s day falls on
+ * (0 if same day, negative if earlier) — used to pre-select the right day in
+ * an anchor/stop popover's day selector for a multi-day activity.
+ * @param {Date} reference
+ * @param {Date} target
+ * @returns {number}
+ */
+export function dayOffsetBetween(reference, target) {
+  const referenceMidnight = new Date(reference.getFullYear(), reference.getMonth(), reference.getDate());
+  const targetMidnight = new Date(target.getFullYear(), target.getMonth(), target.getDate());
+  return Math.round((targetMidnight.getTime() - referenceMidnight.getTime()) / 86_400_000);
+}
+
 /** Every half-hour slot of the day in order: [{hours:0,minutes:0}, {hours:0,minutes:30}, ..., {hours:23,minutes:30}]. */
 export function buildDaySlots() {
   return Array.from({ length: SLOTS_PER_DAY }, (_, i) => {

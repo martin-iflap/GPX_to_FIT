@@ -22,6 +22,9 @@ const list = createMarkerList({
   markerKind: (anchor) => (anchor.source === 'photo' ? 'photo' : 'anchor'),
   deleteAriaLabel: 'Delete anchor',
   isInactive: (anchor) => !isAnchorActive(anchor, activityWindow),
+  // A photo's time is fixed, but where it was taken can be off (phone GPS,
+  // or a spot tapped by hand), so a photo pin can be dragged along the route.
+  isDraggable: (anchor) => anchor.source === 'photo',
   renderRowText: (anchor) => {
     const distanceEl = document.createElement('span');
     distanceEl.className = 'anchor-row-distance';
@@ -62,15 +65,37 @@ export function initAnchorList(listElement, emptyElement) {
  * @param {number} [anchor.offsetSeconds] - seconds after the start, for an
  *   anchor entered as a duration; makes its time follow later start changes
  * @param {'user'|'photo'} [anchor.source] - how this anchor was created; defaults to 'user' (map-click/manual)
+ * @param {{ onRemove?: () => void }} [hooks] - `onRemove` runs when this
+ *   anchor is removed, from its own row's × or by `removeAnchor` (not on
+ *   `resetAnchors`): a photo's row uses it to stay in step with its anchor
  * @returns {number} the assigned anchor id, for later `removeAnchor` calls
  */
-export function addAnchor({ lat, lon, distanceFromStart, timestamp, offsetSeconds, source = 'user' }) {
-  return list.add({ lat, lon, distanceFromStart, timestamp, offsetSeconds, source });
+export function addAnchor({ lat, lon, distanceFromStart, timestamp, offsetSeconds, source = 'user' }, hooks = {}) {
+  return list.add({ lat, lon, distanceFromStart, timestamp, offsetSeconds, source }, hooks);
 }
 
 /** Removes the anchor with the given id, its map pin, and re-renders the list. */
 export function removeAnchor(id) {
   list.remove(id);
+}
+
+/**
+ * Moves an anchor to another point on the route, keeping its time.
+ * @param {number} id
+ * @param {{ lat: number, lon: number, distanceFromStart: number }} position
+ */
+export function moveAnchor(id, position) {
+  list.move(id, position);
+}
+
+/**
+ * Registers what happens when a draggable (photo) pin is dropped: see
+ * markerList's `setDragEndListener`. anchorPopovers.js asks the user to
+ * confirm before calling `moveAnchor`.
+ * @param {(anchor: Anchor, lat: number, lon: number, revert: () => void) => void} fn
+ */
+export function setAnchorDragEndListener(fn) {
+  list.setDragEndListener(fn);
 }
 
 /** Removes every anchor and its map pin (e.g. before loading a new route) and re-renders the list. */
