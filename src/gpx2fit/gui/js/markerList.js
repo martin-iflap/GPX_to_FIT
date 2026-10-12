@@ -19,6 +19,9 @@ import { revealMap } from './mobileLayout.js';
  * @param {string} opts.deleteAriaLabel - aria-label for each row's delete button
  * @param {(item: object) => HTMLElement[]} opts.renderRowText - builds the
  *   row's text content (typically a distance line and a timeline) for one item
+ * @param {(item: object) => HTMLElement|null} [opts.renderRowMedia] - an
+ *   optional picture between the row's number and its text (a photo
+ *   anchor's thumbnail), or null for none
  * @param {(item: object) => boolean} [opts.isInactive] - true for an item that
  *   is kept but currently not used (e.g. an anchor outside the activity's
  *   time); its row gets `.is-inactive` and its pin is dimmed. Re-evaluated
@@ -33,6 +36,7 @@ export function createMarkerList({
   markerKind,
   deleteAriaLabel,
   renderRowText,
+  renderRowMedia = () => null,
   isInactive = () => false,
   isDraggable = () => false,
 }) {
@@ -93,7 +97,8 @@ export function createMarkerList({
       textEl.className = 'anchor-row-text';
       textEl.append(...renderRowText(item));
 
-      info.append(numberEl, textEl);
+      const mediaEl = renderRowMedia(item);
+      info.append(...[numberEl, mediaEl, textEl].filter(Boolean));
 
       const deleteBtn = document.createElement('button');
       deleteBtn.type = 'button';

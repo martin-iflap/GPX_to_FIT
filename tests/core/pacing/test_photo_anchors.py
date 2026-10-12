@@ -129,24 +129,6 @@ class TestResolvePhotoAnchors:
         # is too far from anywhere, which is reported ahead of where it lands.
         assert [r.status for r in resolved] == ["at_route_end", "at_route_end", "too_far"]
 
-    def test_out_and_back_route_matches_nearest_physical_pass(self):
-        # Same physical spot visited outbound (distance 100) and on the way
-        # back (distance 900) — the photo's own GPS fix should disambiguate
-        # which pass it belongs to, same as nearest_point_candidates does for
-        # manual map-click anchors.
-        track = Track(points=[
-            point(lat=45.0, lon=7.0, distance_from_start=0.0),
-            point(lat=45.001, lon=7.0, distance_from_start=100.0),
-            point(lat=45.002, lon=7.0, distance_from_start=500.0),
-            point(lat=45.0011, lon=7.0, distance_from_start=900.0),
-            point(lat=45.0, lon=7.0, distance_from_start=1000.0),
-        ])
-        raw = [RawPhotoAnchor(lat=45.0011, lon=7.0, timestamp=datetime(2024, 1, 1, 8, 30, 0))]
-
-        resolved = resolve_photo_anchors(track, raw)
-
-        assert resolved[0].distance_from_start == 900.0
-
     def test_empty_track_raises(self):
         raw = [RawPhotoAnchor(lat=45.0, lon=7.0, timestamp=datetime(2024, 1, 1, 8, 30, 0))]
         with pytest.raises(ValueError):
@@ -255,6 +237,111 @@ class TestResolvePhotoAnchorsActivityTimeWindow:
         photo = build_user_anchors(
             track,
             [RawAnchor(distance_from_start=resolved.distance_from_start, timestamp=resolved.timestamp, source="photo")],
+            existing_anchors=boundary,
+        )
+        combine(track, sorted(boundary + photo, key=lambda a: a.distance_from_start), SportType.HIKING)
+
+
+class TestResolvePhotoAnchorsPasses:
+    """A spot the route visits more than once is the user's call, not ours.
+
+    On an out-and-back the two passes are metres apart, so the photo's GPS
+    error, not where it was taken, decides which one is nearest. So when more
+    than one pass is near, the photo is "ambiguous" and carries every pass the
+    user can pick from.
+    """
+
+    START = datetime(2024, 6, 1, 8, 0, 0)
+    END = datetime(2024, 6, 1, 10, 0, 0)
+
+    @staticmethod
+    def _out_and_back() -> Track:
+        # Out along a line and back over the same points: the spot at
+        # 45.001 is passed at 100 m and again at 900 m.
+        lats = [45.0, 45.001, 45.002, 45.003, 45.004, 45.005, 45.004, 45.003, 45.002, 45.001, 45.0]
+        return Track(points=[
+            point(lat=lat, lon=7.0, distance_from_start=i * 100.0) for i, lat in enumerate(lats)
+        ])
+
+    def _resolve(self, track: Track, lat: float, lon: float = 7.0, timestamp: datetime | None = None):
+        raw = [RawPhotoAnchor(lat=lat, lon=lon, timestamp=timestamp or datetime(2024, 6, 1, 9, 0, 0))]
+        [resolved] = resolve_photo_anchors(track, raw, activity_start=self.START, activity_end=self.END)
+        return resolved
+
+    def test_a_spot_passed_twice_is_ambiguous_with_both_passes(self):
+        resolved = self._resolve(self._out_and_back(), 45.0011)
+
+        assert resolved.status == "ambiguous"
+        assert [p["distance_from_start"] for p in resolved.passes] == [100.0, 900.0]
+        assert resolved.passes[0]["lat"] == 45.001
+
+    def test_the_turnaround_is_passed_once(self):
+        resolved = self._resolve(self._out_and_back(), 45.005)
+
+        assert resolved.status == "ok"
+        assert [p["distance_from_start"] for p in resolved.passes] == [500.0]
+
+    def test_a_route_that_never_comes_back_is_ok(self):
+        resolved = self._resolve(_track_through(45.0, 7.0), 45.0)
+
+        assert resolved.status == "ok"
+        assert len(resolved.passes) == 1
+
+    def test_ambiguous_still_reports_the_nearest_pass(self):
+        # Distance and gap stay the nearest match, as for any other status.
+        resolved = self._resolve(self._out_and_back(), 45.0011)
+
+        assert resolved.distance_from_start in (100.0, 900.0)
+        assert resolved.gap_m == pytest.approx(distance_meters(45.0011, 7.0, 45.001, 7.0))
+
+    def test_too_far_is_reported_before_ambiguous(self):
+        resolved = self._resolve(self._out_and_back(), 45.001, lon=7.01)
+
+        assert resolved.status == "too_far"
+
+    def test_outside_activity_time_is_reported_before_ambiguous(self):
+        resolved = self._resolve(self._out_and_back(), 45.0011, timestamp=datetime(2024, 1, 1, 9, 0, 0))
+
+        assert resolved.status == "outside_activity_time"
+
+    def test_the_start_and_finish_of_an_out_and_back_is_at_route_end(self):
+        # Both passes there are the route's ends, so there's nothing to pick.
+        resolved = self._resolve(self._out_and_back(), 45.0)
+
+        assert resolved.status == "at_route_end"
+        assert resolved.passes == []
+
+    def test_a_route_end_is_never_offered_as_a_pass(self):
+        # The photo is 3 m from the out leg. The way back passes within
+        # reach too, but the point of it nearest the photo is the route's
+        # last one (8 m away), where the end anchor sits. That leaves one
+        # pass, so there's nothing to ask.
+        track = Track(points=[
+            point(lat=45.0003, lon=7.0, distance_from_start=0.0),
+            point(lat=45.00003, lon=7.0, distance_from_start=30.0),
+            point(lat=44.998, lon=7.0, distance_from_start=255.0),
+            point(lat=44.9999, lon=7.00015, distance_from_start=466.0),
+            point(lat=45.0, lon=7.0001, distance_from_start=478.0),
+        ])
+
+        resolved = self._resolve(track, 45.0)
+
+        assert resolved.status == "ok"
+        assert [p["distance_from_start"] for p in resolved.passes] == [30.0]
+
+    @pytest.mark.parametrize("pass_index", [0, 1])
+    def test_every_offered_pass_survives_conversion(self, pass_index):
+        # The out leg is the first hour, the way back the second, and the
+        # photo's time fits whichever pass it is placed on.
+        track = self._out_and_back()
+        timestamp = datetime(2024, 6, 1, 8, 12, 0) if pass_index == 0 else datetime(2024, 6, 1, 9, 48, 0)
+        resolved = self._resolve(track, 45.0011, timestamp=timestamp)
+        chosen = resolved.passes[pass_index]
+
+        boundary = add_start_end_anchors(track, self.START, end_time=self.END)
+        photo = build_user_anchors(
+            track,
+            [RawAnchor(distance_from_start=chosen["distance_from_start"], timestamp=timestamp, source="photo")],
             existing_anchors=boundary,
         )
         combine(track, sorted(boundary + photo, key=lambda a: a.distance_from_start), SportType.HIKING)

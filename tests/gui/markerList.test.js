@@ -25,12 +25,13 @@ mock.module('../../src/gpx2fit/gui/js/map.js', { namedExports: mapMocks });
 
 const { createMarkerList } = await import('../../src/gpx2fit/gui/js/markerList.js');
 
-function mount({ idOffset, isInactive, isDraggable, renderRowText = () => [] } = {}) {
+function mount({ idOffset, isInactive, isDraggable, renderRowText = () => [], renderRowMedia } = {}) {
   const list = createMarkerList({
     idOffset,
     markerKind: () => 'anchor',
     deleteAriaLabel: 'Remove',
     renderRowText,
+    renderRowMedia,
     isInactive,
     isDraggable,
   });
@@ -105,6 +106,20 @@ describe('createMarkerList', () => {
     const removedIds = mapMocks.removeMarker.mock.calls.map((c) => c.arguments[0]);
     assert.ok(removedIds.includes(a));
     assert.ok(removedIds.includes(b));
+  });
+
+  it('puts an item\'s picture between its number and its text, and nothing for an item without one', () => {
+    const { list, listEl } = mount({
+      renderRowText: () => [Object.assign(document.createElement('span'), { className: 'text' })],
+      renderRowMedia: (item) => (item.picture ? Object.assign(document.createElement('img'), { className: 'pic' }) : null),
+    });
+    const withPicture = list.add({ lat: 1, lon: 1, distanceFromStart: 10, picture: true });
+    const without = list.add({ lat: 2, lon: 2, distanceFromStart: 20 });
+
+    const classesOf = (id) => [...listEl.querySelector(`.anchor-row[data-id="${id}"] .anchor-row-info`).children]
+      .map((el) => el.className);
+    assert.deepEqual(classesOf(withPicture), ['anchor-row-number', 'pic', 'anchor-row-text']);
+    assert.deepEqual(classesOf(without), ['anchor-row-number', 'anchor-row-text']);
   });
 
   it('getAll returns a defensive copy', () => {

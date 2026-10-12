@@ -15,9 +15,17 @@
 // for the file chooser rather than the Photo Picker (see index.html), and the
 // gallery input is the explicit fallback.
 //
-// Every photo anchor, GPS-matched or placed by hand, is added here, with an
-// `onRemove` hook: deleting it from the anchor list puts its row back to
-// "Place on map" (or "Re-add"), so a row never claims an anchor that's gone.
+// A photo on a spot the route passes more than once (an out-and-back) gets a
+// "Resolve" button: the passes are metres apart, so its GPS can't tell which
+// one it was taken on, and the user picks (anchorPopovers' choosePhotoPass).
+//
+// The photo list only holds photos that still need the user: the ones
+// waiting to be placed or resolved, and the ones that can't be used, with the
+// reason. A
+// photo that becomes an anchor, GPS-matched or placed by hand, leaves the
+// list and is shown once, in the anchor list, with its thumbnail. A summary
+// line counts those. Its anchor is added with an `onRemove` hook, so
+// deleting it there drops the photo too.
 
 /* global exifr */
 // exifr is loaded globally via the <script> tag in index.html (no bundler),
@@ -36,37 +44,44 @@ const UNTYPED = new Set(['', 'application/octet-stream']);
 const NO_LOCATION_TEXT = 'No location. Phones often remove it when sharing a photo; '
   + 'place it on the map instead, at the photo\'s own time.';
 const PLACING_TEXT = 'Tap the route where this photo was taken.';
+const AMBIGUOUS_TEXT = 'The route passes here more than once (e.g. an out-and-back). '
+  + 'Resolve it to pick which pass the photo was taken on.';
 
 let listEl = null;
 let emptyStateEl = null;
-let fileCount = 0;
-// anchors.js's addAnchor/removeAnchor and anchorPopovers' placePhoto/
-// cancelPhotoPlacement, as handed to initPhotoDrop.
+let summaryEl = null;
+// anchors.js's addAnchor and anchorPopovers' placePhoto/
+// cancelPhotoPlacement/choosePhotoPass, as handed to initPhotoDrop.
 let deps = null;
-// Every live row's cleanup (thumbnail release, pending placement), run on
-// reset as well as by the row's own ×.
-const rowCleanups = new Set();
+// Every photo still around: the ones listed, and the ones that became an
+// anchor (no longer listed, but they own its thumbnail).
+const livePhotos = new Set();
 
-function setEmptyState() {
+function updateListState() {
+  const added = [...livePhotos].filter((photo) => photo.isAnchor()).length;
   if (emptyStateEl) {
-    emptyStateEl.hidden = fileCount > 0;
+    emptyStateEl.hidden = livePhotos.size > 0;
+  }
+  if (summaryEl) {
+    summaryEl.hidden = added === 0;
+    summaryEl.textContent = added === 1
+      ? '1 photo added as an anchor, listed under Anchor points.'
+      : `${added} photos added as anchors, listed under Anchor points.`;
   }
 }
 
 /**
- * Clears every dropped-file row (e.g. before loading a new route) — the
- * anchors those rows created are removed separately, by anchors.js's own
- * reset, since this module never tracks anchor ids beyond a single row's
- * delete button.
+ * Clears every photo (e.g. before loading a new route) — the anchors they
+ * became are removed separately, by anchors.js's own reset, which runs no
+ * `onRemove` hooks.
  */
 export function resetPhotoDrop() {
-  rowCleanups.forEach((cleanup) => cleanup());
-  rowCleanups.clear();
+  livePhotos.forEach((photo) => photo.release());
+  livePhotos.clear();
   if (listEl) {
     listEl.innerHTML = '';
   }
-  fileCount = 0;
-  setEmptyState();
+  updateListState();
 }
 
 /**
@@ -88,18 +103,20 @@ export function isLikelyPhotoFile(file) {
 }
 
 /**
- * Adds a status row for a dropped file. Returns its controls: `setStatus`
- * updates the row's status text/class as processing progresses,
- * `setAnchorId` records the id of the anchor this row's photo became (null
- * once it's gone) so the row's delete button can remove that anchor too, not
- * just its own row. `setAction` puts one button in the row (or removes it,
- * given null), `setOnRemove` runs when the row goes (× or reset), and
- * `isRemoved` says whether it has.
+ * Adds a status row for a dropped file. Returns its controls:
+ * - `setStatus`, `setLabel`, `setThumbnail` and `setAction` (one button, or
+ *   null for none) update what the row shows.
+ * - `becomeAnchor` takes the row out of the list once the photo is an
+ *   anchor. `isAnchor` says whether it has.
+ * - `anchorRemoved` is that anchor's `onRemove` hook: the photo goes with it,
+ *   as it does with the row's own × (only there while the photo is listed,
+ *   so never with an anchor to remove too). `release` only frees what the
+ *   photo holds, for a reset. `setOnRemove` runs in all three, and
+ *   `isRemoved` says whether any has happened.
+ * - `key`/`setKey` identify the photo by capture time and place, to catch
+ *   the same photo added twice.
  */
 function addRow(fileName) {
-  fileCount += 1;
-  setEmptyState();
-
   const row = document.createElement('li');
   row.className = 'anchor-row photo-row';
   row.title = fileName;
@@ -121,13 +138,14 @@ function addRow(fileName) {
   textEl.append(nameEl, statusEl);
   info.append(textEl);
 
-  let anchorId = null;
+  let isAnchor = false;
   let thumbnailUrl = null;
   let actionEl = null;
   let onRemove = () => {};
   let removed = false;
+  let key = null;
 
-  function cleanup() {
+  function release() {
     removed = true;
     onRemove();
     if (thumbnailUrl) {
@@ -136,35 +154,41 @@ function addRow(fileName) {
     }
   }
 
+  function remove() {
+    release();
+    livePhotos.delete(controls);
+    row.remove();
+    updateListState();
+  }
+
   const deleteBtn = document.createElement('button');
   deleteBtn.type = 'button';
   deleteBtn.className = 'anchor-row-delete';
   deleteBtn.setAttribute('aria-label', 'Remove');
   deleteBtn.textContent = '×';
-  deleteBtn.addEventListener('click', () => {
-    // Cleanup first: removing the anchor calls back into this row (see
-    // linkAnchor), which must already know it's going.
-    cleanup();
-    if (anchorId !== null) {
-      deps.removeAnchor(anchorId);
-    }
-    rowCleanups.delete(cleanup);
-    row.remove();
-    fileCount -= 1;
-    setEmptyState();
-  });
-  rowCleanups.add(cleanup);
+  deleteBtn.addEventListener('click', remove);
 
   row.append(info, deleteBtn);
   listEl.append(row);
 
-  return {
+  const controls = {
     setStatus: (text, isProblem = false) => {
       statusEl.textContent = text;
       row.classList.toggle('is-problem', isProblem);
     },
-    setAnchorId: (id) => {
-      anchorId = id;
+    becomeAnchor: () => {
+      isAnchor = true;
+      actionEl?.remove();
+      actionEl = null;
+      row.remove();
+      updateListState();
+    },
+    isAnchor: () => isAnchor,
+    anchorRemoved: remove,
+    release,
+    key: () => key,
+    setKey: (value) => {
+      key = value;
     },
     isRemoved: () => removed,
     thumbnailUrl: () => thumbnailUrl,
@@ -194,6 +218,9 @@ function addRow(fileName) {
       onRemove = callback;
     },
   };
+  livePhotos.add(controls);
+  updateListState();
+  return controls;
 }
 
 /** Formats a gap distance for display: meters below 1km, one-decimal km above. */
@@ -262,43 +289,26 @@ function rowButton(text) {
 }
 
 /**
- * Adds the photo anchor a row stands for, and keeps the row in step with
- * it: when the anchor is removed from the anchor list, `onAnchorRemoved`
- * puts the row back into a state that can add it again. Not when the row
- * itself is going (its × removes the anchor too).
+ * Adds the anchor a photo became, with its thumbnail, and moves the photo
+ * out of the list: from now on the anchor list shows it, and deleting it
+ * there drops the photo too. Does nothing for a photo removed meanwhile (its
+ * ×, or a reset for a new route) while a card or picker was still open.
  */
-function linkAnchor(row, anchor, onAnchorRemoved) {
-  const anchorId = deps.addAnchor({ ...anchor, source: 'photo' }, {
-    onRemove: () => {
-      row.setAnchorId(null);
-      if (!row.isRemoved()) {
-        onAnchorRemoved();
-      }
-    },
-  });
-  row.setAnchorId(anchorId);
-  row.setAction(null);
-}
-
-/**
- * Adds the anchor for a photo the route matcher placed by its GPS. If the
- * anchor is later deleted from the anchor list, the row offers it back.
- */
-function addMatchedAnchor(row, anchor) {
-  linkAnchor(row, anchor, () => {
-    const button = rowButton('Re-add');
-    button.addEventListener('click', () => addMatchedAnchor(row, anchor));
-    row.setAction(button);
-    row.setStatus('Anchor removed', true);
-  });
-  row.setStatus('Anchor added');
+function addPhotoAnchor(row, anchor) {
+  if (row.isRemoved()) {
+    return;
+  }
+  deps.addAnchor(
+    { ...anchor, source: 'photo', thumbnailUrl: row.thumbnailUrl() },
+    { onRemove: row.anchorRemoved },
+  );
+  row.becomeAnchor();
 }
 
 /**
  * Turns a time-only photo's row into its "Place on map" state: a button that
  * arms a placement (the next route tap places this photo, at its own time),
- * and turns into Cancel while armed. A placed photo whose anchor is deleted
- * from the anchor list comes back to this state.
+ * and turns into Cancel while armed.
  */
 function offerPlacement(row, timestamp) {
   let armed = false;
@@ -324,8 +334,7 @@ function offerPlacement(row, timestamp) {
       thumbnailUrl: row.thumbnailUrl(),
       onPlaced: ({ lat, lon, distanceFromStart }) => {
         armed = false;
-        linkAnchor(row, { lat, lon, distanceFromStart, timestamp }, showIdle);
-        row.setStatus('Anchor added (placed by hand)');
+        addPhotoAnchor(row, { lat, lon, distanceFromStart, timestamp });
       },
       onCancel: showIdle,
     });
@@ -338,6 +347,27 @@ function offerPlacement(row, timestamp) {
     }
   });
   showIdle();
+}
+
+/**
+ * Turns the row of a photo on a spot the route passes more than once into a
+ * "Resolve" button, which opens the "Which pass?" picker. Closing the picker
+ * without a pick leaves the row as it was.
+ */
+function offerPassChoice(row, timestamp, passes) {
+  const button = rowButton('Resolve');
+  button.addEventListener('click', () => {
+    deps.choosePhotoPass({
+      timestamp,
+      thumbnailUrl: row.thumbnailUrl(),
+      passes,
+      onPicked: ({ lat, lon, distance_from_start: distanceFromStart }) => {
+        addPhotoAnchor(row, { lat, lon, distanceFromStart, timestamp });
+      },
+    });
+  });
+  row.setAction(button);
+  row.setStatus(AMBIGUOUS_TEXT, true);
 }
 
 /**
@@ -375,6 +405,15 @@ async function readFile(file) {
     row.setStatus('No capture time in this photo, so it can\'t be an anchor', true);
     return null;
   }
+  // The same photo added twice (or a burst taken within one second) would
+  // put two anchors on one point, which only fails later, at Convert.
+  const key = `${metadata.timestamp.getTime()}|${metadata.lat}|${metadata.lon}`;
+  if ([...livePhotos].some((photo) => photo.key() === key)) {
+    const what = metadata.lat === null ? 'capture time' : 'capture time and place';
+    row.setStatus(`Same ${what} as a photo you already added`, true);
+    return null;
+  }
+  row.setKey(key);
   if (metadata.lat === null) {
     offerPlacement(row, metadata.timestamp);
     return null;
@@ -387,8 +426,8 @@ async function readFile(file) {
  * Wires the photo dropzone: drag/drop and click-to-browse, both accepting
  * multiple files. Each file's EXIF metadata is read independently, then all
  * successfully-read readings are resolved against the route in a single
- * batched Python call. Every file is reported in its own row of
- * `listEl`/`emptyStateEl`.
+ * batched Python call. Every file gets a row in `listEl` until it becomes an
+ * anchor, and then counts toward `summaryEl` instead.
  *
  * @param {object} opts
  * @param {HTMLElement} opts.dropzoneEl
@@ -396,7 +435,9 @@ async function readFile(file) {
  * @param {HTMLInputElement} [opts.galleryInputEl] - the phone's photo gallery picker, which strips GPS
  * @param {HTMLElement} [opts.galleryLinkEl] - opens `galleryInputEl`
  * @param {HTMLElement} opts.listEl - `<ul>` to render per-file status rows into
- * @param {HTMLElement} opts.emptyStateEl - shown while no files have been dropped
+ * @param {HTMLElement} opts.emptyStateEl - shown while there are no photos
+ * @param {HTMLElement} [opts.summaryEl] - says how many photos became
+ *   anchors; hidden while none have
  * @param {() => boolean} opts.isTrackReady - must return true (a GPX is parsed) before drops are accepted
  * @param {() => Date|null} opts.getStartTime - current route start time, or null if unset/invalid
  * @param {() => {isValid: boolean, resolvedDate?: Date}} opts.getStartTimeResult -
@@ -405,17 +446,17 @@ async function readFile(file) {
  *   a duration. Only used to tell the user when a dropped photo falls
  *   outside that window: the photo is added as an anchor either way, and
  *   anchors.js decides whether it's used.
- * @param {(photoReadings: {lat: number, lon: number, timestamp: string}[]) => Promise<{status: 'ok'|'too_far'|'at_route_end', lat: number, lon: number, distanceFromStart: number, timestamp: string, gapM: number}[]>} opts.resolvePhotoAnchors -
+ * @param {(photoReadings: {lat: number, lon: number, timestamp: string}[]) => Promise<{status: 'ok'|'too_far'|'at_route_end'|'ambiguous', lat: number, lon: number, distanceFromStart: number, timestamp: string, gapM: number, passes: {lat: number, lon: number, distance_from_start: number}[]}[]>} opts.resolvePhotoAnchors -
  *   pyodideBridge.resolvePhotoAnchors, called without an activity window
- * @param {(anchor: {lat: number, lon: number, distanceFromStart: number, timestamp: Date, source: string}, hooks: {onRemove: () => void}) => number} opts.addAnchor -
+ * @param {(anchor: {lat: number, lon: number, distanceFromStart: number, timestamp: Date, source: string, thumbnailUrl: string|null}, hooks: {onRemove: () => void}) => number} opts.addAnchor -
  *   anchors.js's addAnchor, reused as-is
- * @param {(id: number) => void} opts.removeAnchor - anchors.js's removeAnchor, reused as-is;
- *   called when a successfully-resolved photo's row is dismissed, so removing the row also
- *   removes the anchor it created
  * @param {(photo: {timestamp: Date, thumbnailUrl: string|null, onPlaced: (position: {lat: number, lon: number, distanceFromStart: number}) => void, onCancel: () => void}) => void} opts.placePhoto -
  *   anchorPopovers' placePhoto: the next route tap picks this photo's point,
  *   and `onPlaced` adds the anchor there
  * @param {() => void} opts.cancelPhotoPlacement - drops a pending placement (its `onCancel` runs)
+ * @param {(photo: {timestamp: Date, thumbnailUrl: string|null, passes: {lat: number, lon: number, distance_from_start: number}[], onPicked: (pass: {lat: number, lon: number, distance_from_start: number}) => void}) => void} opts.choosePhotoPass -
+ *   anchorPopovers' choosePhotoPass: asks which of `passes` the photo was
+ *   taken on, and `onPicked` adds the anchor there
  * @param {(message: string, kind?: 'error'|'input') => void} opts.setStatus
  */
 export function initPhotoDrop({
@@ -425,20 +466,22 @@ export function initPhotoDrop({
   galleryLinkEl,
   listEl: list,
   emptyStateEl: emptyState,
+  summaryEl: summary,
   isTrackReady,
   getStartTime,
   getStartTimeResult,
   resolvePhotoAnchors,
   addAnchor,
-  removeAnchor,
   placePhoto,
   cancelPhotoPlacement,
+  choosePhotoPass,
   setStatus,
 }) {
   listEl = list;
   emptyStateEl = emptyState;
-  deps = { addAnchor, removeAnchor, placePhoto, cancelPhotoPlacement };
-  setEmptyState();
+  summaryEl = summary ?? null;
+  deps = { addAnchor, placePhoto, cancelPhotoPlacement, choosePhotoPass };
+  updateListState();
 
   async function handleFiles(files) {
     if (!files || files.length === 0) {
@@ -495,11 +538,15 @@ export function initPhotoDrop({
         reading.row.setStatus('At the route\'s start/finish — your start/end time already covers this point', true);
         return;
       }
+      if (result.status === 'ambiguous') {
+        offerPassChoice(reading.row, reading.timestamp, result.passes);
+        return;
+      }
       if (result.status !== 'ok') {
         reading.row.setStatus(`Too far from route (${formatGapMeters(result.gapM)} away)`, true);
         return;
       }
-      addMatchedAnchor(reading.row, {
+      addPhotoAnchor(reading.row, {
         lat: result.lat,
         lon: result.lon,
         distanceFromStart: result.distanceFromStart,

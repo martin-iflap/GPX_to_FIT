@@ -1104,9 +1104,9 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   color: var(--warning);
 }
 
-/* Photo rows: the embedded EXIF thumbnail, since a phone picker's file name
-   is just a number, and the "Place on map" button for a photo whose
-   location was stripped (photoAnchors.js). */
+/* The embedded EXIF thumbnail, on a photo's row and on its anchor's row
+   (a phone picker's file name is just a number), and the "Place on map"
+   button for a photo whose location was stripped (photoAnchors.js). */
 .photo-thumb {
   width: 36px;
   height: 36px;
@@ -1169,6 +1169,14 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   text-align: center;
   font-size: 0.82rem;
   color: var(--text-tertiary);
+}
+
+/* "3 photos added as anchors": the photos that left the photo list. */
+.photo-summary {
+  margin: 0;
+  padding: var(--space-2);
+  font-size: 0.82rem;
+  color: var(--text-secondary);
 }
 
 /* ---------- buttons / status ---------- */
@@ -1449,6 +1457,24 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   font-size: 0.72rem;
   font-weight: 600;
   color: var(--accent);
+}
+
+/* A pass a photo can't go on, because its time would be out of order with
+   another point there (anchorOrder.js). Still listed, with the reason. */
+.candidate-option:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.candidate-option:disabled:hover {
+  background: var(--bg-elevated-2);
+  border-color: var(--border-subtle);
+}
+
+.candidate-blocked {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--warning);
 }
 
 /* ---------- photo placement (anchorPopovers.js) ---------- */

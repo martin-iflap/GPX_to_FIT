@@ -23,10 +23,12 @@ def resolve_photo_anchors(
     """Match each photo's GPS reading to the nearest point on the track.
 
     Reuses `nearest_point_candidates` (the same lookup manual map-click
-    anchors use) rather than a plain nearest-point search. So a photo taken
-    near an out-and-back route's overlap still resolves to whichever pass is
-    physically closest to its own GPS fix, not just the first one in route
-    order.
+    anchors use) rather than a plain nearest-point search, so a spot the
+    route passes more than once (an out-and-back, a figure eight) is
+    recognized. Which pass is physically closest there says nothing: the two
+    are metres apart, well inside a phone's GPS error. So such a photo is
+    "ambiguous", with every pass listed, and the user picks one, helped by
+    the photo's time.
 
     A photo's GPS can coincidentally land near the route even when it has
     nothing to do with this activity (e.g. it was taken on a previous visit
@@ -67,17 +69,21 @@ def resolve_photo_anchors(
         route's first or last point: the start/end anchors already sit
         there, so pacing.anchors.build_user_anchors would reject a second
         anchor at the same distance (common on a loop, whose trailhead is
-        both). Only "ok" is usable. In every case the caller decides whether
+        both). Then "ambiguous" when more than one pass that isn't a route
+        end is near: `passes` lists them, and `distance_from_start` is only
+        the nearest, not a decision. Only "ok" is usable as it stands. In every case the caller decides whether
         to use the anchor, matching how the frontend already surfaces bad
         matches per-photo instead of failing the whole batch.
     Raises:
         ValueError: If the track has no points.
     """
+    route_ends = (0.0, track.total_distance)
     results: list[ResolvedPhotoAnchor] = []
     for raw in raw_photo_anchors:
         candidates = nearest_point_candidates(track, raw.lat, raw.lon)
         nearest = min(candidates, key=lambda c: distance_meters(raw.lat, raw.lon, c["lat"], c["lon"]))
         gap = distance_meters(raw.lat, raw.lon, nearest["lat"], nearest["lon"])
+        passes = [c for c in candidates if c["distance_from_start"] not in route_ends]
 
         if (
             activity_start is not None
@@ -87,8 +93,10 @@ def resolve_photo_anchors(
             status = "outside_activity_time"
         elif gap > max_match_distance_m:
             status = "too_far"
-        elif nearest["distance_from_start"] in (0.0, track.total_distance):
+        elif nearest["distance_from_start"] in route_ends:
             status = "at_route_end"
+        elif len(passes) > 1:
+            status = "ambiguous"
         else:
             status = "ok"
 
@@ -100,6 +108,7 @@ def resolve_photo_anchors(
                 timestamp=raw.timestamp,
                 status=status,
                 gap_m=gap,
+                passes=passes,
             )
         )
     return results

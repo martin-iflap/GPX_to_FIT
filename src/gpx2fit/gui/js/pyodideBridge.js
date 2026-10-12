@@ -265,7 +265,10 @@ export async function resolveAnchorCandidates(lat, lon) {
  *   this check (e.g. before the frontend has a valid start time).
  *   A match on the route's first or last point resolves as "at_route_end":
  *   the start/end anchors already sit there, so it can't be an anchor too.
- * @returns {Promise<{status: 'ok'|'too_far'|'outside_activity_time'|'at_route_end', lat: number, lon: number, distanceFromStart: number, timestamp: string, gapM: number}[]>}
+ *   A spot the route passes more than once (an out-and-back) resolves as
+ *   "ambiguous", with `passes` listing each pass (in
+ *   `resolveAnchorCandidates`' shape) for the user to pick from.
+ * @returns {Promise<{status: 'ok'|'too_far'|'outside_activity_time'|'at_route_end'|'ambiguous', lat: number, lon: number, distanceFromStart: number, timestamp: string, gapM: number, passes: {lat: number, lon: number, distance_from_start: number}[]}[]>}
  */
 export async function resolvePhotoAnchors(photoReadings, activityWindow) {
   return enqueue(async () => {
@@ -294,6 +297,7 @@ export async function resolvePhotoAnchors(photoReadings, activityWindow) {
             "distanceFromStart": r.distance_from_start,
             "timestamp": r.timestamp.isoformat(),
             "gapM": r.gap_m,
+            "passes": r.passes,
         }
         for r in resolve_photo_anchors(_track, _raw_photo_anchors, activity_start=_activity_start, activity_end=_activity_end)
     ]

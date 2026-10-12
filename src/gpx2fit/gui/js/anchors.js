@@ -8,11 +8,25 @@ import { effectiveAnchorTime, isAnchorActive, sameWindow } from './activityWindo
 import { formatDateTime, formatDistanceKm } from './format.js';
 
 /**
- * @typedef {{ id: number, distanceFromStart: number, timestamp: Date, offsetSeconds?: number, source: 'user'|'photo' }} Anchor
+ * @typedef {{ id: number, distanceFromStart: number, timestamp: Date, offsetSeconds?: number, source: 'user'|'photo', thumbnailUrl?: string|null }} Anchor
  * `offsetSeconds` is set for an anchor entered as "Duration since start":
  * its time then follows the start. Otherwise, `timestamp` is a fixed clock
- * time (a time of day, or a photo's capture time).
+ * time (a time of day, or a photo's capture time). `thumbnailUrl` is a
+ * photo anchor's picture, for display only: photoAnchors.js owns the object
+ * URL and releases it when the photo goes, which also removes the anchor.
  */
+
+/** A photo anchor's thumbnail for its row, or null (no picture: the row says 📷 instead). */
+function photoThumbnail(anchor) {
+  if (anchor.source !== 'photo' || !anchor.thumbnailUrl) {
+    return null;
+  }
+  const img = document.createElement('img');
+  img.className = 'photo-thumb';
+  img.alt = '';
+  img.src = anchor.thumbnailUrl;
+  return img;
+}
 
 // The activity's current start–end, pushed in by main.js whenever the start
 // time or duration changes. null until both are valid.
@@ -25,10 +39,11 @@ const list = createMarkerList({
   // A photo's time is fixed, but where it was taken can be off (phone GPS,
   // or a spot tapped by hand), so a photo pin can be dragged along the route.
   isDraggable: (anchor) => anchor.source === 'photo',
+  renderRowMedia: photoThumbnail,
   renderRowText: (anchor) => {
     const distanceEl = document.createElement('span');
     distanceEl.className = 'anchor-row-distance';
-    const prefix = anchor.source === 'photo' ? '📷 ' : '';
+    const prefix = anchor.source === 'photo' && !anchor.thumbnailUrl ? '📷 ' : '';
     distanceEl.textContent = prefix + formatDistanceKm(anchor.distanceFromStart);
 
     const timeEl = document.createElement('span');
@@ -44,7 +59,7 @@ const list = createMarkerList({
 
 /**
  * Mounts the anchor list into the given DOM elements and does the initial
- * (empty) render. Must be called once before `addAnchor`/`removeAnchor`.
+ * (empty) render. Must be called once before `addAnchor`.
  *
  * @param {HTMLElement} listElement - `<ul>` (or similar) to render rows into
  * @param {HTMLElement} emptyElement - element toggled visible when there are no anchors
@@ -65,18 +80,15 @@ export function initAnchorList(listElement, emptyElement) {
  * @param {number} [anchor.offsetSeconds] - seconds after the start, for an
  *   anchor entered as a duration; makes its time follow later start changes
  * @param {'user'|'photo'} [anchor.source] - how this anchor was created; defaults to 'user' (map-click/manual)
+ * @param {string|null} [anchor.thumbnailUrl] - a photo anchor's picture, shown
+ *   on its row and on the "Move photo?" card; never sent to convert()
  * @param {{ onRemove?: () => void }} [hooks] - `onRemove` runs when this
- *   anchor is removed, from its own row's × or by `removeAnchor` (not on
- *   `resetAnchors`): a photo's row uses it to stay in step with its anchor
- * @returns {number} the assigned anchor id, for later `removeAnchor` calls
+ *   anchor is deleted from its row's × (not on `resetAnchors`):
+ *   photoAnchors.js uses it to drop the photo along with it
+ * @returns {number} the assigned anchor id
  */
-export function addAnchor({ lat, lon, distanceFromStart, timestamp, offsetSeconds, source = 'user' }, hooks = {}) {
-  return list.add({ lat, lon, distanceFromStart, timestamp, offsetSeconds, source }, hooks);
-}
-
-/** Removes the anchor with the given id, its map pin, and re-renders the list. */
-export function removeAnchor(id) {
-  list.remove(id);
+export function addAnchor({ lat, lon, distanceFromStart, timestamp, offsetSeconds, source = 'user', thumbnailUrl }, hooks = {}) {
+  return list.add({ lat, lon, distanceFromStart, timestamp, offsetSeconds, source, thumbnailUrl }, hooks);
 }
 
 /**

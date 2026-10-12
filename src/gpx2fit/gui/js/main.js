@@ -323,14 +323,15 @@ initPhotoDrop({
   galleryLinkEl: photoGalleryLinkEl,
   listEl: photoListEl,
   emptyStateEl: photoEmptyStateEl,
+  summaryEl: document.getElementById('photoSummary'),
   isTrackReady: () => routePoints !== null,
   getStartTime,
   getStartTimeResult: () => startTimeResult,
   resolvePhotoAnchors,
   addAnchor: anchorsModule.addAnchor,
-  removeAnchor: anchorsModule.removeAnchor,
   placePhoto: anchorPlacer.placePhoto,
   cancelPhotoPlacement: anchorPlacer.cancelPhotoPlacement,
+  choosePhotoPass: anchorPlacer.choosePhotoPass,
   setStatus,
 });
 

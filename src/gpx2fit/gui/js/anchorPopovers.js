@@ -8,6 +8,7 @@ import { dayOffsetBetween } from './dateTimeField.js';
 import { effectiveAnchorTime, isStrictlyInside } from './activityWindow.js';
 import { describeError, formatClock, formatClockSeconds, formatDistanceKm } from './format.js';
 import { createPhotoPlacement, suggestCandidate } from './photoPlacement.js';
+import { describeOrderConflict, describeOrderConflictBriefly, findOrderConflict, timedPoints } from './anchorOrder.js';
 import { revealMap } from './mobileLayout.js';
 
 // Shown under a time that the start/end anchors make unusable. The popover
@@ -34,7 +35,12 @@ function offsetSecondsOf(result) {
  * "Place on map" for a photo that kept its time but lost its location: while
  * one is pending, a route tap opens a "Place photo here" card instead of the
  * anchor/stop choice. Also handles a photo pin dragged along the route,
- * which only moves once the user confirms.
+ * which only moves once the user confirms, and the "Which pass?" choice for a
+ * photo on a spot the route passes more than once.
+ *
+ * However a photo gets its point (placed, resolved or dragged), a point where
+ * its time would be out of order with another anchor or stop is refused
+ * there, with the reason (anchorOrder.js), instead of failing at Convert.
  *
  * @param {object} deps
  * @param {() => Date|null} deps.getStartTime - current route start time, or null if unset/invalid
@@ -50,6 +56,7 @@ function offsetSecondsOf(result) {
  *   handleAnchorDrag: (anchor: object, lat: number, lon: number, revert: () => void) => Promise<void>,
  *   placePhoto: (photo: {timestamp: Date, thumbnailUrl?: string|null, onPlaced: (position: {lat: number, lon: number, distanceFromStart: number}) => void, onCancel?: () => void}) => void,
  *   cancelPhotoPlacement: () => void,
+ *   choosePhotoPass: (photo: {timestamp: Date, passes: {lat: number, lon: number, distance_from_start: number}[], onPicked: (pass: {lat: number, lon: number, distance_from_start: number}) => void}) => void,
  * }}
  */
 export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalDistance, setStatus, placementBannerEl }) {
@@ -214,11 +221,17 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
    * @param {object} [opts]
    * @param {Date} [opts.photoTime] - for a photo: shown in the hint, and the
    *   pass whose estimate is nearest it is marked as likely
+   * @param {(import('./anchorOrder.js').OrderConflict|null)[]} [opts.conflicts] -
+   *   per candidate, why a photo can't go there (or null if it can): such a
+   *   pass is listed but disabled, with the reason
    * @param {() => void} [opts.onDismiss] - the picker closed without a pick
    */
-  function openCandidatePicker(candidates, onPick, { photoTime, onDismiss } = {}) {
+  function openCandidatePicker(candidates, onPick, { photoTime, conflicts = [], onDismiss } = {}) {
     const first = candidates[0];
-    const suggestedIndex = photoTime ? suggestCandidate(candidates, photoTime, estimateArrivalDate) : null;
+    // Only a pass that can be picked is suggested.
+    const open = candidates.filter((_, index) => !conflicts[index]);
+    const openIndex = photoTime ? suggestCandidate(open, photoTime, estimateArrivalDate) : null;
+    const suggestedIndex = openIndex === null ? null : candidates.indexOf(open[openIndex]);
     let picked = false;
     mapModule.openAnchorPopup(first.lat, first.lon, (container, close) => {
       const heading = document.createElement('p');
@@ -250,6 +263,13 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
         estimateEl.textContent = estimateArrivalLabel(candidate.distance_from_start);
 
         optionBtn.append(distanceEl, estimateEl);
+        if (conflicts[index]) {
+          optionBtn.disabled = true;
+          const reason = document.createElement('span');
+          reason.className = 'candidate-blocked';
+          reason.textContent = describeOrderConflictBriefly(conflicts[index]);
+          optionBtn.append(reason);
+        }
         if (index === suggestedIndex) {
           optionBtn.classList.add('is-suggested');
           const badge = document.createElement('span');
@@ -268,6 +288,13 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
       });
 
       container.append(list);
+
+      if (open.length === 0) {
+        const none = document.createElement('p');
+        none.className = 'popover-hint is-warning';
+        none.textContent = `The photo's time (${formatClockSeconds(photoTime)}) doesn't fit any of these passes.`;
+        container.append(none);
+      }
     }, {
       onClose: () => {
         if (!picked) {
@@ -277,23 +304,74 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
     });
   }
 
+  // A popup that only explains, at the point it's about.
+  function openNotice(candidate, headingText, hintText) {
+    mapModule.openAnchorPopup(candidate.lat, candidate.lon, (container) => {
+      const heading = document.createElement('p');
+      heading.className = 'popover-heading';
+      heading.textContent = headingText;
+      const hint = document.createElement('p');
+      hint.className = 'popover-hint';
+      hint.textContent = hintText;
+      container.append(heading, hint);
+    });
+  }
+
   /**
    * Opens the "you picked the route's start/finish" explanation instead of a
    * popover with inputs. `action` finishes "To …, pick a point": what the
    * user was trying to do there.
    */
   function openRouteEndHint(candidate, action) {
-    mapModule.openAnchorPopup(candidate.lat, candidate.lon, (container) => {
-      const heading = document.createElement('p');
-      heading.className = 'popover-heading';
-      heading.textContent = formatDistanceKm(candidate.distance_from_start);
-      const hint = document.createElement('p');
-      hint.className = 'popover-hint';
-      hint.textContent = candidate.distance_from_start === 0
+    openNotice(
+      candidate,
+      formatDistanceKm(candidate.distance_from_start),
+      candidate.distance_from_start === 0
         ? `This is the route's start, and its time is the start time you entered. To ${action}, pick a point a little further along.`
-        : `This is the route's finish, and its time is the activity's end. To ${action}, pick a point a little before it.`;
-      container.append(heading, hint);
-    });
+        : `This is the route's finish, and its time is the activity's end. To ${action}, pick a point a little before it.`,
+    );
+  }
+
+  /**
+   * Why a photo taken at `time` can't go to `distanceFromStart`, or null if
+   * it can: it would be out of time order with an anchor or stop there
+   * (anchorOrder.js). Only the anchors and stops convert() would use count,
+   * and only for a photo it would use: convert() leaves out a photo outside
+   * the activity's time until the window covers it, so that one fits anywhere.
+   *
+   * @param {number} distanceFromStart
+   * @param {Date} time
+   * @param {number} [excludeAnchorId] - the photo's own anchor, when moving it
+   */
+  function photoOrderConflict(distanceFromStart, time, excludeAnchorId) {
+    if (!isStrictlyInside(time, currentWindow())) {
+      return null;
+    }
+    const points = timedPoints(anchorsModule.getActiveAnchors(), stopsModule.getActiveStops(), { excludeAnchorId });
+    return findOrderConflict(points, { distanceFromStart, time });
+  }
+
+  /**
+   * Picks a photo's point, whichever way it got one (placed, resolved or
+   * dragged). One candidate goes straight to `onPick`, or to a notice saying
+   * why it can't be used. Several open the "Which pass?" picker, with the
+   * passes that are out of order disabled. `onDismiss` runs when nothing is
+   * picked.
+   */
+  function choosePhotoCandidate(candidates, time, onPick, { excludeAnchorId, onDismiss } = {}) {
+    const conflicts = candidates.map((c) => photoOrderConflict(c.distance_from_start, time, excludeAnchorId));
+    if (candidates.length > 1) {
+      openCandidatePicker(candidates, onPick, { photoTime: time, conflicts, onDismiss });
+      return;
+    }
+    const [candidate] = candidates;
+    const [conflict] = conflicts;
+    if (conflict) {
+      onDismiss?.();
+      openNotice(candidate, 'Not in time order here', describeOrderConflict(conflict, time));
+      return;
+    }
+    onPick(candidate);
   }
 
   // The photo's thumbnail (or a camera glyph without one), its fixed time
@@ -394,13 +472,14 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
    */
   function openMoveConfirm(anchor, candidate, revert) {
     let moved = false;
+    const taken = effectiveAnchorTime(anchor, getStartTime());
     mapModule.openAnchorPopup(candidate.lat, candidate.lon, (container, close) => {
       appendPhotoSummary(
         container,
-        { thumbnailUrl: null, timestamp: anchor.timestamp },
+        { thumbnailUrl: anchor.thumbnailUrl ?? null, timestamp: taken },
         `Move from ${formatDistanceKm(anchor.distanceFromStart)} to ${formatDistanceKm(candidate.distance_from_start)}? Its time stays the same.`,
       );
-      appendOutsideWindowHint(container, effectiveAnchorTime(anchor, getStartTime()));
+      appendOutsideWindowHint(container, taken);
       const { cancelBtn, confirmBtn } = appendCardActions(container, 'Keep it where it was', 'Move');
       cancelBtn.addEventListener('click', close);
       confirmBtn.addEventListener('click', () => {
@@ -684,13 +763,14 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
       return;
     }
 
-    const onPick = photo ? (candidate) => openPhotoPlaceCard(candidate, photo) : openKindChoicePopover;
     try {
       const candidates = await resolveAnchorCandidates(lat, lon);
-      if (candidates.length > 1) {
-        openCandidatePicker(candidates, onPick, { photoTime: photo?.timestamp });
+      if (photo) {
+        choosePhotoCandidate(candidates, photo.timestamp, (candidate) => openPhotoPlaceCard(candidate, photo));
+      } else if (candidates.length > 1) {
+        openCandidatePicker(candidates, openKindChoicePopover);
       } else {
-        onPick(candidates[0]);
+        openKindChoicePopover(candidates[0]);
       }
     } catch (error) {
       console.error(error);
@@ -703,7 +783,9 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
    * A photo pin was dragged along the route and dropped at `lat`/`lon`
    * (already snapped to the line). Resolves the drop to a route point, asks
    * which pass if the spot is visited more than once, then asks to confirm.
-   * Every way of not confirming calls `revert()`, which puts the pin back.
+   * A point out of time order with the other anchors and stops is refused,
+   * with the reason. Every way of not confirming calls `revert()`, which puts
+   * the pin back.
    * Pass this to `anchors.setAnchorDragEndListener`.
    */
   async function handleAnchorDrag(anchor, lat, lon, revert) {
@@ -731,14 +813,10 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
       openMoveConfirm(anchor, candidate, revert);
     }
 
-    if (candidates.length > 1) {
-      openCandidatePicker(candidates, confirmAt, {
-        photoTime: effectiveAnchorTime(anchor, getStartTime()),
-        onDismiss: revert,
-      });
-    } else {
-      confirmAt(candidates[0]);
-    }
+    choosePhotoCandidate(candidates, effectiveAnchorTime(anchor, getStartTime()), confirmAt, {
+      excludeAnchorId: anchor.id,
+      onDismiss: revert,
+    });
   }
 
   /**
@@ -756,6 +834,20 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
     photoPlacement.cancel();
   }
 
+  /**
+   * Asks which pass a photo on a spot the route passes more than once was
+   * taken on: its GPS can't tell, since the passes are metres apart. The pass
+   * nearest the photo's time is marked as likely, and a pass out of time
+   * order with the other anchors and stops is disabled.
+   */
+  function choosePhotoPass(photo) {
+    revealMap();
+    choosePhotoCandidate(photo.passes, photo.timestamp, (pass) => {
+      photo.onPicked(pass);
+      setStatus(`Photo added at ${formatDistanceKm(pass.distance_from_start)}. To move it, drag its pin along the route.`);
+    });
+  }
+
   // Esc cancels a pending placement, unless it's closing a dialog (the
   // phone's anchor popover is one) or a Leaflet popup: then it does only that.
   document.addEventListener('keydown', (event) => {
@@ -765,5 +857,5 @@ export function createAnchorPlacer({ getStartTime, getStartTimeResult, getTotalD
     cancelPhotoPlacement();
   });
 
-  return { handleRouteClick, handleAnchorDrag, placePhoto, cancelPhotoPlacement };
+  return { handleRouteClick, handleAnchorDrag, placePhoto, cancelPhotoPlacement, choosePhotoPass };
 }

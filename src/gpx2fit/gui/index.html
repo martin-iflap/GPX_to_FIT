@@ -258,6 +258,9 @@
             <input id="photoGalleryInput" type="file" accept="image/*" multiple class="visually-hidden" />
             <p class="photo-gallery-hint"><span class="copy-touch">Can't find them? <button id="photoGalleryLink" type="button" class="photo-gallery-link">Pick from the gallery</button> instead. The gallery removes the location, so you'll tap each photo's spot on the map.</span></p>
             <ul id="photoList" class="anchor-list"></ul>
+            <!-- A photo that becomes an anchor leaves the list above and is shown under
+                 Anchor points; this line counts them (photoAnchors.js). -->
+            <p id="photoSummary" class="photo-summary" hidden></p>
             <p id="photoEmptyState" class="anchor-empty">No photos yet — geotagged photos become anchors automatically. <a href="about.html#photos" target="_blank" rel="opener">How it works</a></p>
           </section>
 

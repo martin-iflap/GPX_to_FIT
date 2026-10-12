@@ -174,6 +174,13 @@ describe('initPhotoDrop', () => {
     return new File(['x'], name, { type });
   }
 
+  // Tags for a batch of different photos: each file's own capture time
+  // (seconds apart, keyed by its name's first letter), since one time and
+  // place twice reads as the same photo added twice.
+  function distinctPhotos(file) {
+    return { latitude: 45, longitude: 7, DateTimeOriginal: new Date(TAKEN.getTime() + file.name.charCodeAt(0) * 1000) };
+  }
+
   // Mounts the photo drop with mocked dependencies. `tags` is what exifr
   // reads from every file, or a function of the file. `result` is merged into
   // each route match. The fake resolver honours an activity window the way
@@ -199,7 +206,8 @@ describe('initPhotoDrop', () => {
     const galleryLinkEl = document.createElement('button');
     const listEl = document.createElement('ul');
     const emptyStateEl = document.createElement('p');
-    document.body.append(dropzoneEl, inputEl, galleryInputEl, galleryLinkEl, listEl, emptyStateEl);
+    const summaryEl = document.createElement('p');
+    document.body.append(dropzoneEl, inputEl, galleryInputEl, galleryLinkEl, listEl, emptyStateEl, summaryEl);
     // A stand-in for anchors.js: ids from 1, and each anchor's onRemove hook
     // run when it's removed, as markerList does.
     const anchorHooks = new Map();
@@ -210,15 +218,11 @@ describe('initPhotoDrop', () => {
         anchorHooks.set(id, hooks);
         return id;
       }),
-      removeAnchor: mock.fn((id) => {
-        const hooks = anchorHooks.get(id);
-        anchorHooks.delete(id);
-        hooks?.onRemove?.();
-      }),
       setStatus: mock.fn(),
       placePhoto: mock.fn(),
       cancelPhotoPlacement: mock.fn(),
-      resolvePhotoAnchors: resolvePhotoAnchors ?? mock.fn(async (readings, activityWindow) => readings.map((reading) => {
+      choosePhotoPass: mock.fn(),
+      resolvePhotoAnchors:resolvePhotoAnchors ?? mock.fn(async (readings, activityWindow) => readings.map((reading) => {
         const time = new Date(reading.timestamp).getTime();
         const outside = activityWindow
           && !(Date.parse(activityWindow.startIso) < time && time < Date.parse(activityWindow.endIso));
@@ -236,6 +240,7 @@ describe('initPhotoDrop', () => {
       ...(withGallery ? { galleryInputEl, galleryLinkEl } : {}),
       listEl,
       emptyStateEl,
+      summaryEl,
       isTrackReady: () => true,
       getStartTime: () => START,
       getStartTimeResult: () => startTimeResult,
@@ -256,7 +261,7 @@ describe('initPhotoDrop', () => {
     }
 
     // The anchor list's own × on an anchor: the anchor goes, and its hook
-    // tells the photo row, without the row having asked.
+    // tells the photo, without the photo having asked.
     function deleteFromAnchorList(id) {
       const hooks = anchorHooks.get(id);
       anchorHooks.delete(id);
@@ -264,7 +269,10 @@ describe('initPhotoDrop', () => {
     }
 
     const rows = () => [...listEl.querySelectorAll('.anchor-row')];
-    return { dropzoneEl, inputEl, galleryInputEl, galleryLinkEl, listEl, ...mocks, drop, choose, rows, deleteFromAnchorList };
+    return {
+      dropzoneEl, inputEl, galleryInputEl, galleryLinkEl, listEl, emptyStateEl, summaryEl,
+      ...mocks, drop, choose, rows, deleteFromAnchorList,
+    };
   }
 
   // Drops one photo whose route match comes back as `result`, and returns the
@@ -385,39 +393,40 @@ describe('initPhotoDrop', () => {
       const [anchor] = addAnchor.mock.calls[0].arguments;
       assert.deepEqual(
         { ...anchor, timestamp: anchor.timestamp.getTime() },
-        { lat: 46, lon: 8, distanceFromStart: 2500, timestamp: TAKEN.getTime(), source: 'photo' },
+        { lat: 46, lon: 8, distanceFromStart: 2500, timestamp: TAKEN.getTime(), source: 'photo', thumbnailUrl: null },
       );
       assert.equal('offsetSeconds' in anchor, false);
-      assert.match(row.textContent, /placed by hand/i);
-      assert.equal(row.classList.contains('is-problem'), false);
-      assert.equal(placeButton(row), null);
     });
 
-    it('removes its anchor when the row\'s × is pressed', async () => {
-      const { row, placePhoto, removeAnchor } = await dropTimeOnly();
-      placeButton(row).click();
+    it('leaves the photo list once placed, and is counted in the summary', async () => {
+      const { placePhoto, rows, summaryEl, emptyStateEl } = await dropTimeOnly();
+      placeButton(rows()[0]).click();
       placeAt(placePhoto);
-      row.querySelector('.anchor-row-delete').click();
 
-      assert.equal(removeAnchor.mock.callCount(), 1);
-      assert.equal(removeAnchor.mock.calls[0].arguments[0], 1);
+      assert.equal(rows().length, 0);
+      assert.equal(summaryEl.hidden, false);
+      assert.match(summaryEl.textContent, /^1 photo added as an anchor/);
+      assert.equal(emptyStateEl.hidden, true);
     });
 
-    it('goes back to "Place on map" when its anchor is deleted from the anchor list, and can be placed again', async () => {
-      const { row, placePhoto, removeAnchor, deleteFromAnchorList } = await dropTimeOnly();
-      placeButton(row).click();
+    it('is dropped for good when its anchor is deleted from the anchor list', async () => {
+      const { placePhoto, deleteFromAnchorList, rows, summaryEl, emptyStateEl } = await dropTimeOnly();
+      placeButton(rows()[0]).click();
       placeAt(placePhoto);
       deleteFromAnchorList(1);
 
-      assert.match(row.textContent, /no location/i);
-      assert.match(placeButton(row).textContent, /place on map/i);
+      assert.equal(rows().length, 0);
+      assert.equal(summaryEl.hidden, true);
+      assert.equal(emptyStateEl.hidden, false);
+    });
 
-      // Nothing left to remove: the row's × must not remove a dead anchor id.
-      placeButton(row).click();
-      assert.equal(placePhoto.mock.callCount(), 2);
-      armedPhoto(placePhoto).onCancel();
-      row.querySelector('.anchor-row-delete').click();
-      assert.equal(removeAnchor.mock.callCount(), 0);
+    it('cancels nothing when its anchor is deleted after placing', async () => {
+      const { placePhoto, cancelPhotoPlacement, deleteFromAnchorList, rows } = await dropTimeOnly();
+      placeButton(rows()[0]).click();
+      placeAt(placePhoto);
+      deleteFromAnchorList(1);
+
+      assert.equal(cancelPhotoPlacement.mock.callCount(), 0);
     });
 
 
@@ -430,11 +439,10 @@ describe('initPhotoDrop', () => {
     });
 
     it('does not cancel anything when an unarmed row is removed', async () => {
-      const { row, cancelPhotoPlacement, removeAnchor } = await dropTimeOnly();
+      const { row, cancelPhotoPlacement } = await dropTimeOnly();
       row.querySelector('.anchor-row-delete').click();
 
       assert.equal(cancelPhotoPlacement.mock.callCount(), 0);
-      assert.equal(removeAnchor.mock.callCount(), 0);
     });
 
     it('cancels a pending placement on reset', async () => {
@@ -443,6 +451,92 @@ describe('initPhotoDrop', () => {
       resetPhotoDrop();
 
       assert.equal(cancelPhotoPlacement.mock.callCount(), 1);
+    });
+  });
+
+  describe('a photo on a spot the route passes more than once', () => {
+    const PASSES = [
+      { lat: 45, lon: 7, distance_from_start: 1200 },
+      { lat: 45.0001, lon: 7, distance_from_start: 8800 },
+    ];
+
+    async function dropAmbiguous(options = {}) {
+      const drop = mountPhotoDrop({ result: { status: 'ambiguous', passes: PASSES }, ...options });
+      await drop.drop();
+      return { ...drop, row: drop.rows()[0] };
+    }
+
+    function resolveButton(row) {
+      return row.querySelector('.photo-place-button');
+    }
+
+    // The pass the user picks in the "Which pass?" picker.
+    function pick(choosePhotoPass, pass) {
+      choosePhotoPass.mock.calls.at(-1).arguments[0].onPicked(pass);
+    }
+
+    it('is not added on a guess, and says the user has to pick the pass', async () => {
+      const { row, addAnchor, summaryEl } = await dropAmbiguous();
+
+      assert.equal(addAnchor.mock.callCount(), 0);
+      assert.match(row.textContent, /more than once/i);
+      assert.equal(row.classList.contains('is-problem'), true);
+      assert.match(resolveButton(row).textContent, /^Resolve$/);
+      assert.equal(summaryEl.hidden, true);
+    });
+
+    it('hands the photo\'s time, thumbnail and passes to the picker', async () => {
+      URL.createObjectURL = mock.fn(() => 'blob:thumb');
+      URL.revokeObjectURL = mock.fn();
+      const { row, choosePhotoPass } = await dropAmbiguous({ thumbnail: new Uint8Array([1]) });
+      resolveButton(row).click();
+
+      assert.equal(choosePhotoPass.mock.callCount(), 1);
+      const [photo] = choosePhotoPass.mock.calls[0].arguments;
+      assert.equal(photo.timestamp.getTime(), TAKEN.getTime());
+      assert.equal(photo.thumbnailUrl, 'blob:thumb');
+      assert.deepEqual(photo.passes, PASSES);
+    });
+
+    it('becomes an anchor on the picked pass, at the photo\'s own time', async () => {
+      const { row, choosePhotoPass, addAnchor, rows, summaryEl } = await dropAmbiguous();
+      resolveButton(row).click();
+      pick(choosePhotoPass, PASSES[1]);
+
+      assert.equal(addAnchor.mock.callCount(), 1);
+      const [anchor] = addAnchor.mock.calls[0].arguments;
+      assert.deepEqual(
+        { ...anchor, timestamp: anchor.timestamp.getTime() },
+        { lat: 45.0001, lon: 7, distanceFromStart: 8800, timestamp: TAKEN.getTime(), source: 'photo', thumbnailUrl: null },
+      );
+      assert.equal(rows().length, 0);
+      assert.match(summaryEl.textContent, /^1 photo added as an anchor/);
+    });
+
+    it('can be resolved again after the picker was closed without a pick', async () => {
+      const { row, choosePhotoPass } = await dropAmbiguous();
+      resolveButton(row).click();
+      resolveButton(row).click();
+
+      assert.equal(choosePhotoPass.mock.callCount(), 2);
+    });
+
+    it('adds nothing for a pass picked after its row was removed', async () => {
+      const { row, choosePhotoPass, addAnchor } = await dropAmbiguous();
+      resolveButton(row).click();
+      row.querySelector('.anchor-row-delete').click();
+      pick(choosePhotoPass, PASSES[0]);
+
+      assert.equal(addAnchor.mock.callCount(), 0);
+    });
+
+    it('adds nothing for a pass picked after a reset', async () => {
+      const { row, choosePhotoPass, addAnchor } = await dropAmbiguous();
+      resolveButton(row).click();
+      resetPhotoDrop();
+      pick(choosePhotoPass, PASSES[0]);
+
+      assert.equal(addAnchor.mock.callCount(), 0);
     });
   });
 
@@ -499,7 +593,6 @@ describe('initPhotoDrop', () => {
     const drop = mountPhotoDrop();
     await drop.drop([photoFile('PXL_20240601.heic', '')]);
 
-    assert.doesNotMatch(drop.rows()[0].textContent, /not a photo/i);
     assert.equal(drop.addAnchor.mock.callCount(), 1);
   });
 
@@ -513,7 +606,7 @@ describe('initPhotoDrop', () => {
 
   describe('row label', () => {
     it('shows the capture time, since phone pickers rename photos to numbers', async () => {
-      const drop = mountPhotoDrop({ tags: { latitude: 45, longitude: 7, DateTimeOriginal: new Date(2024, 5, 1, 9, 5, 7) } });
+      const drop = mountPhotoDrop({ tags: { DateTimeOriginal: new Date(2024, 5, 1, 9, 5, 7) } });
       await drop.drop([photoFile('1000046.jpg')]);
       const [row] = drop.rows();
 
@@ -536,9 +629,9 @@ describe('initPhotoDrop', () => {
       URL.revokeObjectURL = mock.fn();
     }
 
-    it('shows the photo\'s embedded thumbnail', async () => {
+    it('shows the photo\'s embedded thumbnail on its row', async () => {
       stubObjectUrls();
-      const drop = mountPhotoDrop({ thumbnail: new Uint8Array([0xff, 0xd8]) });
+      const drop = mountPhotoDrop({ thumbnail: new Uint8Array([0xff, 0xd8]), result: { status: 'too_far' } });
       await drop.drop();
 
       const img = drop.rows()[0].querySelector('img.photo-thumb');
@@ -546,12 +639,21 @@ describe('initPhotoDrop', () => {
       assert.equal(img.getAttribute('src'), 'blob:thumb-0');
     });
 
+    it('hands the thumbnail to the anchor it becomes', async () => {
+      stubObjectUrls();
+      const drop = mountPhotoDrop({ thumbnail: new Uint8Array([0xff, 0xd8]) });
+      await drop.drop();
+
+      assert.equal(drop.addAnchor.mock.calls[0].arguments[0].thumbnailUrl, 'blob:thumb-0');
+      assert.equal(URL.revokeObjectURL.mock.callCount(), 0);
+    });
+
     it('shows none when the photo has no embedded thumbnail', async () => {
       stubObjectUrls();
       const drop = mountPhotoDrop({ thumbnail: undefined });
       await drop.drop();
 
-      assert.equal(drop.rows()[0].querySelector('img.photo-thumb'), null);
+      assert.equal(drop.addAnchor.mock.calls[0].arguments[0].thumbnailUrl, null);
       assert.equal(URL.createObjectURL.mock.callCount(), 0);
     });
 
@@ -562,22 +664,36 @@ describe('initPhotoDrop', () => {
       await drop.drop();
 
       assert.equal(drop.addAnchor.mock.callCount(), 1);
-      assert.equal(drop.rows()[0].querySelector('img.photo-thumb'), null);
+      assert.equal(drop.addAnchor.mock.calls[0].arguments[0].thumbnailUrl, null);
     });
 
     it('releases the thumbnail when its row is removed', async () => {
       stubObjectUrls();
-      const drop = mountPhotoDrop({ thumbnail: new Uint8Array([1]) });
+      const drop = mountPhotoDrop({ thumbnail: new Uint8Array([1]), result: { status: 'too_far' } });
       await drop.drop();
       drop.rows()[0].querySelector('.anchor-row-delete').click();
 
       assert.deepEqual(URL.revokeObjectURL.mock.calls.map((call) => call.arguments[0]), ['blob:thumb-0']);
     });
 
-    it('releases every thumbnail on reset', async () => {
+    it('releases the thumbnail once its anchor is deleted from the anchor list', async () => {
       stubObjectUrls();
       const drop = mountPhotoDrop({ thumbnail: new Uint8Array([1]) });
+      await drop.drop();
+      drop.deleteFromAnchorList(1);
+
+      assert.deepEqual(URL.revokeObjectURL.mock.calls.map((call) => call.arguments[0]), ['blob:thumb-0']);
+    });
+
+    it('releases every thumbnail on reset, listed or anchored', async () => {
+      stubObjectUrls();
+      const drop = mountPhotoDrop({
+        thumbnail: new Uint8Array([1]),
+        tags: (file) => (file.name === 'a.jpg' ? distinctPhotos(file) : { DateTimeOriginal: TAKEN }),
+      });
       await drop.drop([photoFile('a.jpg'), photoFile('b.jpg')]);
+      assert.equal(drop.addAnchor.mock.callCount(), 1);
+      assert.equal(drop.rows().length, 1);
       resetPhotoDrop();
 
       const revoked = URL.revokeObjectURL.mock.calls.map((call) => call.arguments[0]).sort();
@@ -591,7 +707,6 @@ describe('initPhotoDrop', () => {
       const drop = mountPhotoDrop();
       await drop.choose(drop.inputEl);
 
-      assert.equal(drop.rows().length, 1);
       assert.equal(drop.addAnchor.mock.callCount(), 1);
     });
 
@@ -599,7 +714,6 @@ describe('initPhotoDrop', () => {
       const drop = mountPhotoDrop();
       await drop.choose(drop.galleryInputEl);
 
-      assert.equal(drop.rows().length, 1);
       assert.equal(drop.addAnchor.mock.callCount(), 1);
     });
 
@@ -621,7 +735,7 @@ describe('initPhotoDrop', () => {
       const drop = mountPhotoDrop({ withGallery: false });
       await drop.drop();
 
-      assert.equal(drop.rows().length, 1);
+      assert.equal(drop.addAnchor.mock.callCount(), 1);
     });
   });
 
@@ -642,7 +756,7 @@ describe('initPhotoDrop', () => {
     assert.equal(anchor.distanceFromStart, 1234);
     assert.equal(anchor.timestamp.getTime(), TAKEN.getTime());
     assert.equal(anchor.source, 'photo');
-    assert.equal(row.classList.contains('is-problem'), false);
+    assert.equal(row, undefined, 'the photo should have left the list');
   });
 
   it('still reports a too-far match with its gap', async () => {
@@ -658,14 +772,13 @@ describe('initPhotoDrop', () => {
   // Discarding it here would leave nothing for that re-check to bring back.
   it('adds an anchor for a photo taken before the current start, at its own time', async () => {
     const taken = new Date(2024, 5, 1, 7, 0);
-    const { row, addAnchor } = await dropPhotoResolvingTo({ status: 'ok', distanceFromStart: 1234 }, { taken });
+    const { addAnchor } = await dropPhotoResolvingTo({ status: 'ok', distanceFromStart: 1234 }, { taken });
 
     assert.equal(addAnchor.mock.callCount(), 1);
     const [anchor] = addAnchor.mock.calls[0].arguments;
     assert.equal(anchor.distanceFromStart, 1234);
     assert.equal(anchor.timestamp.getTime(), taken.getTime());
     assert.equal(anchor.source, 'photo');
-    assert.doesNotMatch(row.textContent, /ignored/i);
   });
 
   it('adds an anchor for a photo taken after the current end', async () => {
@@ -697,52 +810,115 @@ describe('initPhotoDrop', () => {
     assert.equal(addAnchor.mock.callCount(), 1);
   });
 
-  describe('a matched photo whose anchor is deleted from the anchor list', () => {
-    async function dropAndDelete() {
-      const drop = mountPhotoDrop({ result: { status: 'ok', distanceFromStart: 1234 } });
+  describe('the photo list and its summary', () => {
+    it('shows the empty state until a photo is added', () => {
+      const drop = mountPhotoDrop();
+
+      assert.equal(drop.emptyStateEl.hidden, false);
+      assert.equal(drop.summaryEl.hidden, true);
+    });
+
+    it('hides the empty state for a photo that couldn\'t be used, with no summary', async () => {
+      const drop = mountPhotoDrop({ result: { status: 'too_far' } });
+      await drop.drop();
+
+      assert.equal(drop.rows().length, 1);
+      assert.equal(drop.emptyStateEl.hidden, true);
+      assert.equal(drop.summaryEl.hidden, true);
+    });
+
+    it('shows the empty state again once the last photo is removed', async () => {
+      const drop = mountPhotoDrop({ result: { status: 'too_far' } });
+      await drop.drop();
+      drop.rows()[0].querySelector('.anchor-row-delete').click();
+
+      assert.equal(drop.emptyStateEl.hidden, false);
+    });
+
+    it('counts matched photos in the summary instead of listing them', async () => {
+      const drop = mountPhotoDrop({ tags: distinctPhotos });
+      await drop.drop([photoFile('a.jpg'), photoFile('b.jpg')]);
+
+      assert.equal(drop.rows().length, 0);
+      assert.equal(drop.emptyStateEl.hidden, true);
+      assert.equal(drop.summaryEl.hidden, false);
+      assert.match(drop.summaryEl.textContent, /^2 photos added as anchors/);
+    });
+
+    it('keeps listing a photo that couldn\'t be used, next to the summary', async () => {
+      const drop = mountPhotoDrop({
+        tags: distinctPhotos,
+        resolvePhotoAnchors: mock.fn(async (readings) => readings.map((reading, index) => ({
+          status: index === 0 ? 'ok' : 'too_far', lat: 45, lon: 7, distanceFromStart: 100, timestamp: reading.timestamp, gapM: 900,
+        }))),
+      });
+      await drop.drop([photoFile('a.jpg'), photoFile('b.jpg')]);
+
+      assert.equal(drop.rows().length, 1);
+      assert.match(drop.rows()[0].textContent, /too far/i);
+      assert.match(drop.summaryEl.textContent, /^1 photo added as an anchor/);
+    });
+
+    it('drops a matched photo for good when its anchor is deleted from the anchor list', async () => {
+      const drop = mountPhotoDrop();
       await drop.drop();
       drop.deleteFromAnchorList(1);
-      return { ...drop, row: drop.rows()[0] };
-    }
 
-    it('says so and offers it back', async () => {
-      const { row } = await dropAndDelete();
-
-      assert.match(row.textContent, /anchor removed/i);
-      assert.equal(row.classList.contains('is-problem'), true);
-      assert.match(placeButton(row).textContent, /re-add/i);
+      assert.equal(drop.rows().length, 0);
+      assert.equal(drop.summaryEl.hidden, true);
+      assert.equal(drop.emptyStateEl.hidden, false);
     });
 
-    it('re-adds the same anchor, still linked to the row', async () => {
-      const { row, addAnchor, removeAnchor } = await dropAndDelete();
-      placeButton(row).click();
+    it('can add a photo again once its anchor was deleted', async () => {
+      const drop = mountPhotoDrop();
+      await drop.drop();
+      drop.deleteFromAnchorList(1);
+      await drop.drop();
 
-      assert.equal(addAnchor.mock.callCount(), 2);
-      assert.deepEqual(addAnchor.mock.calls[1].arguments[0], addAnchor.mock.calls[0].arguments[0]);
-      assert.match(row.textContent, /anchor added/i);
-      assert.equal(placeButton(row), null);
-
-      row.querySelector('.anchor-row-delete').click();
-      assert.deepEqual(removeAnchor.mock.calls.map((call) => call.arguments[0]), [2]);
-    });
-
-    it('does not try to remove the deleted anchor again when its row goes', async () => {
-      const { row, removeAnchor } = await dropAndDelete();
-      row.querySelector('.anchor-row-delete').click();
-
-      assert.equal(removeAnchor.mock.callCount(), 0);
+      assert.equal(drop.addAnchor.mock.callCount(), 2);
     });
   });
 
-  it('removing a photo\'s row removes its anchor without the row reacting to that', async () => {
-    const drop = mountPhotoDrop();
-    await drop.drop();
-    const [row] = drop.rows();
-    row.querySelector('.anchor-row-delete').click();
+  describe('the same photo twice', () => {
+    it('is refused while the first is an anchor, and says why', async () => {
+      const drop = mountPhotoDrop();
+      await drop.drop();
+      await drop.drop();
 
-    assert.deepEqual(drop.removeAnchor.mock.calls.map((call) => call.arguments[0]), [1]);
-    assert.equal(drop.rows().length, 0);
-    assert.equal(placeButton(row), null);
+      assert.equal(drop.addAnchor.mock.callCount(), 1);
+      assert.equal(drop.resolvePhotoAnchors.mock.callCount(), 1);
+      const [row] = drop.rows();
+      assert.match(row.textContent, /same capture time and place/i);
+      assert.equal(row.classList.contains('is-problem'), true);
+    });
+
+    it('is refused within one batch', async () => {
+      const drop = mountPhotoDrop();
+      await drop.drop([photoFile('a.jpg'), photoFile('b.jpg')]);
+
+      assert.equal(drop.addAnchor.mock.callCount(), 1);
+      assert.equal(drop.rows().length, 1);
+    });
+
+    it('is refused for a photo without location still waiting to be placed', async () => {
+      const drop = mountPhotoDrop({ tags: { DateTimeOriginal: TAKEN } });
+      await drop.drop([photoFile('1.jpg')]);
+      await drop.drop([photoFile('2.jpg')]);
+
+      const [first, second] = drop.rows();
+      assert.match(placeButton(first).textContent, /place on map/i);
+      assert.match(second.textContent, /same capture time as/i);
+      assert.equal(placeButton(second), null);
+    });
+
+    it('is not a duplicate when only the time matches a photo taken elsewhere', async () => {
+      const drop = mountPhotoDrop({
+        tags: (file) => ({ latitude: file.name === 'a.jpg' ? 45 : 46, longitude: 7, DateTimeOriginal: TAKEN }),
+      });
+      await drop.drop([photoFile('a.jpg'), photoFile('b.jpg')]);
+
+      assert.equal(drop.resolvePhotoAnchors.mock.calls[0].arguments[0].length, 2);
+    });
   });
 
   describe('while the batch is being matched to the route', () => {
@@ -794,7 +970,7 @@ describe('initPhotoDrop', () => {
 
     it('adds no anchor for a photo whose row was removed meanwhile, but still does for the others', async () => {
       const held = heldResolver();
-      const drop = mountPhotoDrop({ resolvePhotoAnchors: held.resolvePhotoAnchors });
+      const drop = mountPhotoDrop({ tags: distinctPhotos, resolvePhotoAnchors: held.resolvePhotoAnchors });
       await drop.drop([photoFile('a.jpg'), photoFile('b.jpg')]);
       drop.rows()[0].querySelector('.anchor-row-delete').click();
 
@@ -802,8 +978,9 @@ describe('initPhotoDrop', () => {
       await settle();
 
       assert.equal(drop.addAnchor.mock.callCount(), 1);
-      assert.equal(drop.removeAnchor.mock.callCount(), 0);
-      assert.match(drop.rows()[0].textContent, /anchor added/i);
+      assert.equal(drop.addAnchor.mock.calls[0].arguments[0].timestamp.getTime(), distinctPhotos(photoFile('b.jpg')).DateTimeOriginal.getTime());
+      assert.equal(drop.rows().length, 0);
+      assert.match(drop.summaryEl.textContent, /^1 photo added/);
     });
   });
 });

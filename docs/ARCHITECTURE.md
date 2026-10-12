@@ -187,8 +187,9 @@ classDiagram
   class ResolvedPhotoAnchor {
     distance_from_start, lat, lon: float
     timestamp: datetime
-    status: ok|outside_activity_time|too_far|at_route_end
+    status: ok|outside_activity_time|too_far|at_route_end|ambiguous
     gap_m: float
+    passes: list~dict~
   }
   class ProfileSample {
     distance_from_start, elapsed_seconds: float
@@ -355,9 +356,12 @@ resolve_photo_anchors(track, raw_photo_anchors, max_match 150 m,
                       activity_start?, activity_end?)
   for each photo:
      nearest_point_candidates → pick the candidate closest to the photo's GPS
+     passes = the candidates that aren't a route end
      status = "outside_activity_time"  unless start < capture time < end, no padding  (checked first)
             | "too_far"                if gap > 150 m
             | "at_route_end"           if the match is the first or last point (the start/end anchors sit there)
+            | "ambiguous"              if more than one pass: on an out-and-back the passes are metres
+                                       apart, so the GPS can't tell; the user picks from `passes`
             | "ok"
   → [ResolvedPhotoAnchor]   (never raises for a bad match; the caller decides)
 ```
@@ -735,8 +739,9 @@ flowchart TD
   main["main.js<br/>entry, app state, upload + convert handlers"]
   bridge["pyodideBridge.js"]
   map["map.js<br/>Leaflet map, route, pins, hover marker, popups"]
-  ap["anchorPopovers.js<br/>route-click flow: candidate picker →<br/>anchor-or-stop → time popover,<br/>placePhoto card for a location-less photo,<br/>confirm a dragged photo pin's move"]
+  ap["anchorPopovers.js<br/>route-click flow: candidate picker →<br/>anchor-or-stop → time popover,<br/>placePhoto card for a location-less photo,<br/>choosePhotoPass for an ambiguous one,<br/>confirm a dragged photo pin's move"]
   ppl["photoPlacement.js<br/>pending photo, likely pass by photo time"]
+  ao["anchorOrder.js<br/>is a photo's point in time order?"]
   anchors["anchors.js<br/>anchor list state"]
   stops["stops.js<br/>stop list state + change listener"]
   ml["markerList.js<br/>shared list+pin bookkeeping"]
@@ -789,13 +794,15 @@ flowchart TD
   stops --> aw
   ap --> aw
   ap --> ppl
+  ap --> ao
+  ao --> fmt
   ap --> mob
   main --> aw
   ml --> map
   pp --> pc
   pp -. "mapModule injected" .-> map
   photo -. "resolvePhotoAnchors, addAnchor<br/>injected by main" .-> bridge
-  photo -. "placePhoto, cancelPhotoPlacement<br/>injected by main" .-> ap
+  photo -. "placePhoto, cancelPhotoPlacement,<br/>choosePhotoPass injected by main" .-> ap
   anchors -. "drag-end listener<br/>set by main" .-> ap
   ti --> dtf
   th --> map
@@ -806,12 +813,13 @@ flowchart TD
 ```
 
 Dependencies are injected in two places. `photoAnchors.js` receives
-`resolvePhotoAnchors`, `addAnchor`, `removeAnchor`, `placePhoto` and
-`cancelPhotoPlacement` as arguments rather than importing them, so its tests
+`resolvePhotoAnchors`, `addAnchor`, `placePhoto`, `cancelPhotoPlacement`
+and `choosePhotoPass` as arguments rather than importing them, so its tests
 can pass in fakes. Every photo anchor, GPS-matched or placed by hand, is
-added there, with an `onRemove` hook (`markerList.add(fields, { onRemove })`)
-that puts the row back to "Place on map" or "Re-add" when the anchor is
-deleted from the anchor list. `main.js` also hands
+added there, with its `thumbnailUrl` and an `onRemove` hook
+(`markerList.add(fields, { onRemove })`) that drops the photo when the
+anchor is deleted from the anchor list. A photo that became an anchor is
+listed only there; the Photos list keeps the ones that still need the user. `main.js` also hands
 `anchorPlacer.handleAnchorDrag` to `anchors.setAnchorDragEndListener`, so a
 dropped photo pin goes through the same confirm flow. `profilePanel.js`
 receives `mapModule` so it can draw the hover marker. `mobileLayout.js`
@@ -897,13 +905,20 @@ photoAnchors.handleFiles            (drop, the main input = file chooser, or the
     time but no GPS        → row with "Place on map" → anchorPopovers.placePhoto({timestamp, thumbnailUrl, onPlaced, onCancel})
                              map: banner + crosshair + pulsing route (photoPlacement onChange → map.setPlacementMode)
                              next route tap → (candidate picker, the photo's likely pass marked: suggestCandidate)
+                             a point out of time order (anchorOrder.findOrderConflict) → a notice, still armed;
+                             in the picker such a pass is disabled with the reason
                              → "Place photo here" card (time shown, not editable; outside start–end is allowed, dimmed)
-                             confirm → onPlaced({lat, lon, distanceFromStart}) → row's addAnchor({..., source: 'photo'}, {onRemove})
+                             confirm → onPlaced({lat, lon, distanceFromStart}) → addAnchor({..., source: 'photo', thumbnailUrl}, {onRemove})
   resolvePhotoAnchors(readings)     (photos with both; one batch, one bridge call, GPS only: no activity window)
-  per result: ok → addAnchor({..., source: 'photo'}) · too_far / at_route_end → row message only
+  same capture time and place as a live photo → row message only (checked before matching)
+  per result: ok → addAnchor({..., source: 'photo', thumbnailUrl}) · too_far / at_route_end → row message only
+              ambiguous → row with "Resolve" → anchorPopovers.choosePhotoPass({timestamp, thumbnailUrl, passes, onPicked})
+                          → "Which pass?" picker (likely pass marked, out-of-order passes disabled)
+                          → onPicked(pass) → addAnchor (skipped if the row was removed meanwhile)
+  became an anchor → row leaves the Photos list, counted by #photoSummary; the anchor list shows it
   ok but outside the current start–end → still added; one batch status says it's not used yet
   afterwards: a start/duration change re-checks the photo anchor like any other (anchors.setActivityWindow)
-  anchor deleted from the anchor list → its onRemove → row back to "Place on map" (by hand) or "Re-add" (GPS)
+  anchor deleted from the anchor list → its onRemove → the photo is dropped, its thumbnail freed
   row removed (×, or a reset for a new GPX) while reading/matching → its photo is never matched or added
 ```
 
@@ -914,6 +929,7 @@ map.addMarker({draggable})          (markerList's isDraggable: anchors.js says s
   drag     → the pin snaps to the drawn route (L.Polyline#closestLayerPoint)
   dragend  → markerList → anchors.setAnchorDragEndListener → anchorPopovers.handleAnchorDrag(anchor, lat, lon, revert)
              resolveAnchorCandidates → (candidate picker, likely pass marked) → "Move photo?" card
+             out of time order with another active anchor or stop → revert() and a notice saying which, and where to go
              Move → anchors.moveAnchor → markerList.move (re-sort, renumber) → map.moveMarker
              anything else (Keep, ×, click elsewhere, Esc, start/finish, same point) → revert()
 ```
@@ -1161,7 +1177,7 @@ It touches the app in exactly three places:
 |-----------------|-------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | pytest, `core/` | `tests/core/`, `tests/core/pacing/` | every `core` module, plus `test_bridge_core_files.py` (every `core/` file is in `pyodideBridge.js`'s `CORE_FILES`). Shared track builders live in `tests/core/conftest.py`                                                                                                                                                                                                                                                                            |
 | pytest, harness | `tests/tuning/`                     | see [TUNING_ARCHITECTURE.md §13](TUNING_ARCHITECTURE.md#13-tests)                                                                                                                                                                                                                                                                                                                                                                                     |
-| node, GUI       | `tests/gui/*.test.js`               | `format`, `dateTimeField`, `timeInput`, `markerList`, `activityWindow`, `anchors` + `stops` (`anchorsAndStops`: the activity-window re-check and `getActive*()`, with `map.js` mocked), `photoAnchors` (incl. `initPhotoDrop`'s per-status rows, the missing-location/missing-time split, thumbnails and both pickers), `photoPlacement` (the pending "Place on map" photo and its time pre-fill), `pyodideBridge` (against a fake Pyodide), `shortcuts`, `profileChart`, `devices`, `devicePickerNav` (`moveFocusIndex`), `glass`, `rangeFill`, `mobileLayout`. `testUtils/domSetup.js` sets up jsdom |
+| node, GUI       | `tests/gui/*.test.js`               | `format`, `dateTimeField`, `timeInput`, `markerList`, `activityWindow`, `anchors` + `stops` (`anchorsAndStops`: the activity-window re-check and `getActive*()`, with `map.js` mocked), `photoAnchors` (incl. `initPhotoDrop`'s per-status rows, the missing-location/missing-time split, thumbnails and both pickers), `photoPlacement` (the pending "Place on map" photo and its time pre-fill), `anchorOrder` (the time-order rule for a photo's point), `pyodideBridge` (against a fake Pyodide), `shortcuts`, `profileChart`, `devices`, `devicePickerNav` (`moveFocusIndex`), `glass`, `rangeFill`, `mobileLayout`. `testUtils/domSetup.js` sets up jsdom |
 | untested        | none                                | `map.js`, `anchorPopovers.js`, `profilePanel.js`, `main.js` (Leaflet and popover UI), plus the row/pin rendering side of `anchors.js`/`stops.js`, which have to be checked by hand in a browser                                                                                                                                                                                                                                                       |
 
 ---

@@ -53,6 +53,39 @@ beforeEach(() => {
   stopsModule.setActivityWindow({ start: START, end: END });
 });
 
+describe('a photo anchor\'s row', () => {
+  function rowOf(id) {
+    return anchorListEl.querySelector(`.anchor-row[data-id="${id}"]`);
+  }
+
+  it('shows the photo\'s thumbnail instead of the camera glyph', () => {
+    const id = anchorsModule.addAnchor({
+      lat: 1, lon: 1, distanceFromStart: 500, timestamp: at(START, 30 * 60_000), source: 'photo', thumbnailUrl: 'blob:thumb',
+    });
+
+    assert.equal(rowOf(id).querySelector('img.photo-thumb').getAttribute('src'), 'blob:thumb');
+    assert.doesNotMatch(rowOf(id).textContent, /📷/);
+  });
+
+  it('falls back to the camera glyph without a thumbnail', () => {
+    const id = anchorsModule.addAnchor({
+      lat: 1, lon: 1, distanceFromStart: 500, timestamp: at(START, 30 * 60_000), source: 'photo', thumbnailUrl: null,
+    });
+
+    assert.equal(rowOf(id).querySelector('img'), null);
+    assert.match(rowOf(id).textContent, /📷/);
+  });
+
+  it('never shows a picture on an anchor that isn\'t a photo', () => {
+    const id = anchorsModule.addAnchor({
+      lat: 1, lon: 1, distanceFromStart: 500, timestamp: at(START, 30 * 60_000), thumbnailUrl: 'blob:thumb',
+    });
+
+    assert.equal(rowOf(id).querySelector('img'), null);
+    assert.doesNotMatch(rowOf(id).textContent, /📷/);
+  });
+});
+
 describe('anchors against the activity window', () => {
   it('leaves an anchor the start moved past out of the payload, and brings it back when the start moves back', () => {
     const photo = anchorsModule.addAnchor({
