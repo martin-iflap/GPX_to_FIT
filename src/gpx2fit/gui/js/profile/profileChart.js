@@ -9,7 +9,7 @@
 // All colors come from CSS classes keyed off theme tokens in css/profile.css, so
 // a theme switch restyles the chart without a redraw.
 
-import { formatDistanceKm, formatElapsed, formatPace, formatSpeedKmh } from '../util/format.js';
+import { formatDistanceKm, formatElapsed, formatPace, formatPaceClock, formatSpeedKmh } from '../util/format.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -220,11 +220,6 @@ export function nearestSampleIndex(xs, x) {
   return lo;
 }
 
-function formatPaceTick(secondsPerKm) {
-  const rounded = Math.round(secondsPerKm);
-  return `${Math.floor(rounded / 60)}:${String(rounded % 60).padStart(2, '0')}`;
-}
-
 function formatKmTick(meters, stepMeters) {
   const decimals = stepMeters >= 1000 ? 0 : stepMeters >= 100 ? 1 : 2;
   return `${(meters / 1000).toFixed(decimals)} km`;
@@ -258,13 +253,38 @@ function extent(values) {
  * re-renders it whenever the container resizes.
  *
  * @param {HTMLElement} container
- * @param {{onHover?: (sample: object|null) => void}} [opts] - `onHover` gets the
+ * @param {{onHover?: (sample: ProfileSample|null) => void}} [opts] - `onHover` gets the
  *   sample under the cursor, or null when the cursor leaves the chart
  * @returns {{
- *   setData: (samples: object[]) => void,
+ *   setData: (samples: ProfileSample[]) => void,
  *   setOptions: (options: Partial<ChartOptions>) => void,
  *   render: () => void,
  * }}
+ *
+ * @typedef {{
+ *   distanceFromStart: number,
+ *   elapsedSeconds: number,
+ *   speedMps: number,
+ *   elevation: number|null,
+ *   lat: number,
+ *   lon: number,
+ *   isStop: boolean,
+ * }} ProfileSample - one point of core/activity_profile.py's downsampled
+ *   profile, as convert() returns it
+ *
+ * What a render leaves for the pointer handlers.
+ * @typedef {{
+ *   series: ReturnType<typeof buildSeries>,
+ *   plot: { left: number, top: number, width: number, height: number },
+ *   scaleX: ReturnType<typeof linearScale>,
+ *   scaleSpeed: ReturnType<typeof linearScale>|null,
+ *   scaleElevation: ReturnType<typeof linearScale>|null,
+ *   stopY: number|null,
+ *   hoverGroup: Element,
+ *   crosshair: Element,
+ *   speedDot: Element,
+ *   elevationDot: Element,
+ * }} ChartLayout
  *
  * @typedef {object} ChartOptions
  * @property {'time'|'distance'} axis
@@ -280,10 +300,12 @@ export function createProfileChart(container, { onHover } = {}) {
   tooltip.hidden = true;
   container.append(svg, tooltip);
 
+  /** @type {ProfileSample[]} */
   let samples = [];
   /** @type {ChartOptions} */
   const options = { axis: 'time', metric: 'speed', showSpeed: true, showElevation: true };
   // Recomputed on every render; read by the pointer handlers.
+  /** @type {ChartLayout|null} */
   let layout = null;
 
   function hideHover() {
@@ -294,26 +316,31 @@ export function createProfileChart(container, { onHover } = {}) {
     onHover?.(null);
   }
 
+  /** @param {number} index - into `samples` */
   function showHover(index) {
+    // Only reachable from a pointer event on a rendered chart.
+    if (!layout) {
+      return;
+    }
     const { series, scaleX, scaleSpeed, scaleElevation, stopY, hoverGroup, crosshair, speedDot, elevationDot, plot } = layout;
     const sample = samples[index];
     const px = scaleX(series.xs[index]);
-    crosshair.setAttribute('x1', px);
-    crosshair.setAttribute('x2', px);
+    crosshair.setAttribute('x1', String(px));
+    crosshair.setAttribute('x2', String(px));
 
     // A stop's dot rides its amber line, which on a pace chart isn't at the (null) pace value.
     const speedY = !scaleSpeed ? null : sample.isStop ? stopY : series.speeds[index] == null ? null : scaleSpeed(series.speeds[index]);
     speedDot.setAttribute('visibility', speedY == null ? 'hidden' : 'visible');
     speedDot.classList.toggle('is-stop', Boolean(sample.isStop));
     if (speedY != null) {
-      speedDot.setAttribute('cx', px);
-      speedDot.setAttribute('cy', speedY);
+      speedDot.setAttribute('cx', String(px));
+      speedDot.setAttribute('cy', String(speedY));
     }
     const elevation = series.elevations[index];
     elevationDot.setAttribute('visibility', elevation == null || !scaleElevation ? 'hidden' : 'visible');
     if (elevation != null && scaleElevation) {
-      elevationDot.setAttribute('cx', px);
-      elevationDot.setAttribute('cy', scaleElevation(elevation));
+      elevationDot.setAttribute('cx', String(px));
+      elevationDot.setAttribute('cy', String(scaleElevation(elevation)));
     }
     hoverGroup.setAttribute('visibility', 'visible');
 
@@ -376,6 +403,7 @@ export function createProfileChart(container, { onHover } = {}) {
 
     // Speed/pace: km/h from zero up; pace inverted, so the fastest pace is at the top.
     let scaleSpeed = null;
+    /** @type {number[]} */
     let speedTicks = [];
     if (options.showSpeed) {
       const speedExtent = extent(series.speeds) ?? [0, 1];
@@ -397,6 +425,7 @@ export function createProfileChart(container, { onHover } = {}) {
     // above the gray area. Shown alone, it gets the full height instead.
     const elevationExtent = options.showElevation ? extent(series.elevations) : null;
     let scaleElevation = null;
+    /** @type {number[]} */
     let elevationTicks = [];
     if (elevationExtent) {
       const [minElevation, maxElevation] = elevationExtent;
@@ -415,9 +444,12 @@ export function createProfileChart(container, { onHover } = {}) {
     // Grid lines follow the speed axis, or the elevation axis when speed is hidden.
     const grid = svgEl('g', {}, 'profile-grid');
     const [gridTicks, gridScale] = scaleSpeed ? [speedTicks, scaleSpeed] : [elevationTicks, scaleElevation];
-    for (const tick of gridTicks) {
-      const y = gridScale(tick).toFixed(1);
-      grid.append(svgEl('line', { x1: plot.left, x2: plotRight, y1: y, y2: y }));
+    // One of the two is always shown (the last visible series can't be hidden).
+    if (gridScale) {
+      for (const tick of gridTicks) {
+        const y = gridScale(tick).toFixed(1);
+        grid.append(svgEl('line', { x1: plot.left, x2: plotRight, y1: y, y2: y }));
+      }
     }
     svg.append(grid);
 
@@ -431,7 +463,7 @@ export function createProfileChart(container, { onHover } = {}) {
     // as a break rather than a glitch. On a pace chart a stop has no pace, so
     // it sits along the bottom (the slow end) instead.
     const stopY = scaleSpeed ? (metric === 'pace' ? plotBottom : scaleSpeed(0)) : null;
-    if (scaleSpeed) {
+    if (scaleSpeed && stopY !== null) {
       // A dotted reference at the average moving speed, under the speed line
       // so the series still reads on top of it. Off-scale (a capped pace can
       // push it past the axis) it's simply left out rather than clamped onto
@@ -441,14 +473,14 @@ export function createProfileChart(container, { onHover } = {}) {
         ? null
         : metric === 'pace' ? 1000 / averageMps : averageMps * 3.6;
       const averageY = average == null ? null : scaleSpeed(average);
-      if (averageY != null && averageY >= plot.top && averageY <= plotBottom) {
+      if (average != null && averageY != null && averageY >= plot.top && averageY <= plotBottom) {
         svg.append(svgEl(
           'line',
           { x1: plot.left, x2: plotRight, y1: averageY.toFixed(1), y2: averageY.toFixed(1) },
           'profile-average-line',
         ));
         const averageLabel = svgEl('text', { x: plotRight - 4, y: (averageY - 5).toFixed(1), 'text-anchor': 'end' }, 'profile-average-label');
-        averageLabel.textContent = `avg ${metric === 'pace' ? formatPaceTick(average) : average.toFixed(1)}`;
+        averageLabel.textContent = `avg ${metric === 'pace' ? formatPaceClock(average) : average.toFixed(1)}`;
         svg.append(averageLabel);
       }
 
@@ -470,7 +502,7 @@ export function createProfileChart(container, { onHover } = {}) {
     if (scaleSpeed) {
       for (const tick of speedTicks) {
         const text = svgEl('text', { x: plot.left - 8, y: scaleSpeed(tick), 'text-anchor': 'end', 'dominant-baseline': 'middle' }, 'profile-axis-label profile-axis-label--speed');
-        text.textContent = metric === 'pace' ? formatPaceTick(tick) : String(tick);
+        text.textContent = metric === 'pace' ? formatPaceClock(tick) : String(tick);
         labels.append(text);
       }
     }

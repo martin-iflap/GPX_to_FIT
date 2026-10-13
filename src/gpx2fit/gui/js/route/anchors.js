@@ -17,7 +17,10 @@ import { formatDateTime, formatDistanceKm } from '../util/format.js';
  * URL and releases it when the photo goes, which also removes the anchor.
  */
 
-/** A photo anchor's thumbnail for its row, or null (no picture: the row says 📷 instead). */
+/**
+ * A photo anchor's thumbnail for its row, or null (no picture: the row says 📷 instead).
+ * @param {Anchor} anchor
+ */
 function photoThumbnail(anchor) {
   if (anchor.source !== 'photo' || !anchor.thumbnailUrl) {
     return null;
@@ -29,6 +32,10 @@ function photoThumbnail(anchor) {
   return img;
 }
 
+/**
+ * @param {Anchor} anchor
+ * @param {import('./activityWindow.js').ActivityWindow|null} activityWindow
+ */
 function renderAnchorRowText(anchor, activityWindow) {
   const distanceEl = document.createElement('span');
   distanceEl.className = 'list-row-distance';

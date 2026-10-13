@@ -32,7 +32,7 @@ export function dayOffsetBetween(reference, target) {
  * @returns {number}
  */
 export function computeDayCount(referenceStart, totalDurationSeconds) {
-  if (!Number.isFinite(totalDurationSeconds) || totalDurationSeconds <= 0) {
+  if (typeof totalDurationSeconds !== 'number' || !Number.isFinite(totalDurationSeconds) || totalDurationSeconds <= 0) {
     return 1;
   }
   const end = new Date(referenceStart.getTime() + totalDurationSeconds * 1000);

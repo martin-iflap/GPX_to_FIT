@@ -7,6 +7,11 @@
     "moduleResolution": "bundler",
     "lib": ["es2023", "dom", "dom.iterable"],
     "strict": false,
+    "strictNullChecks": true,
+    "strictFunctionTypes": true,
+    "strictBindCallApply": true,
+    "noImplicitThis": true,
+    "useUnknownInCatchVariables": true,
     "skipLibCheck": true
   },
   "include": ["src/gpx2fit/gui/js/**/*.js", "types/*.d.ts"],

@@ -34,7 +34,7 @@ function isSeriesShown(button) {
  * @param {{showHoverMarker: (lat: number, lon: number) => void, hideHoverMarker: () => void}} opts.map -
  *   map.js's hover dot, which follows the chart's hover
  * @returns {{
- *   show: (samples: object[], sport: 'running'|'hiking') => void,
+ *   show: (samples: import('./profileChart.js').ProfileSample[], sport: 'running'|'hiking') => void,
  *   hide: () => void,
  * }}
  */
@@ -54,6 +54,7 @@ export function createProfilePanel({
   let hasData = false;
   // Null until the user picks a unit themselves; until then each conversion
   // uses its sport's default (pace for running, speed for hiking).
+  /** @type {'pace'|'speed'|null} */
   let chosenMetric = null;
 
   const chart = createProfileChart(chartEl, {
@@ -66,6 +67,7 @@ export function createProfilePanel({
     },
   });
 
+  /** @param {'pace'|'speed'} metric */
   function applyMetric(metric) {
     metricControl.select(metric);
     speedLabelEl.textContent = METRIC_LABELS[metric];
@@ -87,7 +89,9 @@ export function createProfilePanel({
   }
 
   wireSegmented(axisControlEl, (axis) => chart.setOptions({ axis: /** @type {'time'|'distance'} */ (axis) }));
-  const metricControl = wireSegmented(metricControlEl, (metric) => {
+  const metricControl = wireSegmented(metricControlEl, (value) => {
+    // The markup's options are exactly these two.
+    const metric = /** @type {'pace'|'speed'} */ (value);
     chosenMetric = metric;
     applyMetric(metric);
   });
@@ -121,7 +125,7 @@ export function createProfilePanel({
      * closed (including if the user hid it). Called again after a
      * re-conversion, it just swaps the data in place.
      *
-     * @param {object[]} samples - `profile` from pyodideBridge.js `convert()`
+     * @param {import('./profileChart.js').ProfileSample[]} samples - `profile` from pyodideBridge.js `convert()`
      * @param {'running'|'hiking'} sport - the sport the conversion ran with
      */
     show(samples, sport) {

@@ -40,10 +40,16 @@ const TILE_LAYERS = {
   },
 };
 
+// Leaflet's objects are `any`, like `L` itself (see types/cdn-globals.d.ts).
+/** @type {any} */
 let map = null;
+/** @type {any} */
 let tileLayer = null;
+/** @type {any} */
 let routeLine = null;
+/** @type {any} */
 let routeHitLine = null;
+/** @type {any} */
 let hoverMarker = null;
 // How many pixels at the bottom of the map something else covers (the phone
 // layout's sheet). See setBottomInsetProvider.

@@ -84,7 +84,7 @@ export function openCandidatePicker({ popovers, candidates, estimateArrival, onP
 
     container.append(list);
 
-    if (open.length === 0) {
+    if (photoTime && open.length === 0) {
       container.append(popoverHint(
         `The photo's time (${formatClockSeconds(photoTime)}) doesn't fit any of these passes.`,
         { warning: true },

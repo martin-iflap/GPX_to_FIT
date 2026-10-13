@@ -16,7 +16,9 @@ const START_MAP_SHARE = 0.5;
 // coveredMapHeight answers for where the sheet is headed, not where it is.
 const REVEAL_SETTLE_MS = 800;
 
+/** @type {HTMLElement|null} */
 let sidebar = null;
+/** @type {HTMLElement|null} */
 let mapPanel = null;
 let revealUntil = 0;
 
@@ -25,14 +27,20 @@ export function isPhoneLayout() {
   return typeof window.matchMedia === 'function' && window.matchMedia(PHONE_LAYOUT_QUERY).matches;
 }
 
-/** The sheet's top edge in viewport pixels. */
-function sheetTop() {
-  return sidebar.getBoundingClientRect().top;
+/**
+ * The sheet's top edge in viewport pixels.
+ * @param {HTMLElement} sheet
+ */
+function sheetTop(sheet) {
+  return sheet.getBoundingClientRect().top;
 }
 
-/** The scroll position at which the sheet's top sits at START_MAP_SHARE of the screen. */
-function startScrollTop() {
-  return Math.max(0, sheetTop() + window.scrollY - window.innerHeight * START_MAP_SHARE);
+/**
+ * The scroll position at which the sheet's top sits at START_MAP_SHARE of the screen.
+ * @param {HTMLElement} sheet
+ */
+function startScrollTop(sheet) {
+  return Math.max(0, sheetTop(sheet) + window.scrollY - window.innerHeight * START_MAP_SHARE);
 }
 
 /**
@@ -41,10 +49,10 @@ function startScrollTop() {
  * @returns {number}
  */
 export function coveredMapHeight() {
-  if (!sidebar || !isPhoneLayout()) {
+  if (!sidebar || !mapPanel || !isPhoneLayout()) {
     return 0;
   }
-  let top = sheetTop();
+  let top = sheetTop(sidebar);
   if (Date.now() < revealUntil) {
     top = Math.max(top, window.innerHeight * START_MAP_SHARE);
   }
@@ -62,11 +70,11 @@ export function revealMap() {
   if (!sidebar || !isPhoneLayout()) {
     return;
   }
-  if (sheetTop() >= window.innerHeight * START_MAP_SHARE - 1) {
+  if (sheetTop(sidebar) >= window.innerHeight * START_MAP_SHARE - 1) {
     return;
   }
   revealUntil = Date.now() + REVEAL_SETTLE_MS;
-  window.scrollTo({ top: startScrollTop(), behavior: 'smooth' });
+  window.scrollTo({ top: startScrollTop(sidebar), behavior: 'smooth' });
 }
 
 /**
@@ -77,7 +85,7 @@ export function revealMap() {
  * @param {HTMLElement} opts.mapPanelEl - `#mapPanel`, the profile panel's desktop home
  * @param {HTMLElement} opts.profilePanelEl - `#profilePanel`
  * @param {HTMLElement} opts.profileShowButtonEl - `#profileShowButton`
- * @param {{setAttributionPosition: (position: string) => void}} opts.mapModule
+ * @param {{setAttributionPosition: (position: 'topright'|'bottomright') => void}} opts.mapModule
  */
 export function initMobileLayout({ sidebarEl, mapPanelEl, profilePanelEl, profileShowButtonEl, mapModule }) {
   sidebar = sidebarEl;
@@ -97,13 +105,13 @@ export function initMobileLayout({ sidebarEl, mapPanelEl, profilePanelEl, profil
       // At the top of the sheet the chart sits right under the visible map,
       // where its hover dot is. Over the map's bottom, as on desktop, the
       // sheet would hide it.
-      sidebar.prepend(profilePanelEl, profileShowButtonEl);
+      sidebarEl.prepend(profilePanelEl, profileShowButtonEl);
       // The sheet hides the map's bottom corners, and the tile attribution
       // has to stay visible.
       mapModule.setAttributionPosition('topright');
-      window.scrollTo(0, startScrollTop());
+      window.scrollTo(0, startScrollTop(sidebarEl));
     } else {
-      mapPanel.append(profilePanelEl, profileShowButtonEl);
+      mapPanelEl.append(profilePanelEl, profileShowButtonEl);
       mapModule.setAttributionPosition('bottomright');
     }
   }

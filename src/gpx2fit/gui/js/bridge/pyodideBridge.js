@@ -56,9 +56,14 @@ const PY_SOURCE_ROOT = '/workspace/src';
 // copied, so no proxy into Python's memory outlives the call.
 const TO_JS_OPTIONS = { create_proxies: false, dict_converter: Object.fromEntries };
 
+// Pyodide's runtime and its proxies are `any`: like the CDN globals (see
+// types/cdn-globals.d.ts), they come untyped.
+/** @type {Promise<any>|null} */
 let pyodidePromise = null;
+/** @type {any} */
 let pyodide = null;
 // The `gpx2fit.core.bridge_api` module, imported once the runtime is up.
+/** @type {any} */
 let bridgeApi = null;
 
 // bridge_api keeps the parsed route between calls, and convert() awaits the
@@ -240,8 +245,13 @@ export function warmUpPyodide() {
  * @returns {any} - typed by each export's own JSDoc
  */
 function callBridge(name, ...args) {
+  /** @type {any[]} */
   const pyArgs = [];
   const fn = bridgeApi[name];
+  if (typeof fn !== 'function') {
+    // Said here: the `finally` below would otherwise fail on fn.destroy() first.
+    throw new Error(`bridge_api has no function ${name}`);
+  }
   let result;
   try {
     // Converted inside the try, so an argument that fails to convert still
@@ -407,7 +417,7 @@ async function fetchSurfaceMultipliers(sport) {
  *   see `curve_selection.resolve_max_speed_ratio`
  * @returns {Promise<{
  *   fitBytes: Uint8Array<ArrayBuffer>,
- *   profile: {distanceFromStart: number, elapsedSeconds: number, speedMps: number, elevation: number|null, lat: number, lon: number, isStop: boolean}[],
+ *   profile: import('../profile/profileChart.js').ProfileSample[],
  *   warnings: string[],
  * }>} the encoded FIT file, the paced activity's profile samples, and
  *   user-facing warnings about a conversion that went through but may not be

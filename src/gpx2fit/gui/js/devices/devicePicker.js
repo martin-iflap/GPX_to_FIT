@@ -18,6 +18,7 @@ import {
 } from './devices.js';
 import { wireNumericBox } from '../inputs/numericInput.js';
 import { readSetting, writeSetting } from '../state/storage.js';
+import { requireChild } from '../util/dom.js';
 
 // Remembered across visits like the other sidebar settings: most people
 // convert every route for the same watch.
@@ -103,6 +104,7 @@ export function initDevicePicker({ buttonEl, dialogEl }) {
 
   /* ---------- rendering ---------- */
 
+  /** @type {{ option: HTMLButtonElement, device: { manufacturer: number, product: number } }[]} */
   const optionButtons = [];
   // Every pickable button in reading order, and how they fall into visual
   // rows: "No device" alone, then each brand's grid GRID_COLUMNS at a time.
@@ -195,7 +197,7 @@ export function initDevicePicker({ buttonEl, dialogEl }) {
     navOptions[moveFocusIndex(rowLengths, index, event.key)].focus();
   });
 
-  dialogEl.querySelector('[data-device-close]').addEventListener('click', () => dialogEl.close());
+  requireChild(dialogEl, '[data-device-close]').addEventListener('click', () => dialogEl.close());
 
   // A click on the dialog element itself (not on anything inside its panel)
   // can only be a click on the backdrop, since the panel fills the box.

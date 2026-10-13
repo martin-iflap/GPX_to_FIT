@@ -20,6 +20,7 @@ const ROLES = {
   tabs: { group: 'tablist', option: 'tab', state: 'aria-selected' },
 };
 
+/** @type {Record<string, number>} */
 const KEY_STEPS = {
   ArrowRight: 1,
   ArrowDown: 1,
@@ -69,8 +70,11 @@ export function wireSegmented(control, onSelect, { kind = 'radio' } = {}) {
   buttons().forEach((button) => {
     button.setAttribute('role', roles.option);
     button.addEventListener('click', () => {
-      select(button.dataset.value);
-      onSelect(button.dataset.value);
+      const { value } = button.dataset;
+      if (value !== undefined) {
+        select(value);
+        onSelect(value);
+      }
     });
   });
   select(getValue());
@@ -95,9 +99,10 @@ export function wireSegmented(control, onSelect, { kind = 'radio' } = {}) {
     event.preventDefault();
     const target = options[to];
     target.focus();
-    if (target.dataset.value !== getValue()) {
-      select(target.dataset.value);
-      onSelect(target.dataset.value);
+    const { value } = target.dataset;
+    if (value !== undefined && value !== getValue()) {
+      select(value);
+      onSelect(value);
     }
   });
 

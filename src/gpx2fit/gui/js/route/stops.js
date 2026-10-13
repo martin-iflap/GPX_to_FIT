@@ -9,11 +9,18 @@ import { effectiveStopTimes, isStopActive } from './activityWindow.js';
 import { formatClock, formatDistanceKm, formatDuration } from '../util/format.js';
 
 /**
- * @typedef {{ id: number, distanceFromStart: number, mode: 'duration'|'startEnd', durationSeconds?: number, arrival?: Date, departure?: Date, arrivalOffsetSeconds?: number, departureOffsetSeconds?: number }} Stop
+ * A stop is one of two kinds, told apart by `mode`, which narrows it:
+ * @typedef {{ id: number, distanceFromStart: number, mode: 'duration', durationSeconds: number }} DurationStop
+ * @typedef {{ id: number, distanceFromStart: number, mode: 'startEnd', arrival: Date, departure: Date, arrivalOffsetSeconds?: number, departureOffsetSeconds?: number }} TimedStop
  * `arrivalOffsetSeconds`/`departureOffsetSeconds` are set for a side entered
  * as "Duration since start", which then follows the start (see anchors.js).
+ * @typedef {DurationStop|TimedStop} Stop
  */
 
+/**
+ * @param {Stop} stop
+ * @param {import('./activityWindow.js').ActivityWindow|null} activityWindow
+ */
 function rowLabel(stop, activityWindow) {
   if (stop.mode === 'duration') {
     return formatDuration(stop.durationSeconds);
@@ -23,6 +30,10 @@ function rowLabel(stop, activityWindow) {
   return isStopActive(stop, activityWindow) ? label : `${label} — outside the activity's time now, not used`;
 }
 
+/**
+ * @param {Stop} stop
+ * @param {import('./activityWindow.js').ActivityWindow|null} activityWindow
+ */
 function renderStopRowText(stop, activityWindow) {
   const distanceEl = document.createElement('span');
   distanceEl.className = 'list-row-distance';
@@ -62,23 +73,19 @@ export function createStopList({ listEl, emptyEl, pins, revealMap }) {
      * Adds a mid-route stop: assigns it an id, adds its numbered pin, and
      * re-renders the sidebar list.
      *
-     * @param {object} stop
-     * @param {number} stop.lat
-     * @param {number} stop.lon
-     * @param {number} stop.distanceFromStart - meters along the route; used for sidebar/pin ordering
-     * @param {'duration'|'startEnd'} stop.mode
-     * @param {number} [stop.durationSeconds] - for mode 'duration'
-     * @param {Date} [stop.arrival] - for mode 'startEnd'
-     * @param {Date} [stop.departure] - for mode 'startEnd'
-     * @param {number} [stop.arrivalOffsetSeconds] - for an arrival entered as a duration since start
-     * @param {number} [stop.departureOffsetSeconds] - for a departure entered as a duration since start
+     * @param {import('./markerList.js').NewItem<Stop>} stop - a stop's fields
+     *   (see `DurationStop`/`TimedStop`; `distanceFromStart` orders the list)
+     *   and where its pin goes. Only those fields are kept.
      * @returns {number} the assigned stop id
      */
-    addStop({
-      lat, lon, distanceFromStart, mode, durationSeconds, arrival, departure, arrivalOffsetSeconds, departureOffsetSeconds,
-    }) {
+    addStop(stop) {
+      const { lat, lon, distanceFromStart } = stop;
+      if (stop.mode === 'duration') {
+        return list.add({ lat, lon, distanceFromStart, mode: 'duration', durationSeconds: stop.durationSeconds });
+      }
+      const { arrival, departure, arrivalOffsetSeconds, departureOffsetSeconds } = stop;
       return list.add({
-        lat, lon, distanceFromStart, mode, durationSeconds, arrival, departure, arrivalOffsetSeconds, departureOffsetSeconds,
+        lat, lon, distanceFromStart, mode: 'startEnd', arrival, departure, arrivalOffsetSeconds, departureOffsetSeconds,
       });
     },
 

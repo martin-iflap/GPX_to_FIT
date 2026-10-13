@@ -27,18 +27,30 @@ import { createSegmented } from './segmented.js';
 import { createSpeedEntry } from './speedEntry.js';
 
 /**
- * What every mode resolves to. Only `durationSeconds` crosses the bridge;
- * "Avg speed" adds the parts it was worked out from, for its preview.
+ * What every mode resolves to: nothing more while it isn't valid, and the
+ * end and the duration once it is. Only `durationSeconds` crosses the
+ * bridge; "Avg speed" adds the parts it was worked out from, for its preview.
+ * Checking `isValid` (or `mode`) narrows it, so a valid result's fields need
+ * no `?`.
  *
+ * @typedef {{ isValid: false }} InvalidTime
  * @typedef {{
- *   isValid: boolean,
- *   mode?: 'duration'|'end'|'timeOfDay'|'avgSpeed',
- *   resolvedDate?: Date,
- *   durationSeconds?: number,
- *   movingSeconds?: number,
- *   stopSeconds?: number,
- *   speedMps?: number,
- * }} TimeResult
+ *   isValid: true,
+ *   mode: 'duration'|'end'|'timeOfDay',
+ *   resolvedDate: Date,
+ *   durationSeconds: number,
+ * }} ResolvedTime
+ * @typedef {{
+ *   isValid: true,
+ *   mode: 'avgSpeed',
+ *   resolvedDate: Date,
+ *   durationSeconds: number,
+ *   totalDistance: number,
+ *   movingSeconds: number,
+ *   stopSeconds: number,
+ *   speedMps: number,
+ * }} SpeedTime
+ * @typedef {InvalidTime|ResolvedTime|SpeedTime} TimeResult
  */
 
 const MINUTES_MAX = 59;
@@ -125,7 +137,7 @@ export function createTimeToggle({
   const otherKey = variant === 'durationOrEnd' ? 'end' : 'timeOfDay';
   // Scoped deliberately: an anchor or stop popover has no "whole route" to
   // divide by, so the third tab only exists on the main start-time control.
-  const speedEnabled = variant === 'durationOrEnd' && Boolean(speedMode);
+  const speedSource = variant === 'durationOrEnd' ? speedMode ?? null : null;
   // Consumed once, the first time refreshDaySelector runs (see below).
   // After that the day selector's own click handler is the only thing that
   // should move it, so a later, unrelated refresh doesn't keep snapping the
@@ -137,7 +149,7 @@ export function createTimeToggle({
   if (!isDurationOnly) {
     modeOptions.push({ value: otherKey, label: variant === 'durationOrEnd' ? 'End time' : 'Time of day' });
   }
-  if (speedEnabled) {
+  if (speedSource) {
     modeOptions.push({ value: 'avgSpeed', label: 'Avg speed' });
   }
   const modes = isDurationOnly
@@ -176,18 +188,25 @@ export function createTimeToggle({
   fieldsEl.append(durationFields, otherFields);
 
   // Only the main control has the tab, so only it gets the boxes.
-  const speedEntry = speedEnabled
-    ? createSpeedEntry({ getSport: () => speedMode.getSport(), onInput: () => updatePreview() })
+  const speedEntry = speedSource
+    ? createSpeedEntry({ getSport: () => speedSource.getSport(), onInput: () => updatePreview() })
     : null;
   if (speedEntry) {
     fieldsEl.append(speedEntry.el);
   }
 
-  // 'end': a full Date from createDateTimeField. 'timeOfDay': just
-  // {hours, minutes} from createTimeField (the day is always the reference's).
-  let otherValue = null;
+  // The second tab's value. 'end': a full Date from createDateTimeField.
+  // 'timeOfDay': just {hours, minutes} from createTimeField (the day is
+  // always the reference's). Only the one for otherKey is ever set.
+  /** @type {Date|null} */
+  let endValue = null;
+  /** @type {{hours: number, minutes: number}|null} */
+  let timeOfDayValue = null;
+  /** @type {ReturnType<typeof createTimeField>|null} */
   let timeOfDayField = null; // only set for the 'timeOfDay' branch, so initialTimeOfDay can prefill it
+  /** @type {ReturnType<typeof createDateTimeField>|null} */
   let endDateTimeField = null; // only set for the 'end' branch, so its date can default to the start's
+  /** @type {ReturnType<typeof createDaySelector>|null} */
   let daySelector = null; // only set for the 'timeOfDay' branch; stays hidden on single-day activities
 
   if (!isDurationOnly) {
@@ -197,7 +216,7 @@ export function createTimeToggle({
         dateAriaLabel: 'End date',
         timeAriaLabel: 'End time',
         onChange: (date) => {
-          otherValue = date;
+          endValue = date;
           updatePreview();
         },
       });
@@ -224,7 +243,7 @@ export function createTimeToggle({
         ariaLabel: 'Time of day',
         quickPicks: false,
         onChange: (value) => {
-          otherValue = value;
+          timeOfDayValue = value;
           updatePreview();
         },
       });
@@ -257,8 +276,8 @@ export function createTimeToggle({
 
   /** The route's length in meters, or null before a GPX has been loaded. */
   function currentTotalDistance() {
-    const distance = speedMode?.getTotalDistance();
-    return Number.isFinite(distance) && distance > 0 ? distance : null;
+    const distance = speedSource?.getTotalDistance();
+    return typeof distance === 'number' && Number.isFinite(distance) && distance > 0 ? distance : null;
   }
 
   /** @returns {TimeResult} */
@@ -283,6 +302,10 @@ export function createTimeToggle({
     }
 
     if (state.mode === 'avgSpeed') {
+      // Only the main control has this tab, and so a speed entry.
+      if (!speedEntry || !speedSource) {
+        return { isValid: false };
+      }
       const totalDistance = currentTotalDistance();
       const speedMps = speedEntry.getSpeedMps();
       if (totalDistance === null || speedMps === null) {
@@ -291,7 +314,7 @@ export function createTimeToggle({
       // Moving speed, so stopped time is added on top rather than eaten out
       // of it — see the `speedMode` docs above.
       const movingSeconds = totalDistance / speedMps;
-      const stopSeconds = Math.max(0, speedMode.getStopSeconds() || 0);
+      const stopSeconds = Math.max(0, speedSource.getStopSeconds() || 0);
       const durationSeconds = Math.round(movingSeconds + stopSeconds);
       const resolvedDate = new Date(reference.getTime() + durationSeconds * 1000);
       return {
@@ -299,6 +322,7 @@ export function createTimeToggle({
         mode: 'avgSpeed',
         resolvedDate,
         durationSeconds,
+        totalDistance,
         movingSeconds,
         stopSeconds,
         speedMps,
@@ -306,24 +330,27 @@ export function createTimeToggle({
     }
 
     if (otherKey === 'end') {
-      if (!otherValue) {
+      if (!endValue) {
         return { isValid: false };
       }
-      const durationSeconds = (otherValue.getTime() - reference.getTime()) / 1000;
+      const durationSeconds = (endValue.getTime() - reference.getTime()) / 1000;
       if (durationSeconds <= 0) {
         return { isValid: false };
       }
-      return { isValid: true, mode: 'end', resolvedDate: otherValue, durationSeconds };
+      return { isValid: true, mode: 'end', resolvedDate: endValue, durationSeconds };
     }
 
-    if (!otherValue) {
+    if (!timeOfDayValue) {
       return { isValid: false };
     }
     const resolvedDate = new Date(reference);
     resolvedDate.setDate(resolvedDate.getDate() + state.dayOffset);
-    resolvedDate.setHours(otherValue.hours, otherValue.minutes, 0, 0);
+    resolvedDate.setHours(timeOfDayValue.hours, timeOfDayValue.minutes, 0, 0);
     const durationSeconds = (resolvedDate.getTime() - reference.getTime()) / 1000;
-    return { isValid: durationSeconds >= 0, mode: 'timeOfDay', resolvedDate, durationSeconds };
+    if (durationSeconds < 0) {
+      return { isValid: false };
+    }
+    return { isValid: true, mode: 'timeOfDay', resolvedDate, durationSeconds };
   }
 
   function refreshDaySelector(reference) {
@@ -352,9 +379,10 @@ export function createTimeToggle({
    * the one that ends up in the FIT: they see which distance it was divided
    * by, how much stopped time was added, and where that lands them.
    */
+  /** @param {SpeedTime} result */
   function describeSpeedResult(result) {
-    const speedText = speedEntry.getUnit() === 'pace' ? formatPace(result.speedMps) : formatSpeedKmh(result.speedMps);
-    const head = `${formatDistanceKm(currentTotalDistance())} at ${speedText} → ${formatDuration(result.movingSeconds)}`;
+    const speedText = speedEntry?.getUnit() === 'pace' ? formatPace(result.speedMps) : formatSpeedKmh(result.speedMps);
+    const head = `${formatDistanceKm(result.totalDistance)} at ${speedText} → ${formatDuration(result.movingSeconds)}`;
     const body = result.stopSeconds > 0 ? `${head} moving + ${formatDuration(result.stopSeconds)} stopped` : head;
     return `${body} · ends ${formatDateTime(result.resolvedDate)}`;
   }
@@ -364,9 +392,7 @@ export function createTimeToggle({
     refreshDaySelector(reference);
     // Re-applied every time so the sport's default unit follows a sport
     // change, right up until the user picks a unit themselves.
-    if (speedEnabled) {
-      speedEntry.refresh();
-    }
+    speedEntry?.refresh();
     if (!reference) {
       previewEl.textContent =
         variant === 'durationOrEnd'
@@ -383,9 +409,9 @@ export function createTimeToggle({
       return;
     }
 
-    if (state.mode === 'avgSpeed') {
+    if (result.mode === 'avgSpeed') {
       previewEl.textContent = describeSpeedResult(result);
-    } else if (state.mode === 'duration') {
+    } else if (result.mode === 'duration') {
       if (isDurationOnly) {
         previewEl.textContent = `Duration: ${formatDuration(result.durationSeconds)}`;
       } else {
@@ -413,9 +439,9 @@ export function createTimeToggle({
     modes?.select(mode);
     Object.entries(modeFields).forEach(([key, fields]) => fields.classList.toggle('hidden', key !== mode));
 
-    if (speedEnabled && mode !== 'avgSpeed') {
+    if (mode !== 'avgSpeed') {
       // Otherwise it is still open, unfocused, when the tab comes back.
-      speedEntry.closePresets();
+      speedEntry?.closePresets();
     }
 
     if (mode === otherKey && endDateTimeField) {
@@ -457,7 +483,7 @@ export function createTimeToggle({
       hoursInput.select();
     },
     [otherKey]: () => (endDateTimeField ?? timeOfDayField)?.focus(),
-    avgSpeed: () => speedEntry.focus(),
+    avgSpeed: () => speedEntry?.focus(),
   };
 
   function focusMode(mode) {

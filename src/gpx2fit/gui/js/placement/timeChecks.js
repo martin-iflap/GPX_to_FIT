@@ -13,8 +13,8 @@ export const OUTSIDE_WINDOW_HINT = 'This time isn\'t between the activity\'s sta
 /**
  * @param {object} deps
  * @param {ReturnType<import('../state/appState.js').createAppState>} deps.appState
- * @param {{ getActiveAnchors: () => object[] }} deps.anchors
- * @param {{ getActiveStops: () => object[] }} deps.stops
+ * @param {{ getActiveAnchors: () => import('../route/anchors.js').Anchor[] }} deps.anchors
+ * @param {{ getActiveStops: () => import('../route/stops.js').Stop[] }} deps.stops
  */
 export function createTimeChecks({ appState, anchors, stops }) {
   function isInsideWindow(date) {

@@ -79,8 +79,8 @@ export function createFocusDropdown({
     // After the focus change has settled: during 'blur' activeElement is
     // still the old element (or the body).
     window.setTimeout(() => {
-      const active = /** @type {HTMLElement|null} */ (document.activeElement);
-      if (!triggers.includes(active) && !el.contains(active)) {
+      const active = document.activeElement;
+      if (!(active instanceof HTMLElement) || (!triggers.includes(active) && !el.contains(active))) {
         close();
       }
     }, 0);

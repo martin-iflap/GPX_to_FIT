@@ -25,7 +25,11 @@
 //   macOS produces a special character ("˙" for Option+H) rather than the
 //   letter itself.
 
-const IS_APPLE = /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent || '');
+// navigator.platform is deprecated; userAgentData is Chromium-only (so the
+// DOM types don't have it), and everywhere else the user agent says it.
+const IS_APPLE = /Mac|iPhone|iPad|iPod/.test(
+  /** @type {{userAgentData?: {platform?: string}}} */ (navigator).userAgentData?.platform || navigator.userAgent || '',
+);
 
 /** Alt combo with no other modifier — Alt+Shift+H should not switch sport. */
 function isAltCombo(event, code) {
@@ -61,8 +65,26 @@ function clickSport(controls, value) {
 }
 
 /**
- * @typedef {object} Controls - what initShortcuts was given, plus the
- *   panel's own `isPanelOpen()` and `setPanelOpen(open)`
+ * What initShortcuts is given: the controls the shortcuts act through.
+ * @typedef {object} ShortcutOptions
+ * @property {HTMLElement} triggerButton - the header button that toggles the panel
+ * @property {HTMLElement} panelContainer - empty element the panel mounts into
+ * @property {ReturnType<import('../inputs/segmented.js').wireSegmented>} sportControl -
+ *   the wired #sportControl
+ * @property {HTMLButtonElement} runButton - the Convert button
+ * @property {HTMLInputElement} gpxFileInput - the hidden GPX file input
+ * @property {HTMLInputElement} photoFileInput - the hidden photo file input
+ * @property {HTMLButtonElement} deviceButton - the sidebar button that opens the device picker
+ * @property {{ focus: () => void }} startTimeField - createDateTimeField's
+ * @property {{ focusMode: (mode: string) => boolean, nextMode: () => boolean }} startTimeToggle -
+ *   createTimeToggle's
+ * @property {HTMLElement} appShellEl - the app shell, which carries `.has-profile` while the profile panel is open
+ * @property {HTMLButtonElement} profileCloseButton - hides the profile panel
+ * @property {HTMLButtonElement} profileShowButton - reopens it; `hidden` while there's nothing to show
+ *
+ * What each shortcut's `run` and `targets` get: the options, plus the
+ * panel's own `isPanelOpen()` and `setPanelOpen(open)`.
+ * @typedef {ShortcutOptions & { isPanelOpen: () => boolean, setPanelOpen: (open: boolean) => void }} Controls
  *
  * @typedef {object} Shortcut
  * @property {string[]} keys - display only, rendered as <kbd> chips
@@ -218,21 +240,7 @@ function displayKey(token) {
  * Every control passed in is one of the shortcuts act through on behalf of the
  * user — this module never reads or writes app state itself.
  *
- * @param {object} opts
- * @param {HTMLElement} opts.triggerButton - the header button that toggles the panel
- * @param {HTMLElement} opts.panelContainer - empty element the panel mounts into
- * @param {ReturnType<import('../inputs/segmented.js').wireSegmented>} opts.sportControl -
- *   the wired #sportControl
- * @param {HTMLButtonElement} opts.runButton - the Convert button
- * @param {HTMLInputElement} opts.gpxFileInput - the hidden GPX file input
- * @param {HTMLInputElement} opts.photoFileInput - the hidden photo file input
- * @param {HTMLButtonElement} opts.deviceButton - the sidebar button that opens the device picker
- * @param {{ focus: () => void }} opts.startTimeField - createDateTimeField's
- * @param {{ focusMode: (mode: string) => boolean, nextMode: () => boolean }} opts.startTimeToggle -
- *   createTimeToggle's
- * @param {HTMLElement} opts.appShellEl - the app shell, which carries `.has-profile` while the profile panel is open
- * @param {HTMLButtonElement} opts.profileCloseButton - hides the profile panel
- * @param {HTMLButtonElement} opts.profileShowButton - reopens it; `hidden` while there's nothing to show
+ * @param {ShortcutOptions} opts
  */
 export function initShortcuts(opts) {
   const { triggerButton, panelContainer } = opts;

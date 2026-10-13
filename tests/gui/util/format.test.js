@@ -13,6 +13,7 @@ import {
   formatGapMeters,
   formatFileSize,
   formatPace,
+  formatPaceClock,
   formatSpeedKmh,
   leftOutNote,
   statusWithWarnings,
@@ -48,7 +49,8 @@ describe('formatDateTime', () => {
     const formatted = formatDateTime(new Date(2024, 8, 5, 14, 30));
     assert.ok(formatted.includes('Sep'));
     assert.ok(formatted.includes('5'));
-    assert.match(formatted, /2:30|14:30/);
+    assert.match(formatted, /14:30/);
+    assert.doesNotMatch(formatted, /AM|PM/i);
   });
 });
 
@@ -107,6 +109,14 @@ describe('formatPace', () => {
 
   it('has no finite pace at zero speed', () => {
     assert.equal(formatPace(0), '–:–– /km');
+  });
+});
+
+describe('formatPaceClock', () => {
+  it('formats seconds per km as m:ss, rounded to the second', () => {
+    assert.equal(formatPaceClock(400), '6:40');
+    assert.equal(formatPaceClock(300.4), '5:00');
+    assert.equal(formatPaceClock(59.6), '1:00');
   });
 });
 

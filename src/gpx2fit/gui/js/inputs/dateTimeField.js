@@ -35,7 +35,7 @@ function caretIsAt(input, position) {
  * selects (see createTimeField below) — there, replacing the old value
  * wholesale is exactly what typing a new one should do.
  */
-export function focusSegmentEnd(input) {
+function focusSegmentEnd(input) {
   input.focus();
   const end = input.value.length;
   input.setSelectionRange(end, end);
@@ -255,10 +255,12 @@ export function createDaySelector({ container, onChange }) {
 
   let dayIndex = 0;
   let dayCount = 1;
+  /** @type {Date|null} */
   let reference = null;
 
+  /** @param {number} offset - days after the reference's (only called once there is one) */
   function dayDate(offset) {
-    const date = new Date(reference);
+    const date = new Date(reference ?? Date.now());
     date.setDate(date.getDate() + offset);
     return date;
   }
@@ -345,6 +347,7 @@ export function createDateTimeField({ container, dateAriaLabel = 'Date', timeAri
   wrapper.append(dateInput, timeContainer);
   container.append(wrapper);
 
+  /** @type {{hours: number, minutes: number}|null} */
   let timeValue = null;
 
   function currentValue() {

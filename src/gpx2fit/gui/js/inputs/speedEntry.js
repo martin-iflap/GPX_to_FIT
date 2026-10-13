@@ -85,6 +85,7 @@ function createSuffix(text) {
  */
 export function createSpeedEntry({ getSport, onInput }) {
   // Null until the user clicks a unit themselves; until then the sport picks it.
+  /** @type {SpeedUnit|null} */
   let chosenUnit = null;
 
   // Both unit shapes are built once and the inactive one is just hidden, so
@@ -165,6 +166,7 @@ export function createSpeedEntry({ getSport, onInput }) {
   /**
    * The preset nearest what's already entered, so a second visit doesn't
    * start back at the top of a 15-row list. Null with nothing entered.
+   * @param {{ value: { metersPerSecond: number } }[]} options
    */
   function nearestPresetIndex(options) {
     const current = speedMpsFor(currentUnit());

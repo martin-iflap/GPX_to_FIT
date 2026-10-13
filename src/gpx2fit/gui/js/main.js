@@ -37,50 +37,51 @@ import {
   leftOutNote,
   statusWithWarnings,
 } from './util/format.js';
+import { requireElement } from './util/dom.js';
 
-const dropzone = document.getElementById('dropzone');
-const gpxFileInput = /** @type {HTMLInputElement} */ (document.getElementById('gpxFileInput'));
-const fileNameEl = document.getElementById('fileName');
-const routeSummaryEl = document.getElementById('routeSummary');
-const summaryDistanceEl = document.getElementById('summaryDistance');
-const summaryElevationEl = document.getElementById('summaryElevation');
-const mapEmptyStateEl = document.getElementById('mapEmptyState');
-const sportControlEl = document.getElementById('sportControl');
-const surfaceLookupToggleEl = /** @type {HTMLInputElement} */ (document.getElementById('surfaceLookupToggle'));
-const smoothnessSliderEl = /** @type {HTMLInputElement} */ (document.getElementById('smoothnessSlider'));
-const smoothnessValueEl = document.getElementById('smoothnessValue');
-const deviceButtonEl = /** @type {HTMLButtonElement} */ (document.getElementById('deviceButton'));
-const deviceDialogEl = /** @type {HTMLDialogElement} */ (document.getElementById('deviceDialog'));
-const startTimeFieldEl = document.getElementById('startTimeField');
-const startTimeToggleContainer = document.getElementById('startTimeToggle');
-const anchorListEl = document.getElementById('anchorList');
-const anchorEmptyStateEl = document.getElementById('anchorEmptyState');
-const stopListEl = document.getElementById('stopList');
-const stopEmptyStateEl = document.getElementById('stopEmptyState');
-const photoDropzoneEl = document.getElementById('photoDropzone');
-const photoFileInputEl = /** @type {HTMLInputElement} */ (document.getElementById('photoFileInput'));
-const photoGalleryInputEl = /** @type {HTMLInputElement} */ (document.getElementById('photoGalleryInput'));
-const photoGalleryLinkEl = /** @type {HTMLButtonElement} */ (document.getElementById('photoGalleryLink'));
-const photoListEl = document.getElementById('photoList');
-const photoEmptyStateEl = document.getElementById('photoEmptyState');
-const runButton = /** @type {HTMLButtonElement} */ (document.getElementById('runButton'));
-const statusEl = document.getElementById('status');
-const downloadLink = /** @type {HTMLAnchorElement} */ (document.getElementById('downloadLink'));
-const themeToggle = /** @type {HTMLButtonElement} */ (document.getElementById('themeToggle'));
-const shortcutsToggle = /** @type {HTMLButtonElement} */ (document.getElementById('shortcutsToggle'));
-const shortcutsPanelEl = document.getElementById('shortcutsPanel');
-const appShellEl = document.getElementById('appShell');
-const profilePanelEl = document.getElementById('profilePanel');
-const profileChartEl = document.getElementById('profileChart');
-const profileAxisControlEl = document.getElementById('profileAxisControl');
-const profileMetricControlEl = document.getElementById('profileMetricControl');
-const profileSpeedLabelEl = document.getElementById('profileSpeedLabel');
-const profileSpeedToggleEl = /** @type {HTMLButtonElement} */ (document.getElementById('profileSpeedToggle'));
-const profileElevationToggleEl = /** @type {HTMLButtonElement} */ (document.getElementById('profileElevationToggle'));
-const profileCloseButtonEl = /** @type {HTMLButtonElement} */ (document.getElementById('profileCloseButton'));
-const profileShowButtonEl = /** @type {HTMLButtonElement} */ (document.getElementById('profileShowButton'));
-const mapPanelEl = document.getElementById('mapPanel');
-const sidebarEl = document.getElementById('sidebar');
+const dropzone = requireElement('dropzone');
+const gpxFileInput = requireElement('gpxFileInput', HTMLInputElement);
+const fileNameEl = requireElement('fileName');
+const routeSummaryEl = requireElement('routeSummary');
+const summaryDistanceEl = requireElement('summaryDistance');
+const summaryElevationEl = requireElement('summaryElevation');
+const mapEmptyStateEl = requireElement('mapEmptyState');
+const sportControlEl = requireElement('sportControl');
+const surfaceLookupToggleEl = requireElement('surfaceLookupToggle', HTMLInputElement);
+const smoothnessSliderEl = requireElement('smoothnessSlider', HTMLInputElement);
+const smoothnessValueEl = requireElement('smoothnessValue');
+const deviceButtonEl = requireElement('deviceButton', HTMLButtonElement);
+const deviceDialogEl = requireElement('deviceDialog', HTMLDialogElement);
+const startTimeFieldEl = requireElement('startTimeField');
+const startTimeToggleContainer = requireElement('startTimeToggle');
+const anchorListEl = requireElement('anchorList');
+const anchorEmptyStateEl = requireElement('anchorEmptyState');
+const stopListEl = requireElement('stopList');
+const stopEmptyStateEl = requireElement('stopEmptyState');
+const photoDropzoneEl = requireElement('photoDropzone');
+const photoFileInputEl = requireElement('photoFileInput', HTMLInputElement);
+const photoGalleryInputEl = requireElement('photoGalleryInput', HTMLInputElement);
+const photoGalleryLinkEl = requireElement('photoGalleryLink', HTMLButtonElement);
+const photoListEl = requireElement('photoList');
+const photoEmptyStateEl = requireElement('photoEmptyState');
+const runButton = requireElement('runButton', HTMLButtonElement);
+const statusEl = requireElement('status');
+const downloadLink = requireElement('downloadLink', HTMLAnchorElement);
+const themeToggle = requireElement('themeToggle', HTMLButtonElement);
+const shortcutsToggle = requireElement('shortcutsToggle', HTMLButtonElement);
+const shortcutsPanelEl = requireElement('shortcutsPanel');
+const appShellEl = requireElement('appShell');
+const profilePanelEl = requireElement('profilePanel');
+const profileChartEl = requireElement('profileChart');
+const profileAxisControlEl = requireElement('profileAxisControl');
+const profileMetricControlEl = requireElement('profileMetricControl');
+const profileSpeedLabelEl = requireElement('profileSpeedLabel');
+const profileSpeedToggleEl = requireElement('profileSpeedToggle', HTMLButtonElement);
+const profileElevationToggleEl = requireElement('profileElevationToggle', HTMLButtonElement);
+const profileCloseButtonEl = requireElement('profileCloseButton', HTMLButtonElement);
+const profileShowButtonEl = requireElement('profileShowButton', HTMLButtonElement);
+const mapPanelEl = requireElement('mapPanel');
+const sidebarEl = requireElement('sidebar');
 
 // The parsed route, the sport and the start time, read by the convert
 // handler, the anchor placer and the photo drop.
@@ -175,9 +176,7 @@ function totalStopSeconds() {
       return total + (Number.isFinite(stop.durationSeconds) ? stop.durationSeconds : 0);
     }
     // Resolved against the current start, since a side entered as a duration follows it.
-    // A start/end stop always has both times.
-    const timed = /** @type {{ arrival: Date, departure: Date }} */ (stop);
-    const { arrival, departure } = effectiveStopTimes(timed, getStartTime());
+    const { arrival, departure } = effectiveStopTimes(stop, getStartTime());
     const seconds = (departure.getTime() - arrival.getTime()) / 1000;
     return total + (Number.isFinite(seconds) ? seconds : 0);
   }, 0);
@@ -244,13 +243,13 @@ const anchorPlacer = createAnchorPlacer({
   // A Leaflet popup on a desktop, #routeDialog on a phone.
   popovers: createPopoverHost({
     map: mapModule,
-    dialogEl: /** @type {HTMLDialogElement} */ (document.getElementById('routeDialog')),
+    dialogEl: requireElement('routeDialog', HTMLDialogElement),
     isPhoneLayout,
   }),
   resolveAnchorCandidates,
   revealMap,
   setStatus,
-  placementBannerEl: document.getElementById('photoPlacementBanner'),
+  placementBannerEl: requireElement('photoPlacementBanner'),
 });
 // A dragged photo pin only moves once the user confirms where.
 anchors.setAnchorDragEndListener(anchorPlacer.handleAnchorDrag);
@@ -264,7 +263,7 @@ const photoDrop = createPhotoDrop({
   galleryLinkEl: photoGalleryLinkEl,
   listEl: photoListEl,
   emptyStateEl: photoEmptyStateEl,
-  summaryEl: document.getElementById('photoSummary'),
+  summaryEl: requireElement('photoSummary'),
   appState,
   resolvePhotoAnchors,
   addAnchor: anchors.addAnchor,
@@ -337,7 +336,10 @@ runButton.addEventListener('click', async () => {
   // so this is the one place guaranteed to be reading them as they are right
   // now. getResult() is pure — it only re-reads the fields.
   const resolvedTime = startTimeToggle.getResult();
-  if (!resolvedTime.isValid || !appState.route) {
+  // A valid result implies a valid start (it is measured from it), but the
+  // check is what lets the type checker see that.
+  const start = startTimeField.getValue();
+  if (!resolvedTime.isValid || !appState.route || !start) {
     // The cached result was stale; re-render it so the button and preview
     // say why, instead of starting a conversion that can't run.
     startTimeToggle.refresh();
@@ -376,7 +378,7 @@ runButton.addEventListener('click', async () => {
     const convertedSport = appState.sport;
     const { fileName } = appState.route;
     const { fitBytes, profile, warnings } = await convert({
-      startIso: startTimeField.getValue().toISOString(),
+      startIso: start.toISOString(),
       durationSeconds: resolvedTime.durationSeconds,
       sport: convertedSport,
       anchors: anchorsPayload,

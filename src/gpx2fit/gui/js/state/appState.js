@@ -29,6 +29,7 @@ export function createAppState({ sport = 'hiking' } = {}) {
   let timeResult = { isValid: false };
   /** @type {ActivityWindow|null} */
   let lastWindow = null;
+  /** @type {((activityWindow: ActivityWindow|null) => void)[]} */
   const windowListeners = [];
 
   function activityWindow() {

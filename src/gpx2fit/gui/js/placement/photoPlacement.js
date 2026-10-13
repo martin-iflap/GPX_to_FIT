@@ -8,21 +8,33 @@
 // without Leaflet lives here.
 
 /**
+ * A photo waiting for its route tap: `onPlaced` gets the point tapped, and
+ * `onCancel` (if any) runs when it stops waiting without one.
+ * @typedef {{
+ *   timestamp: Date,
+ *   thumbnailUrl?: string|null,
+ *   onPlaced: (position: {lat: number, lon: number, distanceFromStart: number}) => void,
+ *   onCancel?: () => void,
+ * }} PendingPhoto
+ */
+
+/**
  * Holds at most one photo waiting for a route tap. Arming another photo
  * cancels the one before it (its `onCancel` runs), so two rows can't both
  * think they're about to be placed. `onChange` hears every change of the
  * pending photo (armed, canceled, consumed), which is what the map's
  * "placing" banner and cursor follow.
  *
- * @param {{ onChange?: (pending: object|null) => void }} [opts]
+ * @param {{ onChange?: (pending: PendingPhoto|null) => void }} [opts]
  * @returns {{
- *   arm: (photo: {timestamp: Date, onPlaced: (position: object) => void, onCancel?: () => void}) => void,
+ *   arm: (photo: PendingPhoto) => void,
  *   cancel: () => void,
- *   pending: () => object|null,
- *   consume: () => object|null,
+ *   pending: () => PendingPhoto|null,
+ *   consume: () => PendingPhoto|null,
  * }}
  */
 export function createPhotoPlacement({ onChange = () => {} } = {}) {
+  /** @type {PendingPhoto|null} */
   let current = null;
 
   function cancel() {

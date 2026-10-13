@@ -99,10 +99,12 @@ export function findOrderConflict(points, { distanceFromStart, time, until = tim
   return null;
 }
 
+/** @param {TimedPoint} point */
 function pointName({ kind, distanceFromStart }) {
   return `${kind} at ${formatDistanceKm(distanceFromStart)}`;
 }
 
+/** @param {TimedPoint} point */
 function pointTime({ earliest, latest }) {
   return earliest.getTime() === latest.getTime()
     ? formatClockSeconds(earliest)

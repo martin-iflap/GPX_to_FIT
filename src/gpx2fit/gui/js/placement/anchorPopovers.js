@@ -66,8 +66,8 @@ const MIN_PHOTO_MOVE_M = 10;
  *   shown while a photo waits for its tap (`#photoPlacementBanner`)
  * @returns {{
  *   handleRouteClick: (lat: number, lon: number) => Promise<void>,
- *   handleAnchorDrag: (anchor: object, lat: number, lon: number, revert: () => void) => Promise<void>,
- *   placePhoto: (photo: {timestamp: Date, thumbnailUrl?: string|null, onPlaced: (position: {lat: number, lon: number, distanceFromStart: number}) => void, onCancel?: () => void}) => void,
+ *   handleAnchorDrag: (anchor: import('../route/anchors.js').Anchor, lat: number, lon: number, revert: () => void) => Promise<void>,
+ *   placePhoto: (photo: import('./photoPlacement.js').PendingPhoto) => void,
  *   cancelPhotoPlacement: () => void,
  *   choosePhotoPass: (photo: {timestamp: Date, passes: {lat: number, lon: number, distance_from_start: number}[], onPicked: (pass: {lat: number, lon: number, distance_from_start: number}) => void}) => void,
  * }}
@@ -89,6 +89,7 @@ export function createAnchorPlacer({
   // The map and the banner follow the pending photo: a crosshair and a
   // pulsing route, and a banner saying which photo and how to back out.
   // The sidebar status alone sits off-screen at the end of a phone's sheet.
+  /** @param {import('./photoPlacement.js').PendingPhoto|null} photo */
   function showPlacementState(photo) {
     map.setPlacementMode(Boolean(photo));
     if (!placementBannerEl) {
@@ -98,9 +99,10 @@ export function createAnchorPlacer({
     if (!photo) {
       return;
     }
-    placementBannerEl.querySelector('.placement-banner-text').textContent = (
-      `Tap the route where the photo from ${formatClockSeconds(photo.timestamp)} was taken`
-    );
+    const textEl = placementBannerEl.querySelector('.placement-banner-text');
+    if (textEl) {
+      textEl.textContent = `Tap the route where the photo from ${formatClockSeconds(photo.timestamp)} was taken`;
+    }
     const thumb = /** @type {HTMLImageElement} */ (placementBannerEl.querySelector('.placement-banner-thumb'));
     thumb.hidden = !photo.thumbnailUrl;
     if (photo.thumbnailUrl) {
@@ -110,7 +112,7 @@ export function createAnchorPlacer({
     }
   }
   placementBannerEl?.querySelector('.placement-banner-cancel')
-    .addEventListener('click', () => cancelPhotoPlacement());
+    ?.addEventListener('click', () => cancelPhotoPlacement());
 
   // A uniform-pace ballpark (see placementEstimates.js), against the current
   // route, start and duration.
@@ -168,7 +170,8 @@ export function createAnchorPlacer({
       });
 
       confirmBtn.addEventListener('click', () => {
-        if (!usable) {
+        // `usable` implies a valid result; the second check narrows its type.
+        if (!usable || !lastResult.isValid) {
           return;
         }
         anchors.addAnchor({

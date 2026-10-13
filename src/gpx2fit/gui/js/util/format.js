@@ -33,7 +33,8 @@ export function formatClockSeconds(date) {
 }
 
 /**
- * Formats a Date as a short local date + time, e.g. "Sep 5, 02:30 PM".
+ * Formats a Date as a short local date + time, e.g. "Sep 5, 14:30". Always a
+ * 24-hour clock, like formatClock, so anchor and stop rows read alike.
  * @param {Date} date
  * @returns {string}
  */
@@ -43,6 +44,7 @@ export function formatDateTime(date) {
     day: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
+    hourCycle: 'h23',
   });
 }
 
@@ -111,8 +113,18 @@ export function formatPace(metersPerSecond) {
   if (!(metersPerSecond > 0)) {
     return '–:–– /km';
   }
-  const secondsPerKm = Math.round(1000 / metersPerSecond);
-  return `${Math.floor(secondsPerKm / 60)}:${pad(secondsPerKm % 60)} /km`;
+  return `${formatPaceClock(1000 / metersPerSecond)} /km`;
+}
+
+/**
+ * Formats a pace given in seconds per km as "m:ss", without a unit (the
+ * profile chart's ticks), e.g. 400 -> "6:40". Rounds to the whole second.
+ * @param {number} secondsPerKm
+ * @returns {string}
+ */
+export function formatPaceClock(secondsPerKm) {
+  const rounded = Math.round(secondsPerKm);
+  return `${Math.floor(rounded / 60)}:${pad(rounded % 60)}`;
 }
 
 /**

@@ -65,9 +65,9 @@ export function toggleDefaultsFromEstimate(estimate, start) {
  * start": stored so the anchor or stop follows later start changes. Absent
  * for a time of day, which is a fixed clock time.
  *
- * @param {{ mode?: string, durationSeconds?: number }} result - a `createTimeToggle` result
+ * @param {import('../inputs/timeInput.js').TimeResult} result - a `createTimeToggle` result
  * @returns {number|undefined}
  */
 export function offsetSecondsOf(result) {
-  return result.mode === 'duration' ? result.durationSeconds : undefined;
+  return result.isValid && result.mode === 'duration' ? result.durationSeconds : undefined;
 }

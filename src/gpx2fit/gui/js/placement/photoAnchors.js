@@ -39,6 +39,12 @@ import { isStrictlyInside } from '../route/activityWindow.js';
 import { wireDropzone, wireFileInput } from '../inputs/dropzone.js';
 import { describeError, formatClockSeconds, formatGapMeters } from '../util/format.js';
 
+/**
+ * A dropped photo with both a position and a capture time, ready to be
+ * matched to the route.
+ * @typedef {{ lat: number, lon: number, timestamp: Date, row: ReturnType<typeof createPhotoRow> }} PhotoReading
+ */
+
 // Extensions a photo can carry when the browser doesn't give it an image
 // type: Android's file chooser and Windows both send HEIC with an empty type.
 const PHOTO_EXTENSIONS = new Set(['jpg', 'jpeg', 'jpe', 'heic', 'heif', 'png', 'tif', 'tiff', 'webp', 'dng', 'avif']);
@@ -144,10 +150,13 @@ function createPhotoRow(fileName, listEl, { onRemoved, onBecameAnchor }) {
   info.append(textEl);
 
   let isAnchor = false;
+  /** @type {string|null} */
   let thumbnailUrl = null;
+  /** @type {HTMLElement|null} */
   let actionEl = null;
   let onRemove = () => {};
   let removed = false;
+  /** @type {string|null} */
   let key = null;
 
   function release() {
@@ -269,7 +278,7 @@ function rowButton(text) {
  * @param {HTMLElement} [opts.galleryLinkEl] - opens `galleryInputEl`
  * @param {HTMLElement} opts.listEl - `<ul>` to render per-file status rows into
  * @param {HTMLElement} opts.emptyStateEl - shown while there are no photos
- * @param {HTMLElement} [opts.summaryEl] - says how many photos became
+ * @param {HTMLElement|null} [opts.summaryEl] - says how many photos became
  *   anchors; hidden while none have
  * @param {{ route: object|null, activityWindow: () => ({start: Date, end: Date}|null) }} opts.appState -
  *   appState.js's: drops are only accepted once a route has parsed, and the
@@ -424,6 +433,9 @@ export function createPhotoDrop({
    * for files with a position and a time, or `null` for anything that can't be
    * batched into a route-resolution call (never throws — failures are
    * reported on the row and swallowed here).
+   *
+   * @param {File} file
+   * @returns {Promise<PhotoReading|null>}
    */
   async function readFile(file) {
     const row = addRow(file.name);
@@ -462,12 +474,12 @@ export function createPhotoDrop({
       return null;
     }
     row.setKey(key);
-    if (metadata.lat === null) {
+    if (metadata.lat === null || metadata.lon === null) {
       offerPlacement(row, metadata.timestamp);
       return null;
     }
 
-    return { ...metadata, row };
+    return { lat: metadata.lat, lon: metadata.lon, timestamp: metadata.timestamp, row };
   }
 
   async function handleFiles(files) {
@@ -483,7 +495,10 @@ export function createPhotoDrop({
     // reset when a new route loads) must not become an anchor: on a reset
     // the match would even be against the new route.
     const readings = (await Promise.all([...files].map((file) => readFile(file))))
-      .filter((reading) => reading && !reading.row.isRemoved());
+      .filter(
+        /** @param {PhotoReading|null} reading @returns {reading is PhotoReading} */
+        (reading) => reading !== null && !reading.row.isRemoved(),
+      );
     if (readings.length === 0) {
       return;
     }

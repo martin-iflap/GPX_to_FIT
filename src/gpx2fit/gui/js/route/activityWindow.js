@@ -90,7 +90,7 @@ export function isAnchorActive(anchor, activityWindow) {
  * A duration-only stop has no clock time, so it always counts. A start/end
  * stop counts only while both its arrival and departure are inside.
  *
- * @param {{ mode: 'duration'|'startEnd', arrival?: Date, departure?: Date }} stop
+ * @param {{ mode: 'duration' }|{ mode: 'startEnd', arrival: Date, departure: Date, arrivalOffsetSeconds?: number, departureOffsetSeconds?: number }} stop
  * @param {ActivityWindow|null} activityWindow
  * @returns {boolean}
  */
@@ -98,8 +98,6 @@ export function isStopActive(stop, activityWindow) {
   if (stop.mode !== 'startEnd') {
     return true;
   }
-  // A start/end stop always has both times.
-  const timed = /** @type {{ arrival: Date, departure: Date }} */ (stop);
-  const { arrival, departure } = effectiveStopTimes(timed, activityWindow?.start ?? null);
+  const { arrival, departure } = effectiveStopTimes(stop, activityWindow?.start ?? null);
   return isStrictlyInside(arrival, activityWindow) && isStrictlyInside(departure, activityWindow);
 }

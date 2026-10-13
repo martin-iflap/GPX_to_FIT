@@ -20,6 +20,7 @@ export const STATUS_ERROR_TIMEOUT_MS = 10000;
  * @returns {(message: string, kind?: StatusKind) => void} setStatus
  */
 export function createStatus(statusEl) {
+  /** @type {ReturnType<typeof setTimeout>|null} */
   let timeoutId = null;
 
   /**

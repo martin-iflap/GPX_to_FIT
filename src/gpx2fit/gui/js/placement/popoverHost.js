@@ -5,6 +5,8 @@
 // builders only ever see a container, close() and updateLayout(), so they
 // don't know which one they're in.
 
+import { requireChild } from '../util/dom.js';
+
 /**
  * @callback BuildContent
  * @param {HTMLElement} container - empty; the content goes in here
@@ -26,8 +28,10 @@
  *   map, or other content replacing it
  */
 export function createPopoverHost({ map, dialogEl, isPhoneLayout }) {
-  const body = dialogEl.querySelector('.route-dialog-body');
+  const body = requireChild(dialogEl, '.route-dialog-body');
+  const closeButton = requireChild(dialogEl, '[data-route-close]');
   // The onClose of the content in the dialog, until it has run.
+  /** @type {(() => void)|null} */
   let endCurrent = null;
 
   function endContent() {
@@ -36,7 +40,7 @@ export function createPopoverHost({ map, dialogEl, isPhoneLayout }) {
     onClose?.();
   }
 
-  dialogEl.querySelector('[data-route-close]').addEventListener('click', () => dialogEl.close());
+  closeButton.addEventListener('click', () => dialogEl.close());
   // The panel fills the dialog, so a click whose target is the dialog itself
   // landed on the backdrop (the device picker does the same).
   dialogEl.addEventListener('click', (event) => {

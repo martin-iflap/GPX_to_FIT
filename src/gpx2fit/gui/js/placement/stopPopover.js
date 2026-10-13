@@ -102,7 +102,7 @@ export function openStopPopover(candidate, { popovers, appState, stops, checks, 
       if (sides.some((r) => r.isValid && !checks.isInsideWindow(r.resolvedDate))) {
         return { usable: false, message: OUTSIDE_WINDOW_HINT };
       }
-      if (!sides.every((r) => r.isValid)) {
+      if (!arrivalResult.isValid || !departureResult.isValid) {
         return { usable: false, message: null };
       }
       if (departureResult.resolvedDate <= arrivalResult.resolvedDate) {
@@ -182,8 +182,8 @@ export function openStopPopover(candidate, { popovers, appState, stops, checks, 
         popupContent.classList.toggle('is-wide', mode === 'startEnd');
         popupContent.addEventListener(
           'transitionend',
-          (/** @type {TransitionEvent} */ event) => {
-            if (event.propertyName === 'width') {
+          (event) => {
+            if (/** @type {TransitionEvent} */ (event).propertyName === 'width') {
               settled = true;
             }
           },
@@ -206,9 +206,12 @@ export function openStopPopover(candidate, { popovers, appState, stops, checks, 
         return;
       }
       const position = { lat: candidate.lat, lon: candidate.lon, distanceFromStart };
+      // isUsable() has checked the results; these checks only narrow their types.
       if (mode === 'duration') {
-        stops.addStop({ ...position, mode: 'duration', durationSeconds: durationResult.durationSeconds });
-      } else {
+        if (durationResult.isValid) {
+          stops.addStop({ ...position, mode: 'duration', durationSeconds: durationResult.durationSeconds });
+        }
+      } else if (arrivalResult.isValid && departureResult.isValid) {
         stops.addStop({
           ...position,
           mode: 'startEnd',
