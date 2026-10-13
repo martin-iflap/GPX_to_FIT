@@ -23,7 +23,7 @@ import { readSetting, writeSetting } from '../state/storage.js';
 // convert every route for the same watch.
 const STORAGE_KEY = 'device';
 
-// Matches .device-grid's `grid-template-columns` in styles.css.
+// Matches .device-grid's `grid-template-columns` in css/dialogs.css.
 const GRID_COLUMNS = 2;
 
 const NAVIGATION_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End']);
@@ -83,16 +83,16 @@ export function moveFocusIndex(rowLengths, index, key) {
  *   `device` argument for pyodideBridge's convert()
  */
 export function initDevicePicker({ buttonEl, dialogEl }) {
-  const panelEl = dialogEl.querySelector('.device-dialog-panel');
-  const catalogEl = dialogEl.querySelector('.device-catalog');
-  const noneButton = dialogEl.querySelector('[data-device-none]');
-  const customDetails = dialogEl.querySelector('.device-custom');
-  const manufacturerInput = dialogEl.querySelector('[data-custom="manufacturer"]');
-  const productInput = dialogEl.querySelector('[data-custom="product"]');
-  const serialInput = dialogEl.querySelector('[data-custom="serialNumber"]');
-  const customError = dialogEl.querySelector('.device-custom-error');
-  const customApply = dialogEl.querySelector('[data-custom-apply]');
-  const nameInput = dialogEl.querySelector('.device-name-input');
+  const panelEl = /** @type {HTMLElement} */ (dialogEl.querySelector('.modal-panel'));
+  const catalogEl = /** @type {HTMLElement} */ (dialogEl.querySelector('.device-catalog'));
+  const noneButton = /** @type {HTMLButtonElement} */ (dialogEl.querySelector('[data-device-none]'));
+  const customDetails = /** @type {HTMLDetailsElement} */ (dialogEl.querySelector('.device-custom'));
+  const manufacturerInput = /** @type {HTMLInputElement} */ (dialogEl.querySelector('[data-custom="manufacturer"]'));
+  const productInput = /** @type {HTMLInputElement} */ (dialogEl.querySelector('[data-custom="product"]'));
+  const serialInput = /** @type {HTMLInputElement} */ (dialogEl.querySelector('[data-custom="serialNumber"]'));
+  const customError = /** @type {HTMLElement} */ (dialogEl.querySelector('.device-custom-error'));
+  const customApply = /** @type {HTMLButtonElement} */ (dialogEl.querySelector('[data-custom-apply]'));
+  const nameInput = /** @type {HTMLInputElement} */ (dialogEl.querySelector('.device-name-input'));
 
   // Nothing stored, or nothing valid, is NO_DEVICE.
   let selection = parseStoredSelection(readSetting(STORAGE_KEY));
@@ -187,7 +187,7 @@ export function initDevicePicker({ buttonEl, dialogEl }) {
       return;
     }
     // Only among the options, so arrows still move the caret in the boxes.
-    const index = navOptions.indexOf(document.activeElement);
+    const index = navOptions.indexOf(/** @type {HTMLButtonElement} */ (document.activeElement));
     if (index === -1 || !NAVIGATION_KEYS.has(event.key)) {
       return;
     }
@@ -227,7 +227,8 @@ export function initDevicePicker({ buttonEl, dialogEl }) {
       product: productInput.value,
       serialNumber: serialInput.value,
     });
-    if (!parsed.ok) {
+    // `'value' in` narrows without strictNullChecks, which `!parsed.ok` doesn't.
+    if (!('value' in parsed)) {
       customError.textContent = parsed.error;
       customError.hidden = false;
       return;

@@ -10,6 +10,12 @@
 // the version is pinned here only, and the page doesn't wait on it to render.
 const PYODIDE_VERSION = '0.27.3';
 const PYODIDE_BASE_URL = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
+// The subresource-integrity hash of that version's pyodide.js: the browser
+// refuses the script if the CDN serves anything else. Bump it with the
+// version: `curl -sL <url> | openssl dgst -sha384 -binary | openssl base64 -A`.
+// (It covers this one file. The files pyodide.js fetches itself, the WASM and
+// the standard library, have no such check.)
+const PYODIDE_INTEGRITY = 'sha384-09G8vbnODTq2tbTbdd3cWId3kiO+u+UO+LBpDg64SG+qeYbALxB/WiDlA6LZTcia';
 
 // Public Valhalla demo server — no API key needed.
 const VALHALLA_TRACE_ATTRIBUTES_URL = 'https://valhalla1.openstreetmap.de/trace_attributes';
@@ -81,10 +87,7 @@ export function classifyPyError(error) {
   if (!match) {
     return error;
   }
-  const inputError = new Error(match[1]);
-  inputError.name = 'InputError';
-  inputError.isInputError = true;
-  return inputError;
+  return Object.assign(new Error(match[1]), { name: 'InputError', isInputError: true });
 }
 
 /**
@@ -93,7 +96,7 @@ export function classifyPyError(error) {
  * says why, since otherwise a dead server and a successful lookup would look
  * the same to the user.
  *
- * @param {unknown} error - whatever `fetchSurfaceMultipliers` threw
+ * @param {any} error - whatever `fetchSurfaceMultipliers` threw
  * @returns {string}
  */
 export function describeSurfaceFailure(error) {
@@ -111,6 +114,14 @@ export function describeSurfaceFailure(error) {
   return `Surface lookup failed (${reason}), so this file is paced on gradient alone.`;
 }
 
+/**
+ * Runs `task` after every task queued before it, so two Python calls never
+ * interleave. A Python error comes out through `classifyPyError`.
+ *
+ * @template T
+ * @param {() => Promise<T>} task
+ * @returns {Promise<T>}
+ */
 function enqueue(task) {
   const runPromise = queueTail.then(task).catch((error) => {
     throw classifyPyError(error);
@@ -128,6 +139,8 @@ function loadPyodideScript() {
   return new Promise((resolve, reject) => {
     const script = document.createElement('script');
     script.src = `${PYODIDE_BASE_URL}pyodide.js`;
+    script.integrity = PYODIDE_INTEGRITY;
+    script.crossOrigin = 'anonymous';
     script.addEventListener('load', () => resolve(globalThis.loadPyodide));
     script.addEventListener('error', () => {
       script.remove();
@@ -201,7 +214,8 @@ async function ensurePyodide() {
  * is only logged, and the upload tries again.
  */
 export function warmUpPyodide() {
-  if (globalThis.navigator?.connection?.saveData) {
+  // navigator.connection is Chromium-only, so the DOM types don't have it.
+  if (/** @type {any} */ (globalThis.navigator)?.connection?.saveData) {
     return;
   }
   const start = () => {
@@ -220,6 +234,10 @@ export function warmUpPyodide() {
  * memoryview). Every proxy made on the way, the function's included, is
  * destroyed before returning, so no conversion's data stays alive in Python.
  * Only call from inside an `enqueue`d task, after `ensurePyodide`.
+ *
+ * @param {string} name - a `bridge_api` function
+ * @param {...unknown} args
+ * @returns {any} - typed by each export's own JSDoc
  */
 function callBridge(name, ...args) {
   const pyArgs = [];
@@ -347,9 +365,9 @@ async function fetchSurfaceMultipliers(sport) {
     } catch {
       // Not JSON (a proxy's error page, say); the status alone will do.
     }
-    const httpError = new Error(`Valhalla answered ${response.status} ${response.statusText}${detail}`);
-    httpError.isValhallaHttpError = true;
-    throw httpError;
+    throw Object.assign(new Error(`Valhalla answered ${response.status} ${response.statusText}${detail}`), {
+      isValhallaHttpError: true,
+    });
   }
   const valhallaResponse = await response.json();
   return callBridge('surface_multipliers', valhallaResponse, sport);
@@ -388,7 +406,7 @@ async function fetchSurfaceMultipliers(sport) {
  *   (higher is more even pacing, 5 is the automatic terrain/sport-based swing);
  *   see `curve_selection.resolve_max_speed_ratio`
  * @returns {Promise<{
- *   fitBytes: Uint8Array,
+ *   fitBytes: Uint8Array<ArrayBuffer>,
  *   profile: {distanceFromStart: number, elapsedSeconds: number, speedMps: number, elevation: number|null, lat: number, lon: number, isStop: boolean}[],
  *   warnings: string[],
  * }>} the encoded FIT file, the paced activity's profile samples, and

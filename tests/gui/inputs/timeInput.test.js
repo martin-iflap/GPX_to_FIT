@@ -258,9 +258,9 @@ describe('createTimeToggle', () => {
       // moves between the two entry rows as the unit changes.
       const unitButton = () => mounted.container.querySelector('.speed-unit-button');
       const presetLabels = () =>
-        [...mounted.container.querySelectorAll('.speed-preset-dropdown .time-field-option')].map((o) => o.textContent);
+        [...mounted.container.querySelectorAll('.speed-preset-dropdown .dropdown-option')].map((o) => o.textContent);
       const pickPreset = (label) => {
-        const option = [...mounted.container.querySelectorAll('.speed-preset-dropdown .time-field-option')].find(
+        const option = [...mounted.container.querySelectorAll('.speed-preset-dropdown .dropdown-option')].find(
           (o) => o.textContent === label,
         );
         assert.ok(option, `no preset labelled ${label}`);
@@ -280,6 +280,30 @@ describe('createTimeToggle', () => {
 
       const { container } = mount({ variant: 'durationOrEnd', getReferenceTime: () => REFERENCE });
       assert.equal(container.querySelectorAll('.time-toggle-modes .segmented-option').length, 2);
+    });
+
+    it('makes the modes tabs, each tied to the panel it shows', () => {
+      const { container, modeButtons } = mountSpeed();
+      const tabs = [...modeButtons];
+      assert.equal(container.querySelector('.time-toggle-modes').getAttribute('role'), 'tablist');
+      assert.deepEqual(tabs.map((tab) => tab.getAttribute('role')), ['tab', 'tab', 'tab']);
+      const panels = tabs.map((tab) => document.getElementById(tab.getAttribute('aria-controls')));
+      assert.deepEqual(
+        panels.map((panel) => panel?.className),
+        ['duration-fields', 'other-fields hidden', 'speed-fields hidden'],
+      );
+      panels.forEach((panel, i) => {
+        assert.equal(panel.getAttribute('role'), 'tabpanel');
+        assert.equal(panel.getAttribute('aria-labelledby'), tabs[i].id);
+      });
+    });
+
+    it('switches mode with the arrow keys, like a click', () => {
+      const { container, modeButtons } = mountSpeed();
+      // Left from the first tab wraps round to the last, Avg speed.
+      modeButtons[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+      assert.equal(isHidden(container, '.speed-fields'), false);
+      assert.equal(isHidden(container, '.duration-fields'), true);
     });
 
     it('leaves the anchor and stop variants with their own modes only', () => {
@@ -526,4 +550,84 @@ describe('createTimeToggle', () => {
       assert.equal(result.durationSeconds, 3 * 3600);
     });
   });
+
+  describe('focusMode and nextMode, for the keyboard shortcuts', () => {
+    const REFERENCE = new Date(2024, 0, 1, 10, 0);
+
+    function mountMain({ sport = 'hiking' } = {}) {
+      return mount({
+        variant: 'durationOrEnd',
+        getReferenceTime: () => REFERENCE,
+        speedMode: { getTotalDistance: () => 10_000, getStopSeconds: () => 0, getSport: () => sport },
+      });
+    }
+
+    function activeTab(container) {
+      return container.querySelector('.time-toggle-modes .segmented-option.is-active').dataset.value;
+    }
+
+    it('opens a tab and selects its first box, as clicking the tab would', () => {
+      const { container, toggle } = mountMain();
+      container.querySelector('.segmented-option[data-value="end"]').click();
+      const hoursInput = container.querySelector('input[aria-label="Hours"]');
+      setValueAndDispatchInput(hoursInput, '3');
+
+      assert.equal(toggle.focusMode('duration'), true);
+
+      assert.equal(activeTab(container), 'duration');
+      assert.equal(hoursInput.closest('.hidden'), null);
+      assert.equal(document.activeElement, hoursInput);
+      assert.equal(hoursInput.selectionStart, 0);
+      assert.equal(hoursInput.selectionEnd, 1);
+      assert.equal(toggle.getResult().mode, 'duration');
+    });
+
+    it('focuses the end date on the End time tab', () => {
+      const { container, toggle } = mountMain();
+      toggle.focusMode('end');
+
+      assert.equal(activeTab(container), 'end');
+      assert.equal(document.activeElement, container.querySelector('input[aria-label="End date"]'));
+    });
+
+    it('focuses the box of the unit in use on the Avg speed tab', () => {
+      const { container, toggle } = mountMain({ sport: 'running' });
+      toggle.focusMode('avgSpeed');
+
+      assert.equal(activeTab(container), 'avgSpeed');
+      assert.equal(document.activeElement, container.querySelector('input[aria-label="Pace minutes"]'));
+    });
+
+    it('refuses a mode this toggle does not have', () => {
+      const { container, toggle } = mountMain();
+      document.activeElement?.blur();
+
+      assert.equal(toggle.focusMode('timeOfDay'), false);
+      assert.equal(activeTab(container), 'duration');
+      assert.equal(document.activeElement, document.body);
+    });
+
+    it('steps through the tabs, wrapping back to the first', () => {
+      const { container, toggle } = mountMain({ sport: 'hiking' });
+      const visited = [];
+      for (let i = 0; i < 3; i += 1) {
+        assert.equal(toggle.nextMode(), true);
+        visited.push([activeTab(container), document.activeElement.getAttribute('aria-label')]);
+      }
+
+      assert.deepEqual(visited, [
+        ['end', 'End date'],
+        ['avgSpeed', 'Average speed'],
+        ['duration', 'Hours'],
+      ]);
+    });
+
+    it('has no tabs to step through for a duration-only toggle', () => {
+      const { toggle } = mount({ variant: 'durationOnly', getReferenceTime: () => REFERENCE });
+
+      assert.equal(toggle.nextMode(), false);
+      assert.equal(toggle.focusMode('duration'), true);
+    });
+  });
+
 });

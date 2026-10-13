@@ -156,6 +156,18 @@ describe('createTimeField', () => {
     field.setValue(14, 5);
     assert.deepEqual(values.at(-1), { hours: 14, minutes: 5 });
   });
+
+  it('focus() puts the caret in the hours box, its value selected', () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const field = createTimeField({ container, quickPicks: false, onChange: () => {} });
+    field.setValue(14, 5);
+    field.focus();
+    const hoursInput = container.querySelector('input[aria-label="Time hours"]');
+    assert.equal(document.activeElement, hoursInput);
+    assert.equal(hoursInput.selectionStart, 0);
+    assert.equal(hoursInput.selectionEnd, 2);
+  });
 });
 
 describe('createDaySelector', () => {
@@ -198,6 +210,14 @@ describe('createDaySelector', () => {
 });
 
 describe('createDateTimeField', () => {
+  it('focus() puts the caret in the date box, which comes first', () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const field = createDateTimeField({ container, onChange: () => {} });
+    field.focus();
+    assert.equal(document.activeElement, container.querySelector('input[type="date"]'));
+  });
+
   it('round-trips a Date through setValue/getValue', () => {
     const container = document.createElement('div');
     document.body.append(container);

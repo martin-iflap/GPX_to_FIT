@@ -1,0 +1,153 @@
+/* about.html only. */
+
+/* ---------- about page (about.html) ---------- */
+
+.about-page {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-4) var(--space-8);
+}
+
+.about-back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  text-decoration: none;
+  transition: color var(--transition);
+}
+
+.about-back:hover {
+  color: var(--accent);
+}
+
+.about-header {
+  margin: var(--space-5) 0 var(--space-4);
+}
+
+.about-header h1 {
+  margin: 0;
+  font-size: 1.8rem;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.about-header .subtle {
+  font-size: 1rem;
+}
+
+.about-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-5);
+}
+
+.about-nav a {
+  padding: 4px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--bg-elevated-2);
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  text-decoration: none;
+  transition: color var(--transition), border-color var(--transition), background var(--transition);
+}
+
+.about-nav a:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.about-section {
+  margin-bottom: var(--space-4);
+  padding: var(--space-5);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  /* Opaque: the grey glass tint would vanish into the grey page here. */
+  background: var(--field-bg);
+  /* Keeps the heading clear of the top edge when jumped to via #anchor. */
+  scroll-margin-top: var(--space-4);
+}
+
+.about-section h2 {
+  margin: 0 0 var(--space-3);
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.about-section h3 {
+  margin: var(--space-4) 0 var(--space-2);
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.about-section p,
+.about-section li {
+  font-size: 0.92rem;
+  color: var(--text-secondary);
+}
+
+.about-section p {
+  margin: 0 0 var(--space-3);
+}
+
+.about-section p:last-child {
+  margin-bottom: 0;
+}
+
+.about-section ul {
+  margin: 0 0 var(--space-3);
+  padding-left: 1.2rem;
+}
+
+.about-section li + li {
+  margin-top: var(--space-1);
+}
+
+.about-section strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.about-section a,
+.about-footer a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.about-section a:hover,
+.about-footer a:hover {
+  text-decoration: underline;
+}
+
+/* The privacy section is the one people land on from "How?", so it gets a
+   faint accent to set it apart from the explanatory cards. */
+.about-section--privacy {
+  border-color: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.about-footer {
+  margin-top: var(--space-6);
+  font-size: 0.78rem;
+  color: var(--text-tertiary);
+  text-align: center;
+}
+
+.about-footer p {
+  margin: 0 0 var(--space-2);
+}
+
+@media (max-width: 480px) {
+  .about-page {
+    padding-top: var(--space-5);
+  }
+
+  .about-section {
+    padding: var(--space-4);
+  }
+}

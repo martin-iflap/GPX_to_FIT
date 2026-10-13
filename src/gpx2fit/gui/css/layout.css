@@ -1,0 +1,220 @@
+/* The app shell: map and sidebar, the header and its icon buttons, the
+   shortcuts panel, and the sidebar's sections. */
+
+/* ---------- layout ---------- */
+
+.app-shell {
+  --profile-height: 240px;
+  /* Eases in as well as out: a curve that starts at full speed makes the
+     opening look like a jump, since its first frames cover most of the distance. */
+  --profile-transition: 500ms cubic-bezier(0.4, 0, 0.2, 1);
+  display: grid;
+  grid-template-columns: 1fr 380px;
+  height: 100vh;
+}
+
+/* Clips the profile panel while it waits below the map's bottom edge.
+   `clip`, not just `hidden`: an overflow: hidden box is still a scroll
+   container, so the browser can scroll it (shifting the whole map) to
+   reveal something inside; `hidden` stays as the fallback for older browsers.
+   isolation keeps Leaflet's high z-indexes (panes up to 700, controls 1000)
+   inside this box, so the panel only has to out-stack them here. */
+#mapPanel {
+  position: relative;
+  grid-column: 1;
+  grid-row: 1;
+  min-height: 0;
+  overflow: hidden;
+  overflow: clip;
+  isolation: isolate;
+}
+
+#map {
+  width: 100%;
+  height: 100%;
+  background: var(--bg-elevated-2);
+}
+
+.map-empty-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  color: var(--text-tertiary);
+  font-size: 0.95rem;
+  z-index: 400;
+}
+
+.map-empty-state[hidden] {
+  display: none;
+}
+
+#sidebar {
+  grid-column: 2;
+  grid-row: 1;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--bg-elevated);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+  border-left: 1px solid var(--border-subtle);
+  box-shadow: var(--glass-edge), -20px 0 60px var(--shadow-color);
+}
+
+/* The icon buttons share a row with the title only; the subtitle gets the
+   full width below, otherwise the buttons squeeze it onto two lines. */
+.sidebar-header {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  column-gap: var(--space-3);
+  padding: var(--space-5) var(--space-5) var(--space-4);
+}
+
+.sidebar-title {
+  display: contents;
+}
+
+.sidebar-header .subtle {
+  grid-column: 1 / -1;
+}
+
+.sidebar-header .header-actions {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.sidebar-header h1 {
+  margin: 0;
+  font-size: 1.3rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* Positioning context for .shortcuts-panel, which hangs below these buttons. */
+.header-actions {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.icon-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  width: 32px;
+  height: 32px;
+  /* Round, like macOS 26 toolbar buttons. */
+  border-radius: 50%;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color var(--transition), background var(--transition), transform var(--transition);
+}
+
+/* #aboutLink is an <a> sharing the icon-button look. */
+a.icon-button {
+  text-decoration: none;
+}
+
+.icon-button:hover {
+  color: var(--text-primary);
+  background: var(--bg-elevated-2);
+}
+
+/* Only with a real hover: a touch screen keeps :hover on whatever was last
+   tapped, which would leave the button floating a pixel up. */
+@media (hover: hover) {
+  .icon-button:hover {
+    transform: translateY(-1px);
+  }
+}
+
+.icon-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Anchored under the header buttons rather than centred over the page: the
+   sidebar is its own grid column, so this never has to out-stack Leaflet's
+   panes (which run up to ~700) the way a full-page modal would. */
+.shortcuts-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + var(--space-2));
+  z-index: 30;
+  width: 236px;
+  padding: var(--space-4);
+  border-radius: var(--radius-xl);
+  background: var(--bg-elevated);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+  box-shadow: var(--glass-edge), var(--glass-shadow);
+}
+
+.shortcuts-panel-heading {
+  margin: 0 0 var(--space-2);
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.shortcut-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 3px 0;
+}
+
+.shortcut-keys {
+  display: flex;
+  flex-shrink: 0;
+  gap: 3px;
+}
+
+.shortcut-keys kbd {
+  padding: 1px 5px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 5px;
+  background: var(--bg-elevated-2);
+  color: var(--text-secondary);
+  font-family: var(--font-family);
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+
+.shortcut-label {
+  font-size: 0.78rem;
+  color: var(--text-tertiary);
+  text-align: right;
+}
+
+.sidebar-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding: 0 var(--space-5) var(--space-6);
+}
+
+.control {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.control-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.control-label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}

@@ -71,7 +71,7 @@ export function createFocusDropdown({
 
     const index = getScrollIndex?.(options);
     if (index !== null && index !== undefined && el.children[index]) {
-      el.scrollTop = el.children[index].offsetTop;
+      el.scrollTop = /** @type {HTMLElement} */ (el.children[index]).offsetTop;
     }
   }
 
@@ -79,7 +79,7 @@ export function createFocusDropdown({
     // After the focus change has settled: during 'blur' activeElement is
     // still the old element (or the body).
     window.setTimeout(() => {
-      const active = document.activeElement;
+      const active = /** @type {HTMLElement|null} */ (document.activeElement);
       if (!triggers.includes(active) && !el.contains(active)) {
         close();
       }

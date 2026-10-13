@@ -1,0 +1,329 @@
+/* Map pins, the Leaflet popups and their contents, and photo placement. */
+
+/* ---------- map markers / popover ---------- */
+
+.anchor-pin {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: 0.72rem;
+  font-weight: 700;
+  box-shadow: 0 2px 8px var(--shadow-color);
+  border: 2px solid var(--accent-contrast);
+  transition: transform var(--transition);
+}
+
+.anchor-pin-wrapper.is-active .anchor-pin {
+  transform: scale(1.2);
+}
+
+.stop-pin {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  background: #ff9500;
+  color: var(--accent-contrast);
+  font-size: 0.72rem;
+  font-weight: 700;
+  box-shadow: 0 2px 8px var(--shadow-color);
+  border: 2px solid var(--accent-contrast);
+  transition: transform var(--transition);
+}
+
+.stop-pin-wrapper.is-active .stop-pin {
+  transform: scale(1.2);
+}
+
+.photo-pin {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #af52de;
+  color: var(--accent-contrast);
+  font-size: 0.72rem;
+  font-weight: 700;
+  box-shadow: 0 2px 8px var(--shadow-color);
+  border: 2px solid var(--accent-contrast);
+  transition: transform var(--transition);
+}
+
+.photo-pin-wrapper.is-active .photo-pin {
+  transform: scale(1.2);
+}
+
+/* The map side of .list-row.is-inactive (see map.js's createPinLayer, setDimmed). */
+.leaflet-marker-icon.is-dimmed {
+  opacity: 0.4;
+}
+
+.leaflet-popup-content-wrapper,
+.leaflet-popup-tip {
+  background: var(--glass-bg);
+  color: var(--text-primary);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+}
+
+.leaflet-popup-content-wrapper {
+  border-radius: var(--radius-xl);
+  box-shadow: var(--glass-edge), var(--glass-shadow);
+}
+
+.anchor-popover .leaflet-popup-content {
+  margin: var(--space-4);
+  width: 240px !important;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  transition: width 220ms ease;
+}
+
+/* Only the stop popover's "Start & end time" mode switches to this —
+   everything else (the anchor popover, and the stop popover's "Duration
+   only" mode) stays at the width above. Wide enough that each of the two
+   columns gets the same ~240px an arrival/departure toggle already needs
+   when stacked full-width, so nothing inside them wraps. */
+.anchor-popover .leaflet-popup-content.is-wide {
+  width: 492px !important;
+}
+
+.stop-time-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+
+.popover-heading {
+  margin: 0;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.popover-hint {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--text-tertiary);
+}
+
+.popover-hint.is-warning {
+  color: var(--warning);
+}
+
+.popover-confirm {
+  padding: 0.55rem 0.8rem;
+}
+
+.candidate-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.candidate-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated-2);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.candidate-option:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.candidate-distance {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.candidate-estimate {
+  font-size: 0.76rem;
+  color: var(--text-tertiary);
+}
+
+/* The pass whose estimate is nearest a photo's time (photoPlacement.js's
+   suggestCandidate): a suggestion, so it's only marked, never preselected. */
+.candidate-option.is-suggested {
+  border-color: var(--accent);
+}
+
+.candidate-badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+/* A pass a photo can't go on, because its time would be out of order with
+   another point there (anchorOrder.js). Still listed, with the reason. */
+.candidate-option:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.candidate-option:disabled:hover {
+  background: var(--bg-elevated-2);
+  border-color: var(--border-subtle);
+}
+
+.candidate-blocked {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--warning);
+}
+
+/* ---------- photo placement (anchorPopovers.js) ---------- */
+
+/* The header of the "Place photo here" and "Move photo" cards: the photo,
+   its fixed time, and where on the route. */
+.photo-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.photo-card-thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  background: var(--bg-elevated-2);
+  font-size: 1.4rem;
+}
+
+.photo-card .popover-hint {
+  margin-top: 2px;
+}
+
+.popover-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.popover-actions .popover-confirm {
+  width: auto;
+}
+
+.popover-secondary {
+  padding: 0.55rem 0.8rem;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--transition);
+}
+
+.popover-secondary:hover {
+  background: var(--accent-soft);
+}
+
+/* While a photo waits for its tap: a crosshair over the route, and the line
+   itself pulsing so it's clear where to tap. */
+#map.is-placing .route-hit-line {
+  cursor: crosshair;
+}
+
+#map.is-placing .route-line {
+  animation: route-placing-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes route-placing-pulse {
+  50% {
+    stroke-width: 7px;
+  }
+}
+
+/* A photo pin can be dragged along the route. */
+.photo-pin-wrapper.leaflet-marker-draggable {
+  cursor: grab;
+}
+
+.photo-pin-wrapper.leaflet-marker-draggable:active {
+  cursor: grabbing;
+}
+
+/* Over the top of the map (not the bottom: on a phone the sheet covers that,
+   and the profile panel does on a desktop), clear of the zoom buttons. */
+.placement-banner {
+  position: absolute;
+  top: var(--space-3);
+  left: 50%;
+  z-index: 1050;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: max-content;
+  max-width: calc(100% - 112px);
+  padding: 0.4rem 0.4rem 0.4rem 0.9rem;
+  border-radius: var(--radius-pill);
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+  box-shadow: var(--glass-edge), var(--glass-shadow);
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.placement-banner[hidden] {
+  display: none;
+}
+
+.placement-banner-thumb {
+  width: 28px;
+  height: 28px;
+  margin-left: -0.5rem;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.placement-banner-thumb[hidden] {
+  display: none;
+}
+
+.placement-banner-cancel {
+  flex-shrink: 0;
+  padding: 0.3rem 0.8rem;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.placement-banner-cancel:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

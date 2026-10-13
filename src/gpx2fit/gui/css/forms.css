@@ -1,0 +1,356 @@
+/* Text fields, the dropzones, the smoothness slider, the route summary and
+   the segmented control. */
+
+/* ---------- inputs ---------- */
+
+.text-input {
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: var(--field-bg);
+  color: var(--text-primary);
+  font: inherit;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+.text-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* Chrome/Edge/Safari only (no equivalent pseudo-element in Firefox): the
+   native calendar icon on <input type="date"> is small and easy to miss —
+   this pads out its clickable area without changing how it looks. */
+input[type="date"]::-webkit-calendar-picker-indicator {
+  padding: var(--space-2);
+  margin-inline-start: var(--space-1);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator:hover {
+  background: var(--accent-soft);
+}
+
+/* ---------- dropzone ---------- */
+
+.dropzone {
+  position: relative;
+  border: 1.5px dashed var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5) var(--space-4);
+  text-align: center;
+  cursor: pointer;
+  background: var(--bg-elevated-2);
+  transition: border-color var(--transition), background var(--transition);
+}
+
+.dropzone:hover,
+.dropzone:focus-visible {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  outline: none;
+}
+
+.dropzone.is-dragover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.dropzone-icon {
+  display: block;
+  font-size: 1.4rem;
+  margin-bottom: var(--space-2);
+  color: var(--text-tertiary);
+}
+
+/* The GPX dropzone's icon is the macOS blue folder (an inline SVG). */
+.dropzone-icon svg {
+  display: block;
+  margin: 0 auto;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.12));
+}
+
+.dropzone-text {
+  margin: 0;
+  font-size: 0.88rem;
+  color: var(--text-secondary);
+}
+
+.dropzone-link {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.dropzone-filename {
+  margin: var(--space-2) 0 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* Deliberately quiet: tertiary text, so it reassures without competing with
+   the dropzone. The full story lives on about.html#privacy. */
+.privacy-note {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0 var(--space-1);
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--text-tertiary);
+  text-align: center;
+}
+
+.privacy-note svg {
+  flex-shrink: 0;
+}
+
+/* Small inline "learn more" links inside tertiary hint text. */
+.privacy-note a,
+.control-hint a,
+.list-empty a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.privacy-note a:hover,
+.control-hint a:hover,
+.list-empty a:hover {
+  text-decoration: underline;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+  font-size: 0.88rem;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.checkbox-row input {
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.control-hint {
+  margin: calc(-1 * var(--space-1)) 0 0;
+  padding-left: 21px;
+  font-size: 0.78rem;
+  color: var(--text-tertiary);
+}
+
+/* A hint under a full-width control, not indented under a checkbox's label. */
+.control-hint--flush {
+  padding-left: 0;
+}
+
+/* ---------- pace smoothness slider ---------- */
+
+/* macOS 26's center-biased, ticked slider: a thin track, filled in the
+   accent colour from the origin (5 = automatic) to the knob rather than from
+   the left end, and a white capsule knob. rangeFill.js keeps --range-lo and
+   --range-hi (0–1, the fill's two ends) in step with the value; the
+   defaults are the origin itself, an empty fill. The knob's centre travels
+   from half its width in from each end, so the fill's ends are placed on
+   that same span. */
+.range-input,
+.range-ticks {
+  --range-knob-w: 24px;
+}
+
+.range-input {
+  --range-knob-h: 16px;
+  --range-track-h: 4px;
+  --range-lo: 0.4444;
+  --range-hi: 0.4444;
+  --range-lo-at: calc(var(--range-knob-w) / 2 + (100% - var(--range-knob-w)) * var(--range-lo));
+  --range-hi-at: calc(var(--range-knob-w) / 2 + (100% - var(--range-knob-w)) * var(--range-hi));
+  --range-fill: linear-gradient(
+    to right,
+    var(--bg-elevated-3) 0 var(--range-lo-at),
+    var(--accent) var(--range-lo-at) var(--range-hi-at),
+    var(--bg-elevated-3) var(--range-hi-at) 100%
+  );
+  --range-knob-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.12), 0 1px 3px rgba(0, 0, 0, 0.3);
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: var(--range-knob-h);
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.range-input::-webkit-slider-runnable-track {
+  height: var(--range-track-h);
+  border-radius: var(--radius-pill);
+  background: var(--range-fill);
+}
+
+.range-input::-moz-range-track {
+  height: var(--range-track-h);
+  border-radius: var(--radius-pill);
+  background: var(--range-fill);
+}
+
+.range-input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: var(--range-knob-w);
+  height: var(--range-knob-h);
+  /* WebKit puts the thumb's top on the track's top. */
+  margin-top: calc((var(--range-track-h) - var(--range-knob-h)) / 2);
+  border: none;
+  border-radius: var(--radius-pill);
+  background: #ffffff;
+  box-shadow: var(--range-knob-shadow);
+  transition: transform 120ms ease, box-shadow var(--transition);
+}
+
+.range-input::-moz-range-thumb {
+  width: var(--range-knob-w);
+  height: var(--range-knob-h);
+  border: none;
+  border-radius: var(--radius-pill);
+  background: #ffffff;
+  box-shadow: var(--range-knob-shadow);
+  transition: transform 120ms ease, box-shadow var(--transition);
+}
+
+/* The knob swells a little while held, as macOS 26's does. */
+.range-input:active::-webkit-slider-thumb {
+  transform: scale(1.12);
+}
+
+.range-input:active::-moz-range-thumb {
+  transform: scale(1.12);
+}
+
+.range-input:focus-visible {
+  outline: none;
+}
+
+.range-input:focus-visible::-webkit-slider-thumb {
+  box-shadow: var(--range-knob-shadow), 0 0 0 3px var(--accent-soft);
+}
+
+.range-input:focus-visible::-moz-range-thumb {
+  box-shadow: var(--range-knob-shadow), 0 0 0 3px var(--accent-soft);
+}
+
+/* One tick per value under the track (index.html has one span per step).
+   Each tick's centre lines up with the knob's centre at that value: the row
+   is inset by half the knob, less half a tick. The origin's tick is taller. */
+.range-ticks {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  height: 6px;
+  margin-top: calc(-1 * var(--space-1));
+  padding: 0 calc(var(--range-knob-w) / 2 - 1px);
+}
+
+.range-ticks span {
+  width: 2px;
+  height: 4px;
+  border-radius: 1px;
+  background: var(--text-tertiary);
+  opacity: 0.5;
+}
+
+.range-ticks span.is-origin {
+  height: 6px;
+  opacity: 0.8;
+}
+
+.smoothness-value {
+  min-width: 1.5em;
+  font-size: 0.82rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  text-align: right;
+}
+
+.range-captions {
+  display: flex;
+  justify-content: space-between;
+  margin-top: calc(-1 * var(--space-1));
+  font-size: 0.78rem;
+  color: var(--text-tertiary);
+}
+
+.route-summary {
+  display: flex;
+  gap: var(--space-4);
+}
+
+.summary-stat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated-2);
+}
+
+.summary-value {
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.summary-label {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+}
+
+/* ---------- segmented control ---------- */
+
+.segmented {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-elevated-3);
+}
+
+.segmented-option {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 500;
+  padding: 0.5rem 0.6rem;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+
+.segmented-option.is-active {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-weight: 600;
+}
+
+/* The arrow keys move focus here (segmented.js). The chosen option is
+   already accent-filled, so its ring is drawn inside it, in the contrast
+   colour. */
+.segmented-option:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.segmented-option.is-active:focus-visible {
+  outline-color: var(--accent-contrast);
+  outline-offset: -4px;
+}

@@ -6,8 +6,10 @@
     <title>About &amp; privacy · GPX to FIT</title>
     <meta name="description" content="How GPX to FIT turns a planned route into a realistically paced activity, entirely in your browser." />
     <!-- Applies the theme the user picked in the app before first paint.
-         Deliberately not theme.js, which pulls in map.js and Leaflet. With no
-         stored choice, styles.css's prefers-color-scheme rules take over. -->
+         Inline rather than theme.js, so the page doesn't render once in the
+         wrong theme while a module loads; this page has no theme button
+         anyway. With no stored choice, tokens.css's prefers-color-scheme
+         rules take over. -->
     <script>
       try {
         const theme = localStorage.getItem('theme');
@@ -18,7 +20,10 @@
         // Storage blocked (private window, cleared site data): OS theme it is.
       }
     </script>
-    <link rel="stylesheet" href="styles.css" />
+    <!-- Only the tokens, the base and its own styles: none of the app's. -->
+    <link rel="stylesheet" href="css/tokens.css" />
+    <link rel="stylesheet" href="css/base.css" />
+    <link rel="stylesheet" href="css/about.css" />
   </head>
   <body>
     <main class="about-page">

@@ -98,6 +98,8 @@ export function isStopActive(stop, activityWindow) {
   if (stop.mode !== 'startEnd') {
     return true;
   }
-  const { arrival, departure } = effectiveStopTimes(stop, activityWindow?.start ?? null);
+  // A start/end stop always has both times.
+  const timed = /** @type {{ arrival: Date, departure: Date }} */ (stop);
+  const { arrival, departure } = effectiveStopTimes(timed, activityWindow?.start ?? null);
   return isStrictlyInside(arrival, activityWindow) && isStrictlyInside(departure, activityWindow);
 }

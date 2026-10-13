@@ -13,19 +13,22 @@ import { createStatus } from './shell/status.js';
 import { initSmoothnessSetting, initSurfaceLookupSetting } from './state/settings.js';
 import { createTimeToggle } from './inputs/timeInput.js';
 import { createDateTimeField } from './inputs/dateTimeField.js';
-import * as anchorsModule from './route/anchors.js';
-import * as stopsModule from './route/stops.js';
+import { createAnchorList } from './route/anchors.js';
+import { createStopList } from './route/stops.js';
 import { effectiveStopTimes } from './route/activityWindow.js';
 import { initTheme } from './shell/theme.js';
 import { initGlass } from './shell/glass.js';
 import { initShortcuts } from './shell/shortcuts.js';
 import { initDevicePicker } from './devices/devicePicker.js';
 import { createAnchorPlacer } from './placement/anchorPopovers.js';
-import { initPhotoDrop, resetPhotoDrop } from './placement/photoAnchors.js';
+import { createPopoverHost } from './placement/popoverHost.js';
+import { createPhotoDrop } from './placement/photoAnchors.js';
 import { wireDropzone } from './inputs/dropzone.js';
 import { wireSegmented } from './inputs/segmented.js';
-import { initProfilePanel, showProfile, hideProfile } from './profile/profilePanel.js';
-import { coveredMapHeight, initMobileLayout, revealMap } from './shell/mobileLayout.js';
+import { createProfilePanel } from './profile/profilePanel.js';
+import {
+  coveredMapHeight, initMobileLayout, isPhoneLayout, revealMap,
+} from './shell/mobileLayout.js';
 import {
   describeError,
   fitFileNameFromGpx,
@@ -36,18 +39,18 @@ import {
 } from './util/format.js';
 
 const dropzone = document.getElementById('dropzone');
-const gpxFileInput = document.getElementById('gpxFileInput');
+const gpxFileInput = /** @type {HTMLInputElement} */ (document.getElementById('gpxFileInput'));
 const fileNameEl = document.getElementById('fileName');
 const routeSummaryEl = document.getElementById('routeSummary');
 const summaryDistanceEl = document.getElementById('summaryDistance');
 const summaryElevationEl = document.getElementById('summaryElevation');
 const mapEmptyStateEl = document.getElementById('mapEmptyState');
 const sportControlEl = document.getElementById('sportControl');
-const surfaceLookupToggleEl = document.getElementById('surfaceLookupToggle');
-const smoothnessSliderEl = document.getElementById('smoothnessSlider');
+const surfaceLookupToggleEl = /** @type {HTMLInputElement} */ (document.getElementById('surfaceLookupToggle'));
+const smoothnessSliderEl = /** @type {HTMLInputElement} */ (document.getElementById('smoothnessSlider'));
 const smoothnessValueEl = document.getElementById('smoothnessValue');
-const deviceButtonEl = document.getElementById('deviceButton');
-const deviceDialogEl = document.getElementById('deviceDialog');
+const deviceButtonEl = /** @type {HTMLButtonElement} */ (document.getElementById('deviceButton'));
+const deviceDialogEl = /** @type {HTMLDialogElement} */ (document.getElementById('deviceDialog'));
 const startTimeFieldEl = document.getElementById('startTimeField');
 const startTimeToggleContainer = document.getElementById('startTimeToggle');
 const anchorListEl = document.getElementById('anchorList');
@@ -55,16 +58,16 @@ const anchorEmptyStateEl = document.getElementById('anchorEmptyState');
 const stopListEl = document.getElementById('stopList');
 const stopEmptyStateEl = document.getElementById('stopEmptyState');
 const photoDropzoneEl = document.getElementById('photoDropzone');
-const photoFileInputEl = document.getElementById('photoFileInput');
-const photoGalleryInputEl = document.getElementById('photoGalleryInput');
-const photoGalleryLinkEl = document.getElementById('photoGalleryLink');
+const photoFileInputEl = /** @type {HTMLInputElement} */ (document.getElementById('photoFileInput'));
+const photoGalleryInputEl = /** @type {HTMLInputElement} */ (document.getElementById('photoGalleryInput'));
+const photoGalleryLinkEl = /** @type {HTMLButtonElement} */ (document.getElementById('photoGalleryLink'));
 const photoListEl = document.getElementById('photoList');
 const photoEmptyStateEl = document.getElementById('photoEmptyState');
-const runButton = document.getElementById('runButton');
+const runButton = /** @type {HTMLButtonElement} */ (document.getElementById('runButton'));
 const statusEl = document.getElementById('status');
-const downloadLink = document.getElementById('downloadLink');
-const themeToggle = document.getElementById('themeToggle');
-const shortcutsToggle = document.getElementById('shortcutsToggle');
+const downloadLink = /** @type {HTMLAnchorElement} */ (document.getElementById('downloadLink'));
+const themeToggle = /** @type {HTMLButtonElement} */ (document.getElementById('themeToggle'));
+const shortcutsToggle = /** @type {HTMLButtonElement} */ (document.getElementById('shortcutsToggle'));
 const shortcutsPanelEl = document.getElementById('shortcutsPanel');
 const appShellEl = document.getElementById('appShell');
 const profilePanelEl = document.getElementById('profilePanel');
@@ -72,35 +75,42 @@ const profileChartEl = document.getElementById('profileChart');
 const profileAxisControlEl = document.getElementById('profileAxisControl');
 const profileMetricControlEl = document.getElementById('profileMetricControl');
 const profileSpeedLabelEl = document.getElementById('profileSpeedLabel');
-const profileSpeedToggleEl = document.getElementById('profileSpeedToggle');
-const profileElevationToggleEl = document.getElementById('profileElevationToggle');
-const profileCloseButtonEl = document.getElementById('profileCloseButton');
-const profileShowButtonEl = document.getElementById('profileShowButton');
+const profileSpeedToggleEl = /** @type {HTMLButtonElement} */ (document.getElementById('profileSpeedToggle'));
+const profileElevationToggleEl = /** @type {HTMLButtonElement} */ (document.getElementById('profileElevationToggle'));
+const profileCloseButtonEl = /** @type {HTMLButtonElement} */ (document.getElementById('profileCloseButton'));
+const profileShowButtonEl = /** @type {HTMLButtonElement} */ (document.getElementById('profileShowButton'));
 const mapPanelEl = document.getElementById('mapPanel');
 const sidebarEl = document.getElementById('sidebar');
 
 // The parsed route, the sport and the start time, read by the convert
 // handler, the anchor placer and the photo drop.
-const appState = createAppState({
-  sport: sportControlEl.querySelector('.segmented-option.is-active')?.dataset.value,
-});
+/** @typedef {import('./state/appState.js').Sport} Sport */
+const activeSportEl = /** @type {HTMLElement|null} */ (sportControlEl.querySelector('.segmented-option.is-active'));
+const appState = createAppState({ sport: /** @type {Sport} */ (activeSportEl?.dataset.value) });
 const setStatus = createStatus(statusEl);
 
-anchorsModule.initAnchorList(anchorListEl, anchorEmptyStateEl);
-stopsModule.initStopList(stopListEl, stopEmptyStateEl);
+mapModule.initMap('map');
+// Every visitor uploads a GPX next, so start loading Python now.
+warmUpPyodide();
+initTheme(themeToggle, { onChange: mapModule.setTheme });
+initGlass();
+
+// Each list has its own layer of pins, and so its own ids.
+const anchors = createAnchorList({
+  listEl: anchorListEl, emptyEl: anchorEmptyStateEl, pins: mapModule.createPinLayer(), revealMap,
+});
+const stops = createStopList({
+  listEl: stopListEl, emptyEl: stopEmptyStateEl, pins: mapModule.createPinLayer(), revealMap,
+});
 // Every placed anchor and stop is re-checked against a new start–end at
 // once, so one that no longer fits shows as inactive now rather than failing
 // the conversion later.
 appState.onWindowChange((activityWindow) => {
-  anchorsModule.setActivityWindow(activityWindow);
-  stopsModule.setActivityWindow(activityWindow);
+  anchors.setActivityWindow(activityWindow);
+  stops.setActivityWindow(activityWindow);
 });
-mapModule.initMap('map');
-// Every visitor uploads a GPX next, so start loading Python now.
-warmUpPyodide();
-initTheme(themeToggle);
-initGlass();
-initProfilePanel({
+
+const profilePanel = createProfilePanel({
   shellEl: appShellEl,
   panelEl: profilePanelEl,
   chartEl: profileChartEl,
@@ -111,7 +121,7 @@ initProfilePanel({
   elevationToggleEl: profileElevationToggleEl,
   closeButtonEl: profileCloseButtonEl,
   showButtonEl: profileShowButtonEl,
-  mapModule,
+  map: mapModule,
 });
 initMobileLayout({
   sidebarEl,
@@ -122,20 +132,6 @@ initMobileLayout({
 });
 mapModule.setBottomInsetProvider(coveredMapHeight);
 const devicePicker = initDevicePicker({ buttonEl: deviceButtonEl, dialogEl: deviceDialogEl });
-initShortcuts({
-  triggerButton: shortcutsToggle,
-  panelContainer: shortcutsPanelEl,
-  sportControlEl,
-  runButton,
-  gpxFileInput,
-  photoFileInput: photoFileInputEl,
-  deviceButton: deviceButtonEl,
-  startTimeFieldEl,
-  startTimeToggleEl: startTimeToggleContainer,
-  appShellEl,
-  profileCloseButton: profileCloseButtonEl,
-  profileShowButton: profileShowButtonEl,
-});
 
 /* ---------- remembered settings ---------- */
 
@@ -174,12 +170,14 @@ function getStartTime() {
 function totalStopSeconds() {
   // Every stop, active or not: whether a stop is active depends on the end
   // time, which in avg-speed mode depends on this very total.
-  return stopsModule.getStops().reduce((total, stop) => {
+  return stops.getStops().reduce((total, stop) => {
     if (stop.mode === 'duration') {
       return total + (Number.isFinite(stop.durationSeconds) ? stop.durationSeconds : 0);
     }
     // Resolved against the current start, since a side entered as a duration follows it.
-    const { arrival, departure } = effectiveStopTimes(stop, getStartTime());
+    // A start/end stop always has both times.
+    const timed = /** @type {{ arrival: Date, departure: Date }} */ (stop);
+    const { arrival, departure } = effectiveStopTimes(timed, getStartTime());
     const seconds = (departure.getTime() - arrival.getTime()) / 1000;
     return total + (Number.isFinite(seconds) ? seconds : 0);
   }, 0);
@@ -203,7 +201,7 @@ const startTimeToggle = createTimeToggle({
 
 // Placing or deleting a stop changes the avg-speed mode's derived duration,
 // and neither happens through this module (see stops.js).
-stopsModule.setStopsChangeListener(() => startTimeToggle.refresh());
+stops.setStopsChangeListener(() => startTimeToggle.refresh());
 
 startTimeField.setValue(new Date(Date.now() + 60_000));
 startTimeToggle.refresh();
@@ -211,31 +209,55 @@ startTimeToggle.refresh();
 /* ---------- sport segmented control ---------- */
 
 // After the start-time toggle, which a sport change refreshes.
-wireSegmented(sportControlEl, (sport) => {
-  appState.setSport(sport);
+const sportControl = wireSegmented(sportControlEl, (sport) => {
+  appState.setSport(/** @type {Sport} */ (sport));
   // The avg-speed mode's default unit follows the sport (min/km for
   // running, km/h otherwise) until the user picks one themselves.
   startTimeToggle.refresh();
+});
+
+/* ---------- keyboard shortcuts ---------- */
+
+// Once the controls they act through exist.
+initShortcuts({
+  triggerButton: shortcutsToggle,
+  panelContainer: shortcutsPanelEl,
+  sportControl,
+  runButton,
+  gpxFileInput,
+  photoFileInput: photoFileInputEl,
+  deviceButton: deviceButtonEl,
+  startTimeField,
+  startTimeToggle,
+  appShellEl,
+  profileCloseButton: profileCloseButtonEl,
+  profileShowButton: profileShowButtonEl,
 });
 
 /* ---------- anchor placement ---------- */
 
 const anchorPlacer = createAnchorPlacer({
   appState,
-  anchors: anchorsModule,
-  stops: stopsModule,
+  anchors,
+  stops,
   map: mapModule,
+  // A Leaflet popup on a desktop, #routeDialog on a phone.
+  popovers: createPopoverHost({
+    map: mapModule,
+    dialogEl: /** @type {HTMLDialogElement} */ (document.getElementById('routeDialog')),
+    isPhoneLayout,
+  }),
   resolveAnchorCandidates,
   revealMap,
   setStatus,
   placementBannerEl: document.getElementById('photoPlacementBanner'),
 });
 // A dragged photo pin only moves once the user confirms where.
-anchorsModule.setAnchorDragEndListener(anchorPlacer.handleAnchorDrag);
+anchors.setAnchorDragEndListener(anchorPlacer.handleAnchorDrag);
 
 /* ---------- photo drop ---------- */
 
-initPhotoDrop({
+const photoDrop = createPhotoDrop({
   dropzoneEl: photoDropzoneEl,
   inputEl: photoFileInputEl,
   galleryInputEl: photoGalleryInputEl,
@@ -245,7 +267,7 @@ initPhotoDrop({
   summaryEl: document.getElementById('photoSummary'),
   appState,
   resolvePhotoAnchors,
-  addAnchor: anchorsModule.addAnchor,
+  addAnchor: anchors.addAnchor,
   placePhoto: anchorPlacer.placePhoto,
   cancelPhotoPlacement: anchorPlacer.cancelPhotoPlacement,
   choosePhotoPass: anchorPlacer.choosePhotoPass,
@@ -267,10 +289,10 @@ async function handleFile(file) {
     // Anchors/stops/photo rows reference distances along the *previous*
     // route — a new upload invalidates all of them, so drop them before
     // wiring up the new one rather than letting them silently carry over.
-    anchorsModule.resetAnchors();
-    stopsModule.resetStops();
-    resetPhotoDrop();
-    hideProfile();
+    anchors.resetAnchors();
+    stops.resetStops();
+    photoDrop.reset();
+    profilePanel.hide();
 
     appState.setRoute({ points, totalDistance: summary.total_distance, fileName: file.name });
     // Only now: a file that fails to parse leaves the previous route loaded,
@@ -337,12 +359,12 @@ runButton.addEventListener('click', async () => {
     setStatus('Converting…');
     // Only the anchors and stops inside the current start–end; the rest stay
     // in their lists, marked inactive, and are reported below.
-    const anchorsPayload = anchorsModule.getActiveAnchors().map((a) => ({
+    const anchorsPayload = anchors.getActiveAnchors().map((a) => ({
       distanceFromStart: a.distanceFromStart,
       timestamp: a.timestamp.toISOString(),
       source: a.source ?? 'user',
     }));
-    const stopsPayload = stopsModule.getActiveStops().map((s) => ({
+    const stopsPayload = stops.getActiveStops().map((s) => ({
       distanceFromStart: s.distanceFromStart,
       durationSeconds: s.mode === 'duration' ? s.durationSeconds : undefined,
       startIso: s.mode === 'startEnd' ? s.arrival.toISOString() : undefined,
@@ -369,9 +391,9 @@ runButton.addEventListener('click', async () => {
     downloadLink.download = fitFileNameFromGpx(fileName);
     downloadLink.hidden = false;
     downloadLink.textContent = `Download FIT (${formatFileSize(blob.size)})`;
-    showProfile(profile, convertedSport);
+    profilePanel.show(profile, convertedSport);
     const generated = statusWithWarnings(
-      `FIT file generated successfully.${leftOutNote(anchorsModule.countInactiveAnchors(), stopsModule.countInactiveStops())}`,
+      `FIT file generated successfully.${leftOutNote(anchors.countInactiveAnchors(), stops.countInactiveStops())}`,
       warnings,
     );
     setStatus(generated.message, generated.kind);

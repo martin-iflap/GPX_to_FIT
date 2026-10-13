@@ -124,7 +124,7 @@ export function formatPace(metersPerSecond) {
  * an unexpected/internal failure, kept as the raw `Error: <message>` (a full
  * Python traceback, for a PythonError) since that detail is what makes it
  * debuggable.
- * @param {unknown} error
+ * @param {any} error
  * @returns {{ message: string, kind: 'input'|'error' }}
  */
 export function describeError(error) {

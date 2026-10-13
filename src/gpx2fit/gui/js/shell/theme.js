@@ -1,11 +1,10 @@
-// Light/dark theme persistence and application. Syncs three things whenever
-// the theme changes: the `data-theme` attribute (which styles.css keys off
-// of), the toggle button's icon, and the map's basemap tiles + route line
-// color (both live in map.js, since Leaflet tile layers can't be restyled
-// with CSS alone).
+// Light/dark theme persistence and application. Whenever the theme changes
+// it sets the `data-theme` attribute (which css/tokens.css keys off of), the
+// toggle button's icon and the browser toolbar's tint, then tells `onChange`.
+// That is how the map restyles itself (map.js's setTheme: Leaflet tile layers
+// can't be restyled with CSS alone) without this module knowing about it.
 
-import * as mapModule from '../route/map.js';
-import { accentColor, readCssVar } from '../util/cssVars.js';
+import { readCssVar } from '../util/cssVars.js';
 import { readSetting, writeSetting } from '../state/storage.js';
 
 const SUN_ICON =
@@ -24,18 +23,20 @@ const MOON_ICON =
 /**
  * Wires up the theme toggle button and applies the initial theme (persisted
  * choice, falling back to the OS `prefers-color-scheme`). Call once at
- * startup, after `mapModule.initMap`.
+ * startup, once whatever `onChange` restyles exists (the map).
  *
  * @param {HTMLElement} themeToggleButton
+ * @param {{ onChange?: (theme: 'light'|'dark') => void }} [opts] - runs for
+ *   the initial theme and every change after, once `data-theme` is set, so
+ *   CSS variables read in it are the new theme's
  */
-export function initTheme(themeToggleButton) {
+export function initTheme(themeToggleButton, { onChange } = {}) {
   function applyTheme(theme) {
     document.documentElement.setAttribute('data-theme', theme);
     themeToggleButton.innerHTML = theme === 'dark' ? SUN_ICON : MOON_ICON;
-    mapModule.setMapTheme(theme);
-    mapModule.updateRouteColor(accentColor());
     // A phone browser tints its toolbar with this, so it follows the page.
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', readCssVar('--bg-base'));
+    onChange?.(theme);
   }
 
   themeToggleButton.addEventListener('click', () => {

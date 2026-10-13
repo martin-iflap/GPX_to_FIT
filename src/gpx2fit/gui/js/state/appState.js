@@ -9,17 +9,19 @@ import { sameWindow } from '../route/activityWindow.js';
 
 /**
  * @typedef {{ points: {lat: number, lon: number}[], totalDistance: number, fileName: string }} Route
- * @typedef {{ isValid: boolean, mode?: string, resolvedDate?: Date, durationSeconds?: number }} TimeResult
+ * @typedef {import('../inputs/timeInput.js').TimeResult} TimeResult
  * @typedef {import('../route/activityWindow.js').ActivityWindow} ActivityWindow
+ * @typedef {'running'|'hiking'} Sport - the GUI's values, which bridge_api reads as SportType
  */
 
 /**
  * @param {object} [initial]
- * @param {string} [initial.sport] - the sport tab selected in the HTML
+ * @param {Sport} [initial.sport] - the sport tab selected in the HTML
  */
 export function createAppState({ sport = 'hiking' } = {}) {
   /** @type {Route|null} */
   let route = null;
+  /** @type {Sport} */
   let currentSport = sport;
   /** @type {Date|null} */
   let startTime = null;
@@ -47,10 +49,11 @@ export function createAppState({ sport = 'hiking' } = {}) {
       route = nextRoute;
     },
 
-    /** @returns {string} 'running' or 'hiking', the GUI's values */
+    /** @returns {Sport} */
     get sport() {
       return currentSport;
     },
+    /** @param {Sport} nextSport */
     setSport(nextSport) {
       currentSport = nextSport;
     },

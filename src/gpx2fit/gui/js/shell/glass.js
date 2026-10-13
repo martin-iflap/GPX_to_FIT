@@ -1,4 +1,4 @@
-// Turns on the liquid-glass refraction (styles.css's html.glass-refraction
+// Turns on the liquid-glass refraction (css/glass.css's html.glass-refraction
 // rules, which run index.html's #liquidGlass filter in backdrop-filter) in
 // browsers that render it. Only Chromium applies an SVG filter as a
 // backdrop-filter; Safari and Firefox would drop the whole declaration and
@@ -13,7 +13,8 @@
  * @returns {boolean}
  */
 export function supportsBackdropRefraction(nav) {
-  const brands = nav?.userAgentData?.brands ?? [];
+  // userAgentData is Chromium-only, so the DOM types don't have it.
+  const brands = /** @type {{userAgentData?: {brands?: {brand: string}[]}}} */ (nav)?.userAgentData?.brands ?? [];
   return brands.some(({ brand }) => brand === 'Chromium');
 }
 

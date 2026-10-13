@@ -1,8 +1,8 @@
-// Reads the theme's color tokens (styles.css `:root` and its dark blocks)
+// Reads the theme's color tokens (css/tokens.css `:root` and its dark blocks)
 // for what CSS can't style: Leaflet's route line and hover dot, and the
 // browser toolbar's theme-color. Read on each use, since the theme can change.
 
-/** The fallback when a token is missing, e.g. styles.css not loaded yet. */
+/** The fallback when a token is missing, e.g. css/tokens.css not loaded yet. */
 const ACCENT_FALLBACK = '#0088ff';
 
 /**

@@ -199,6 +199,11 @@ describe('loading the runtime', () => {
     assert.match(appended[0].src, /^https:\/\/cdn\.jsdelivr\.net\/pyodide\/v\d+\.\d+\.\d+\/full\/pyodide\.js$/);
     appended[0].fire('error');
     await assert.rejects(firstTry, /Failed to load/);
+    // Subresource integrity: a CDN that serves other bytes gets the script
+    // refused. It needs a CORS request, hence crossOrigin. (Checked once the
+    // load has settled, so a failure here fails rather than hangs.)
+    assert.match(appended[0].integrity, /^sha384-[A-Za-z0-9+/]{64}$/);
+    assert.equal(appended[0].crossOrigin, 'anonymous');
     assert.equal(appended[0].removed, true);
 
     const secondTry = parseGpx(new Uint8Array([1]));

@@ -1,0 +1,191 @@
+/* The anchor, stop and photo lists (markerList.js, photoAnchors.js). */
+
+/* ---------- item lists (anchors, stops, photos) ---------- */
+
+.item-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.list-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  /* The left and vertical padding sit on .list-row-info, so the pan button
+     covers the whole row except the delete button. */
+  padding: 0 var(--space-3) 0 0;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition);
+}
+
+.list-row:hover,
+.list-row.is-active {
+  background: var(--accent-soft);
+}
+
+.list-row-info {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-2) 0 var(--space-2) var(--space-3);
+}
+
+/* An anchor or stop row's is a button that pans to its pin (markerList.js);
+   a pending photo's is a plain box. */
+button.list-row-info {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+button.list-row-info:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.list-row-number {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: 0.72rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.list-row-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.list-row-distance {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.list-row-time {
+  font-size: 0.76rem;
+  color: var(--text-tertiary);
+}
+
+.list-row-delete {
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  transition: color var(--transition), background var(--transition);
+}
+
+.list-row-delete:hover {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.list-row.is-problem .list-row-time {
+  color: var(--danger);
+}
+
+/* Kept but not used: an anchor or stop outside the activity's current
+   start–end (see activityWindow.js). Amber rather than red, since moving the
+   start back makes it active again. */
+.list-row.is-inactive .list-row-distance {
+  opacity: 0.55;
+}
+
+.list-row.is-inactive .list-row-time {
+  color: var(--warning);
+}
+
+/* The embedded EXIF thumbnail, on a photo's row and on its anchor's row
+   (a phone picker's file name is just a number), and the "Place on map"
+   button for a photo whose location was stripped (photoAnchors.js). */
+.photo-thumb {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.photo-place-button {
+  align-self: flex-start;
+  margin-top: var(--space-1);
+  padding: 2px var(--space-3);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--transition);
+}
+
+.photo-place-button:hover {
+  background: var(--accent-soft);
+}
+
+/* Only has content on touch screens (.copy-touch), so no margin of its own
+   when that's hidden. */
+.photo-gallery-hint {
+  margin: 0;
+  font-size: 0.76rem;
+  color: var(--text-tertiary);
+}
+
+.photo-gallery-hint .copy-touch {
+  display: none;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .photo-gallery-hint .copy-touch {
+    display: block;
+    padding: var(--space-2) var(--space-1) 0;
+  }
+}
+
+.photo-gallery-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.list-empty {
+  margin: 0;
+  padding: var(--space-4) var(--space-2);
+  text-align: center;
+  font-size: 0.82rem;
+  color: var(--text-tertiary);
+}
+
+/* "3 photos added as anchors": the photos that left the photo list. */
+.photo-summary {
+  margin: 0;
+  padding: var(--space-2);
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}

@@ -1,0 +1,311 @@
+/* The modal dialogs: the device picker and the phone layout's route dialog. */
+
+/* ---------- device picker ---------- */
+
+/* Styled like a filled input rather than a button: it shows a value, the
+   current device, and only opens a picker for it. The kit's combo box: an
+   opaque field with a chevron in a small rounded chip at its right end.
+   The chevron is a mask over currentColor so it follows the theme. */
+.device-button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 0.6rem 0.4rem 0.6rem 0.75rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--field-bg);
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--transition), background var(--transition);
+}
+
+.device-button::before {
+  content: "";
+  order: 2;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  border-radius: 6px;
+  background: var(--control-chip);
+}
+
+.device-button::after {
+  content: "";
+  order: 3;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  /* Pulled back over the chip by its own width plus the flex gap. */
+  margin-left: calc(-22px - var(--space-2));
+  background: var(--text-primary);
+  -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 22 22'><polyline points='7.5 9.5 11 13 14.5 9.5' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/></svg>") center / 22px 22px no-repeat;
+  mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 22 22'><polyline points='7.5 9.5 11 13 14.5 9.5' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/></svg>") center / 22px 22px no-repeat;
+}
+
+.device-button.is-empty {
+  color: var(--text-tertiary);
+}
+
+.device-button:hover {
+  border-color: var(--accent);
+}
+
+.device-button:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* The <dialog> itself is only a transparent, centred box; the frosted panel
+   inside it fills it exactly, so a click whose target is the dialog element
+   can only have landed on the backdrop (see devicePicker.js). */
+.modal {
+  width: min(440px, calc(100vw - 2 * var(--space-4)));
+  max-height: min(80vh, 720px);
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  overflow: visible;
+}
+
+.modal::backdrop {
+  background: rgba(0, 0, 0, 0.2);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+}
+
+.modal-panel {
+  display: flex;
+  flex-direction: column;
+  max-height: inherit;
+  border-radius: var(--radius-xl);
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+  box-shadow: var(--glass-edge), var(--glass-shadow);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-4) var(--space-4) var(--space-2) var(--space-5);
+}
+
+.modal-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.modal-close {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 50%;
+  background: var(--bg-elevated-3);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.modal-close:hover {
+  background: var(--control-chip);
+  color: var(--text-primary);
+}
+
+.modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-5) var(--space-5);
+  overflow-y: auto;
+}
+
+.device-brand {
+  margin: var(--space-2) 0 calc(-1 * var(--space-1));
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.device-catalog {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.device-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+}
+
+.device-option {
+  padding: 0.5rem 0.7rem;
+  /* Borderless grey fill, like the kit's secondary buttons; the transparent
+     border keeps the size when the selected one gains its blue edge. */
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated-3);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.85rem;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition), transform 120ms ease;
+}
+
+.device-option:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.device-option.is-selected {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+/* Arrow keys move focus between options (devicePicker.js), so the focused
+   one needs its own mark, separate from the selected one's fill. */
+.device-option:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* The panel takes focus on open only so that no option does; it has no
+   focus ring of its own. */
+.modal-panel:focus {
+  outline: none;
+}
+
+/* Glass controls give a little under the finger, as Apple's do. */
+.profile-show-button {
+  transition: transform 120ms ease;
+}
+
+.device-option:active {
+  transform: scale(0.97);
+}
+
+/* The pill is centred with a transform; the press has to keep it. */
+.profile-show-button:active {
+  transform: translateX(-50%) scale(0.97);
+}
+
+.device-option--none {
+  color: var(--text-secondary);
+}
+
+.device-custom {
+  margin-top: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.device-custom summary {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.device-custom-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.device-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.device-field--wide {
+  grid-column: 1 / -1;
+}
+
+.device-custom-error {
+  margin: var(--space-2) 0 0;
+  font-size: 0.78rem;
+  color: var(--warning);
+}
+
+.device-custom-apply {
+  margin-top: var(--space-3);
+  padding: 0.45rem 1.1rem;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.device-custom-apply:hover {
+  background: var(--accent-hover);
+}
+
+/* The embedded-name field closes the list off from the custom IDs above. */
+.device-custom + .device-field {
+  margin-top: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* ---------- route dialog (phone layout's anchor/stop popovers) ---------- */
+
+/* Borrows the device picker's dialog and panel, and lays its body out like
+   .anchor-popover's popup content, since the same builders fill both. The
+   close button floats over the corner: the builders bring their own heading,
+   so a header row would only add an empty line above it. */
+.route-dialog {
+  max-height: min(85vh, 720px);
+  max-height: min(85dvh, 720px);
+}
+
+.route-dialog .modal-panel {
+  position: relative;
+}
+
+.route-dialog .modal-close {
+  position: absolute;
+  top: var(--space-3);
+  right: var(--space-3);
+}
+
+.route-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  overflow-y: auto;
+}
+
+/* Clear of the close button. */
+.route-dialog-body > .popover-heading:first-child {
+  padding-right: var(--space-7);
+}
+
+/* One column: arrival above departure. Side by side they need the 492px
+   the wide map popup gets, which a phone doesn't have. */
+.route-dialog .stop-time-columns {
+  grid-template-columns: 1fr;
+}

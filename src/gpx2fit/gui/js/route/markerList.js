@@ -1,30 +1,59 @@
 // Shared behavior for a "list of things placed on the route, each with a
 // synced numbered map pin" — anchors.js and stops.js are both exactly this
-// shape. (Assign id, sort by distanceFromStart, sync map.js marker
-// id-space, render a sidebar row with a delete button, hover/click <->
-// pin highlight, and re-check every item against the activity window.) The
-// only parts that differ between an anchor and a stop are what a row's text
-// lines say, what marker "kind" it gets and when it counts as inside the
-// window, so those are the only things callers provide.
+// shape. (Assign id, sort by distanceFromStart, keep the pins in step,
+// render a sidebar row with a delete button, hover/focus/click <-> pin highlight,
+// and re-check every item against the activity window.) The only parts that
+// differ between an anchor and a stop are what a row's text lines say, what
+// pin "kind" it gets and when it counts as inside the window, so those are
+// the only things callers provide.
+//
+// The pins come in as an adapter (map.js's createPinLayer), one per list, so
+// each list has its own pin ids and nothing here touches Leaflet.
 
-import * as mapModule from './map.js';
-import { revealMap } from '../shell/mobileLayout.js';
+import { formatDistanceKm } from '../util/format.js';
 
 /** @typedef {import('./activityWindow.js').ActivityWindow} ActivityWindow */
 
 /**
+ * What a list needs from the map: one layer of numbered pins, keyed by the
+ * list's own ids. map.js's `createPinLayer()` returns one.
+ * @typedef {{
+ *   add: (id: number, lat: number, lon: number, number: number, opts: {
+ *     kind: 'anchor'|'stop'|'photo',
+ *     onClick: (id: number) => void,
+ *     draggable: boolean,
+ *     onDragEnd: (id: number, lat: number, lon: number, revert: () => void) => void,
+ *   }) => void,
+ *   move: (id: number, lat: number, lon: number) => void,
+ *   remove: (id: number) => void,
+ *   renumber: (orderedIds: number[]) => void,
+ *   panTo: (id: number) => void,
+ *   highlight: (id: number, isActive: boolean) => void,
+ *   setDimmed: (id: number, dimmed: boolean) => void,
+ * }} PinLayer
+ */
+
+/**
+ * Creates the list, mounted into `listEl`, and renders it (empty).
+ *
  * @param {object} opts
- * @param {number} [opts.idOffset] - starting id minus 1; keeps this list's ids
- *   from colliding with another list sharing map.js marker id-space (e.g.
- *   stops.js offsets by 1_000_000 to stay clear of anchors.js ids)
- * @param {(item: object) => 'anchor'|'stop'|'photo'} opts.markerKind - marker
- *   kind for a given item, passed to mapModule.addMarker
- * @param {string} opts.deleteAriaLabel - aria-label for each row's delete button
+ * @param {HTMLElement} opts.listEl - `<ul>` (or similar) to render rows into
+ * @param {HTMLElement} opts.emptyEl - shown while the list is empty
+ * @param {PinLayer} opts.pins - this list's pins on the map
+ * @param {() => void} [opts.revealMap] - brings the map into view (on a
+ *   phone the sheet may cover it) before a row click pans to its pin
+ * @param {(item: object) => 'anchor'|'stop'|'photo'} opts.markerKind - pin
+ *   kind for a given item
+ * @param {string} opts.deleteLabel - how each row's delete button starts its
+ *   label ('Delete anchor'); the row's number and distance follow, so a
+ *   screen reader can tell the buttons apart ('Delete anchor 3 at 4.20 km')
  * @param {(item: object, activityWindow: ActivityWindow|null) => HTMLElement[]} opts.renderRowText -
- *   builds the row's text content (typically a distance line and a time *   line) for one item, as of the current activity window
+ *   builds the row's text content (typically a distance line and a time
+ *   line) for one item, as of the current activity window. Phrasing
+ *   elements only (`<span>`s): they go inside the row's button.
  * @param {(item: object) => HTMLElement|null} [opts.renderRowMedia] - an
  *   optional picture between the row's number and its text (a photo
- *   anchor's thumbnail), or null for none
+ *   anchor's thumbnail), or null for none; phrasing too, like an `<img>`
  * @param {(item: object, activityWindow: ActivityWindow|null) => boolean} [opts.isActive] -
  *   false for an item that is kept but currently not used (e.g. an anchor
  *   outside the activity's time): its row gets `.is-inactive`, its pin is
@@ -36,18 +65,19 @@ import { revealMap } from '../shell/mobileLayout.js';
  *   the item really moves (see `move`).
  */
 export function createMarkerList({
-  idOffset = 0,
+  listEl,
+  emptyEl,
+  pins,
+  revealMap = () => {},
   markerKind,
-  deleteAriaLabel,
+  deleteLabel,
   renderRowText,
   renderRowMedia = () => null,
   isActive = () => true,
   isDraggable = () => false,
 }) {
   let items = [];
-  let nextId = idOffset + 1;
-  let listEl = null;
-  let emptyStateEl = null;
+  let nextId = 1;
   // The activity's current start–end, pushed in through setActivityWindow
   // (main.js forwards appState's). null until both are valid, which leaves
   // every item active.
@@ -55,9 +85,8 @@ export function createMarkerList({
   let activityWindow = null;
   // Fired on add/remove/move/reset for callers that derive something from the
   // list (the start-time control's avg-speed mode needs the total stopped
-  // time). Deliberately not fired from render(), which init() also calls at
-  // mount — a listener registered later would then miss it, and one
-  // registered earlier would run before the caller's own state exists.
+  // time). Deliberately not fired from render(), which creating the list
+  // also calls: a listener registered later would then miss it.
   let changeListener = null;
   // Per-item callbacks for whoever created the item and needs to hear that
   // it's gone (a photo's row). Kept off the items themselves, so they never
@@ -65,16 +94,8 @@ export function createMarkerList({
   const removeCallbacks = new Map();
   let dragEndListener = null;
 
-  /** Item ids in route order (nearest-to-start first) — matches the numbering shown on the map pins and sidebar rows. */
-  function sortedIds() {
-    return [...items].sort((a, b) => a.distanceFromStart - b.distanceFromStart).map((i) => i.id);
-  }
-
   function highlightRow(id) {
-    if (!listEl) {
-      return;
-    }
-    listEl.querySelectorAll('.anchor-row').forEach((row) => {
+    listEl.querySelectorAll('.list-row').forEach((/** @type {HTMLElement} */ row) => {
       row.classList.toggle('is-active', row.dataset.id === String(id));
     });
   }
@@ -84,6 +105,7 @@ export function createMarkerList({
    *   re-render that can't have changed their order (see `setActivityWindow`)
    */
   function render(renumber = true) {
+    // Route order (nearest the start first), which numbers the rows and pins.
     items.sort((a, b) => a.distanceFromStart - b.distanceFromStart);
     listEl.innerHTML = '';
 
@@ -91,19 +113,22 @@ export function createMarkerList({
 
     items.forEach((item, index) => {
       const row = document.createElement('li');
-      row.className = 'anchor-row';
+      row.className = 'list-row';
       row.classList.toggle('is-inactive', inactiveIds.has(item.id));
       row.dataset.id = String(item.id);
 
-      const info = document.createElement('div');
-      info.className = 'anchor-row-info';
+      // A button, so the keyboard can pan to the pin too. Everything in it
+      // is a <span> or an <img>: a button holds phrasing content only.
+      const info = document.createElement('button');
+      info.type = 'button';
+      info.className = 'list-row-info';
 
       const numberEl = document.createElement('span');
-      numberEl.className = 'anchor-row-number';
+      numberEl.className = 'list-row-number';
       numberEl.textContent = String(index + 1);
 
-      const textEl = document.createElement('div');
-      textEl.className = 'anchor-row-text';
+      const textEl = document.createElement('span');
+      textEl.className = 'list-row-text';
       textEl.append(...renderRowText(item, activityWindow));
 
       const mediaEl = renderRowMedia(item);
@@ -111,8 +136,8 @@ export function createMarkerList({
 
       const deleteBtn = document.createElement('button');
       deleteBtn.type = 'button';
-      deleteBtn.className = 'anchor-row-delete';
-      deleteBtn.setAttribute('aria-label', deleteAriaLabel);
+      deleteBtn.className = 'list-row-delete';
+      deleteBtn.setAttribute('aria-label', `${deleteLabel} ${index + 1} at ${formatDistanceKm(item.distanceFromStart)}`);
       deleteBtn.textContent = '×';
       deleteBtn.addEventListener('click', (event) => {
         event.stopPropagation();
@@ -120,38 +145,31 @@ export function createMarkerList({
       });
 
       row.append(info, deleteBtn);
-      row.addEventListener('click', () => {
+      info.addEventListener('click', () => {
         // On a phone the sheet may be covering most of the map; bring it
         // back into view first, or the pan happens out of sight.
         revealMap();
-        mapModule.panToMarker(item.id);
+        pins.panTo(item.id);
       });
-      row.addEventListener('mouseenter', () => mapModule.highlightMarker(item.id, true));
-      row.addEventListener('mouseleave', () => mapModule.highlightMarker(item.id, false));
+      // The pointer hovers the whole row; the keyboard focuses its button.
+      row.addEventListener('mouseenter', () => pins.highlight(item.id, true));
+      row.addEventListener('mouseleave', () => pins.highlight(item.id, false));
+      info.addEventListener('focus', () => pins.highlight(item.id, true));
+      info.addEventListener('blur', () => pins.highlight(item.id, false));
 
       listEl.append(row);
     });
 
-    emptyStateEl.hidden = items.length > 0;
+    emptyEl.hidden = items.length > 0;
     if (renumber) {
-      mapModule.renumberMarkers(sortedIds());
+      pins.renumber(items.map((item) => item.id));
     }
-    // After renumbering: setIcon replaces the pin's element, class and all.
-    items.forEach((item) => mapModule.setMarkerDimmed(item.id, inactiveIds.has(item.id)));
+    // After renumbering: a new number replaces the pin's element, class and all.
+    items.forEach((item) => pins.setDimmed(item.id, inactiveIds.has(item.id)));
   }
 
   /**
-   * Mounts the list into the given DOM elements and does the initial (empty)
-   * render. Must be called once before `add`/`remove`.
-   */
-  function init(listElement, emptyElement) {
-    listEl = listElement;
-    emptyStateEl = emptyElement;
-    render();
-  }
-
-  /**
-   * Adds an item: assigns it an id, drops a numbered pin on the map at
+   * Adds an item: assigns it an id, adds a numbered pin at
    * `lat`/`lon`, and re-renders the sidebar list.
    *
    * @param {object} fields - all fields of the item, including `lat`/`lon`
@@ -168,7 +186,7 @@ export function createMarkerList({
     if (onRemove) {
       removeCallbacks.set(id, onRemove);
     }
-    mapModule.addMarker(id, lat, lon, items.length, {
+    pins.add(id, lat, lon, items.length, {
       kind: markerKind(item),
       onClick: (clickedId) => highlightRow(clickedId),
       draggable: isDraggable(item),
@@ -189,7 +207,7 @@ export function createMarkerList({
   /** Removes the item with the given id, its map pin, and re-renders the list. */
   function remove(id) {
     items = items.filter((i) => i.id !== id);
-    mapModule.removeMarker(id);
+    pins.remove(id);
     render();
     changeListener?.();
     // Last, so the callback already sees the list without this item.
@@ -210,7 +228,7 @@ export function createMarkerList({
       return;
     }
     item.distanceFromStart = distanceFromStart;
-    mapModule.moveMarker(id, lat, lon);
+    pins.move(id, lat, lon);
     render();
     changeListener?.();
   }
@@ -221,7 +239,7 @@ export function createMarkerList({
    * reset along with the route.
    */
   function reset() {
-    items.forEach((i) => mapModule.removeMarker(i.id));
+    items.forEach((i) => pins.remove(i.id));
     items = [];
     removeCallbacks.clear();
     render();
@@ -285,8 +303,9 @@ export function createMarkerList({
     return items.length - getActive().length;
   }
 
+  render();
+
   return {
-    init,
     add,
     remove,
     move,

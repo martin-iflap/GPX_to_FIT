@@ -1,4 +1,4 @@
-// The pace-smoothness slider's center-biased fill (styles.css, .range-input):
+// The pace-smoothness slider's center-biased fill (css/forms.css, .range-input):
 // the accent fill runs from an origin value (5 = automatic) to the knob, in
 // whichever direction, rather than from the slider's left end. CSS can't read
 // an input's value, so this keeps two custom properties in step with it.

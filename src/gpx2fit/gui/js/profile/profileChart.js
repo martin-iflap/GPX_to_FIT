@@ -6,7 +6,7 @@
 // already downsampled from core/activity_profile.py (see pyodideBridge.js
 // convert()), so everything here is scales, paths, and hover lookup.
 //
-// All colors come from CSS classes keyed off theme tokens in styles.css, so
+// All colors come from CSS classes keyed off theme tokens in css/profile.css, so
 // a theme switch restyles the chart without a redraw.
 
 import { formatDistanceKm, formatElapsed, formatPace, formatSpeedKmh } from '../util/format.js';
@@ -110,6 +110,7 @@ export function buildSeries(samples, axis, metric) {
  * @returns {[number, number][]} inclusive [first, last] indices
  */
 export function stopRuns(samples) {
+  /** @type {[number, number][]} */
   const runs = [];
   for (let i = 0; i < samples.length; i++) {
     if (!samples[i].isStop) {

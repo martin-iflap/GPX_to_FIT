@@ -1,0 +1,86 @@
+/* Liquid-glass refraction (glass.js) and the reduced-transparency and
+   reduced-motion opt-outs. Last, so the opt-outs win by order. */
+
+/* ---------- liquid glass: refraction and opt-outs ---------- */
+
+/* Chromium only (glass.js sets the class): the floating panes bend what's
+   behind them near their edges, through #liquidGlass's displacement map in
+   index.html, before the usual blur. Safari and Firefox drop a url() in
+   backdrop-filter (and with it the whole declaration), so they never get
+   this rule and keep the plain glass. The sidebar and the profile panel are
+   left out: they're big (a full-height displacement pass on every frame of
+   a map pan) and run off the edge of the screen, where there is no rim. */
+html.glass-refraction .leaflet-popup-content-wrapper,
+html.glass-refraction .profile-show-button,
+html.glass-refraction .placement-banner,
+html.glass-refraction .modal-panel,
+html.glass-refraction .dropdown,
+html.glass-refraction .day-selector-dropdown {
+  backdrop-filter: url(#liquidGlass) var(--glass-filter);
+  -webkit-backdrop-filter: url(#liquidGlass) var(--glass-filter);
+}
+
+/* In the phone sheet the pill sits on the near-opaque sheet, where there's
+   nothing to bend. */
+@media (max-width: 860px) {
+  html.glass-refraction #sidebar .profile-show-button {
+    backdrop-filter: var(--glass-filter);
+    -webkit-backdrop-filter: var(--glass-filter);
+  }
+}
+
+/* The OS's "reduce transparency" setting: no blur and no bending (tokens.css
+   makes the panes solid). */
+@media (prefers-reduced-transparency: reduce) {
+  /* The .glass-refraction forms are needed to outrank the refraction rules
+     above, which are more specific. */
+  #sidebar,
+  #profilePanel,
+  .shortcuts-panel,
+  .leaflet-popup-content-wrapper,
+  .leaflet-popup-tip,
+  .profile-show-button,
+  .placement-banner,
+  .modal-panel,
+  .dropdown,
+  .day-selector-dropdown,
+  html.glass-refraction .leaflet-popup-content-wrapper,
+  html.glass-refraction .profile-show-button,
+  html.glass-refraction .placement-banner,
+  html.glass-refraction .modal-panel,
+  html.glass-refraction .dropdown,
+  html.glass-refraction .day-selector-dropdown,
+  html.glass-refraction #sidebar .profile-show-button {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .profile-tooltip {
+    background: var(--bg-base);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    text-shadow: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .device-option:active {
+    transform: none;
+  }
+
+  .profile-show-button:active {
+    transform: translateX(-50%);
+  }
+
+  #map.is-placing .route-line {
+    animation: none;
+  }
+
+  .range-input:active::-webkit-slider-thumb {
+    transform: none;
+  }
+
+  .range-input:active::-moz-range-thumb {
+    transform: none;
+  }
+}

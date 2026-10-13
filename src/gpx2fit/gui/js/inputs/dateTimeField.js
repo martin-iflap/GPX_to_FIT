@@ -7,7 +7,7 @@
 // to right now is the first one visible. The date part stays a native
 // <input type="date"> — day-picking there mostly works fine, and a full
 // custom calendar felt like overkill — just with a bigger click target on
-// its calendar icon (see styles.css).
+// its calendar icon (see css/forms.css).
 
 import { pad } from '../util/format.js';
 import { toDateInputValue } from '../util/dates.js';
@@ -116,7 +116,7 @@ export function nearestSlotIndex(now) {
  * @param {(value: {hours: number, minutes: number}|null) => void} opts.onChange -
  *   called with the value once both boxes hold one, or null while either
  *   box is incomplete (including empty)
- * @returns {{ setValue: (hours: number, minutes: number) => void }}
+ * @returns {{ setValue: (hours: number, minutes: number) => void, focus: () => void }}
  */
 export function createTimeField({ container, ariaLabel = 'Time', quickPicks = true, onChange }) {
   const wrapper = document.createElement('div');
@@ -199,8 +199,8 @@ export function createTimeField({ container, ariaLabel = 'Time', quickPicks = tr
     // keeps it open.
     const dropdown = createFocusDropdown({
       triggers: [hoursInput, minutesInput],
-      className: 'time-field-dropdown',
-      optionClassName: 'time-field-option',
+      className: 'dropdown',
+      optionClassName: 'dropdown-option',
       getOptions: () => buildDaySlots().map((slot) => ({ label: `${pad(slot.hours)}:${pad(slot.minutes)}`, value: slot })),
       getScrollIndex: () => nearestSlotIndex(new Date()),
       onPick: ({ hours, minutes }) => {
@@ -217,6 +217,11 @@ export function createTimeField({ container, ariaLabel = 'Time', quickPicks = tr
       hoursInput.value = pad(hours);
       minutesInput.value = pad(minutes);
       onChange({ hours, minutes });
+    },
+    /** Puts the caret in the hours box with its value selected, so typing replaces it. */
+    focus() {
+      hoursInput.focus();
+      hoursInput.select();
     },
   };
 }
@@ -322,7 +327,8 @@ export function createDaySelector({ container, onChange }) {
  * @param {string} [opts.dateAriaLabel]
  * @param {string} [opts.timeAriaLabel]
  * @param {(date: Date|null) => void} opts.onChange
- * @returns {{ getValue: () => Date|null, setValue: (date: Date) => void, prefillDateIfEmpty: (date: Date) => void }}
+ * @returns {{ getValue: () => Date|null, setValue: (date: Date) => void, prefillDateIfEmpty: (date: Date) => void,
+ *   focus: () => void }} `focus()` focuses the date box, which comes first
  */
 export function createDateTimeField({ container, dateAriaLabel = 'Date', timeAriaLabel = 'Time', onChange }) {
   const wrapper = document.createElement('div');
@@ -374,6 +380,10 @@ export function createDateTimeField({ container, dateAriaLabel = 'Date', timeAri
         dateInput.value = toDateInputValue(date);
         onChange(currentValue());
       }
+    },
+    // A date box has no text selection to make, so focus alone.
+    focus() {
+      dateInput.focus();
     },
   };
 }

@@ -66,19 +66,24 @@ src/gpx2fit/
 │       ├── acceleration.py       per-sport limit on how fast the paced speed changes
 │       └── combine.py            fits speeds to anchors, stamps timestamps
 └── gui/
-    ├── index.html                app shell; loads Leaflet, Pyodide, exifr from CDNs
+    ├── index.html                app shell; loads Leaflet and exifr from CDNs (SRI-pinned)
     ├── about.html                static About/privacy page
-    ├── styles.css                all styles, light + dark tokens
+    ├── css/                      one stylesheet per component, linked in cascade order:
+    │                             tokens, base, layout, forms, time, lists, buttons, map,
+    │                             profile, dialogs, responsive, glass (+ about.css)
     └── js/                       plain ES modules, no build (see §7)
         ├── main.js               entry point and wiring
         ├── config.js             Thunderforest key (gitignored; the deploy writes it here)
+        ├── config.d.ts           config.js's shape, for the type check (optional, gitignored)
         ├── bridge/               pyodideBridge.js: the Pyodide runtime and every call into core/
         ├── state/                appState.js, settings.js, storage.js
         ├── route/                map.js, markerList.js, anchors.js, stops.js,
         │                         activityWindow.js, anchorOrder.js
-        ├── placement/            anchorPopovers.js, photoPlacement.js, photoAnchors.js
-        ├── inputs/               timeInput.js, dateTimeField.js, numericInput.js,
-        │                         focusDropdown.js, segmented.js, dropzone.js
+        ├── placement/            anchorPopovers.js, stopPopover.js, candidatePicker.js,
+        │                         timeChecks.js, placementEstimates.js, popoverParts.js,
+        │                         popoverHost.js, photoPlacement.js, photoAnchors.js
+        ├── inputs/               timeInput.js, speedEntry.js, dateTimeField.js,
+        │                         numericInput.js, focusDropdown.js, segmented.js, dropzone.js
         ├── profile/              profileChart.js, profilePanel.js
         ├── devices/              devices.js, devicePicker.js
         ├── shell/                theme.js, glass.js, rangeFill.js, mobileLayout.js,
@@ -89,6 +94,8 @@ tuning/                           dev-only calibration harness (see TUNING_ARCHI
 tests/core/  tests/tuning/        pytest
 tests/gui/                        node --test + jsdom, one folder per js/ folder
 docs/                             this file and TUNING_ARCHITECTURE.md
+jsconfig.json  types/             npm run typecheck: tsc over js/ (types/ declares the CDN globals)
+eslint.config.js                  npm run lint, over js/ and tests/gui/
 valhalla_spike.html               standalone spike that proved Valhalla is CORS-open
 ```
 
@@ -778,18 +785,25 @@ flowchart TD
   stt["status.js<br/>the status line"]
   set["settings.js<br/>surface + smoothness, remembered"]
   bridge["pyodideBridge.js"]
-  map["map.js<br/>Leaflet map, route, pins, hover marker, popups"]
-  ap["anchorPopovers.js<br/>route-click flow: candidate picker →<br/>anchor-or-stop → time popover,<br/>placePhoto card for a location-less photo,<br/>choosePhotoPass for an ambiguous one,<br/>confirm a dragged photo pin's move"]
+  map["map.js<br/>Leaflet map, route, pin layers,<br/>hover marker, the desktop popup"]
+  ph["popoverHost.js<br/>Leaflet popup or the phone's #routeDialog"]
+  ap["anchorPopovers.js<br/>route-click flow: anchor-or-stop →<br/>anchor time popover,<br/>placePhoto card for a location-less photo,<br/>choosePhotoPass for an ambiguous one,<br/>confirm a dragged photo pin's move"]
+  sp["stopPopover.js<br/>duration or arrival + departure"]
+  cp["candidatePicker.js<br/>Which pass?"]
+  tc["timeChecks.js<br/>inside start–end and in time order?"]
+  pe["placementEstimates.js<br/>uniform-pace estimate, time pre-fill"]
+  ppart["popoverParts.js<br/>heading, hint, buttons, photo header"]
   ppl["photoPlacement.js<br/>pending photo, likely pass by photo time"]
-  ao["anchorOrder.js<br/>is a photo's point in time order?"]
-  anchors["anchors.js<br/>anchor list state"]
-  stops["stops.js<br/>stop list state + change listener"]
-  ml["markerList.js<br/>shared list+pin bookkeeping"]
+  ao["anchorOrder.js<br/>is a point in time order?"]
+  anchors["anchors.js<br/>createAnchorList"]
+  stops["stops.js<br/>createStopList + change listener"]
+  ml["markerList.js<br/>shared list+pin bookkeeping, pins injected"]
   aw["activityWindow.js<br/>is an anchor/stop inside start–end?"]
-  photo["photoAnchors.js<br/>EXIF via exifr → resolve → addAnchor"]
+  photo["photoAnchors.js<br/>createPhotoDrop: EXIF via exifr → resolve → addAnchor"]
   ti["timeInput.js<br/>createTimeToggle (duration / end / avg speed)"]
+  se["speedEntry.js<br/>avg-speed boxes, unit, quick-picks"]
   dtf["dateTimeField.js<br/>custom date + time fields, segment linking"]
-  pp["profilePanel.js<br/>slide-up panel, toggles"]
+  pp["profilePanel.js<br/>createProfilePanel: slide-up panel, toggles"]
   pc["profileChart.js<br/>SVG chart"]
   mob["mobileLayout.js<br/>phone scroll sheet"]
   sc["shortcuts.js<br/>global keys + ? panel"]
@@ -801,7 +815,7 @@ flowchart TD
   fmt["format.js<br/>formatting + describeError"]
   cfg["config.js<br/>Thunderforest key (gitignored)"]
   subgraph shared["shared UI helpers"]
-    seg["segmented.js<br/>segmented tabs"]
+    seg["segmented.js<br/>radio groups and tabs"]
     fd["focusDropdown.js<br/>quick-pick lists"]
     num["numericInput.js<br/>digits-only boxes, Up/Down"]
     dz["dropzone.js<br/>drop + click-to-browse"]
@@ -836,13 +850,29 @@ flowchart TD
   main --> gl
   main --> fmt
   main --> mob
+  main --> ph
   mob -. "mapModule injected" .-> map
-  map --> mob
-  ml --> mob
-  ap -. "appState, anchors, stops, map,<br/>resolveAnchorCandidates, revealMap,<br/>setStatus injected by main" .-> bridge
+  ph -. "map, isPhoneLayout injected" .-> map
+  ml -. "a pin layer (map.createPinLayer)<br/>and revealMap injected" .-> map
+  ap -. "appState, anchors, stops, map, popovers,<br/>resolveAnchorCandidates, revealMap,<br/>setStatus injected by main" .-> bridge
+  ap -. "popovers injected,<br/>handed on to the stop popover and picker" .-> ph
   ap --> ti
-  ap --> seg
-  ap --> dates
+  ap --> sp
+  ap --> cp
+  ap --> tc
+  ap --> pe
+  ap --> ppart
+  sp --> ti
+  sp --> seg
+  sp --> pe
+  sp --> ppart
+  sp --> tc
+  cp --> ppl
+  cp --> ao
+  cp --> ppart
+  tc --> aw
+  tc --> ao
+  pe --> dates
   anchors --> ml
   stops --> ml
   anchors --> aw
@@ -852,22 +882,24 @@ flowchart TD
   ap --> ao
   ao --> fmt
   main --> aw
-  ml --> map
   pp --> pc
   pp --> seg
   photo --> dz
-  pp -. "mapModule injected" .-> map
+  pp -. "map injected (hover dot)" .-> map
   photo -. "appState, resolvePhotoAnchors, addAnchor,<br/>setStatus injected by main" .-> bridge
   photo -. "placePhoto, cancelPhotoPlacement,<br/>choosePhotoPass injected by main" .-> ap
   anchors -. "drag-end listener<br/>set by main" .-> ap
   ti --> dtf
   ti --> seg
-  ti --> fd
+  ti --> se
   ti --> num
   ti --> dates
+  se --> fd
+  se --> num
+  se --> dtf
   dtf --> fd
   dtf --> dates
-  th --> map
+  th -. "onChange: map.setTheme, set by main" .-> map
   th --> st
   th --> css
   map --> css
@@ -881,7 +913,12 @@ flowchart TD
 (formatting, the time controls, the order and window rules) are imported,
 and everything with state or side effects is passed in by `main.js`.
 `createAnchorPlacer` receives `appState`, the `anchors` and `stops` lists,
-`map`, `resolveAnchorCandidates`, `revealMap` and `setStatus`.
+`map` (only for the placement mode), `popovers`, `resolveAnchorCandidates`,
+`revealMap` and `setStatus`, so its tests pass in fakes, including a
+`popovers.open` that builds into a plain `<div>`. It hands what the stop
+popover and the pass picker need (`popovers`, `appState`, `stops`, its
+`createTimeChecks` and its estimate) on to `openStopPopover` and
+`openCandidatePicker` when it opens them.
 `photoAnchors.js` receives `appState`, `resolvePhotoAnchors`, `addAnchor`,
 `placePhoto`, `cancelPhotoPlacement`, `choosePhotoPass` and `setStatus`, so
 its tests pass in fakes (and a real `createAppState()`). Every photo anchor, GPS-matched or placed by hand, is
@@ -890,10 +927,25 @@ added there, with its `thumbnailUrl` and an `onRemove` hook
 anchor is deleted from the anchor list. A photo that became an anchor is
 listed only there; the Photos list keeps the ones that still need the user. `main.js` also hands
 `anchorPlacer.handleAnchorDrag` to `anchors.setAnchorDragEndListener`, so a
-dropped photo pin goes through the same confirm flow. `profilePanel.js`
-receives `mapModule` so it can draw the hover marker. `mobileLayout.js`
-receives `mapModule` so it can move the attribution. `map.js` itself imports
-only `isPhoneLayout` from it, and `markerList.js` only `revealMap`.
+dropped photo pin goes through the same confirm flow.
+
+The same rule holds below them (since 2026-10-12): no module but `main.js`
+imports `map.js`, and `map.js` imports only `config.js` and `cssVars.js`.
+- **Lists.** `createAnchorList`/`createStopList` each get their own pin layer
+  (`map.createPinLayer()`) and `revealMap`, and hand both to
+  `createMarkerList`. A pin layer is the list's `PinLayer`: add, move,
+  remove, renumber, panTo, highlight, setDimmed, all by the list's own ids.
+  Each list has its own id space, so stops no longer need an id offset, and
+  the list tests pass a fake layer instead of mocking `map.js`.
+- **Popovers.** `createPopoverHost({map, dialogEl, isPhoneLayout})` opens the
+  content in `map.openPopup` on a desktop and in `#routeDialog` on a phone.
+- **Theme.** `initTheme(button, {onChange})` gets `map.setTheme`, which swaps
+  the tiles and recolors the route.
+- **Panel and photos.** `createProfilePanel({..., map})` uses only the hover
+  dot. `createPhotoDrop` and `createProfilePanel` are factories with their
+  state inside, so `main.js` holds the one instance of each and calls its
+  `reset()`/`hide()` on a new GPX.
+- `mobileLayout.js` still receives `mapModule` to move the attribution.
 
 ### 7.2 Who owns which state
 
@@ -902,9 +954,9 @@ only `isPhoneLayout` from it, and `markerList.js` only `revealMap`.
 | route points, total distance, GPX file name, sport | `appState` (`setRoute` once a parse succeeds, `setSport`)                                       | convert handler, `anchorPopovers`, `photoAnchors`; `timeInput` through `speedMode` getters                                   |
 | start date/time (as typed)                         | `dateTimeField` instance in `main.js`                                                           | `main.js`'s `getStartTime()`, for the toggle while it works out its result                                                   |
 | start time + duration / end / avg-speed result     | `appState.setTime(start, result)`, from `startTimeToggle`'s `onChange`                          | `appState.startTime`/`timeResult`/`activityWindow()`/`durationSeconds()`; `getResult()` again at convert time               |
-| anchors                                            | `anchors.js`, backed by `markerList`                                                            | `getActiveAnchors()` at convert time                                                                                         |
-| stops                                              | `stops.js`, backed by `markerList`                                                              | `getActiveStops()` at convert time; `getStops()` for the avg-speed stop total; the change listener refreshes the time toggle |
-| activity window (start–end)                        | derived by `appState`; `onWindowChange` pushes it into `anchors.js`/`stops.js` → `markerList`  | `markerList`'s `isActive` check, `getActive()` and the row text                                                              |
+| anchors                                            | `createAnchorList` in `main.js`, backed by `markerList`                                         | `getActiveAnchors()` at convert time                                                                                         |
+| stops                                              | `createStopList` in `main.js`, backed by `markerList`                                           | `getActiveStops()` at convert time; `getStops()` for the avg-speed stop total; the change listener refreshes the time toggle |
+| activity window (start–end)                        | derived by `appState`; `onWindowChange` pushes it into the anchor and stop lists → `markerList` | `markerList`'s `isActive` check, `getActive()` and the row text                                                              |
 | parsed `Track`                                     | `bridge_api._track` (Python module state)                                                       | every bridge call                                                                                                            |
 | theme, surface toggle, smoothness, device          | `localStorage`, through `storage.js`                                                             | `theme.js`, `settings.js`, `devicePicker.js`                                                                                  |
 
@@ -925,7 +977,7 @@ inside, the same rule as Python's photo check) and re-renders the rows
 without renumbering the pins, since a time change can't reorder them.
 Photo anchors are included: a photo outside the window at drop time is
 still added (see "Dropping photos" below), so this re-check can bring it back. An item outside is kept but marked `.is-inactive`, its pin is dimmed
-(`map.setMarkerDimmed`), and it is left out of `getActive*()`. Moving the
+(its pin layer's `setDimmed`), and it is left out of `getActive*()`. Moving the
 window back makes it active again. The convert status then reports how
 many were left out (`format.leftOutNote`). An anchor or stop time entered
 as "Duration since start" is stored with its offset (`offsetSeconds`, or
@@ -957,13 +1009,13 @@ sequenceDiagram
   end
   AP->>U: openKindChoicePopover (anchor or stop? — a hint instead at the route's first/last point)
   alt anchor
-    AP->>U: openAnchorTimePopover (time of day | since start, with estimate hint, blocked outside start–end)
+    AP->>U: openAnchorTimePopover (time of day | since start, with estimate hint, blocked outside start–end or out of time order, with the reason)
     AP->>L: anchors.addAnchor({lat, lon, distanceFromStart, timestamp, offsetSeconds?})
   else stop
-    AP->>U: openStopPopover (duration | arrival+departure)
+    AP->>U: stopPopover.openStopPopover (duration | arrival+departure, the stay checked like an anchor's time)
     AP->>L: stops.addStop({... mode ...})
   end
-  L->>M: addMarker / renumberMarkers
+  L->>M: its pin layer's add / renumber
 ```
 
 Dropping photos:
@@ -997,12 +1049,12 @@ photoAnchors.handleFiles            (drop, the main input = file chooser, or the
 Moving a photo pin:
 
 ```
-map.addMarker({draggable})          (markerList's isDraggable: anchors.js says source === 'photo')
+pins.add(..., {draggable})          (the anchor list's pin layer; markerList's isDraggable: anchors.js says source === 'photo')
   drag     → the pin snaps to the drawn route (L.Polyline#closestLayerPoint)
   dragend  → markerList → anchors.setAnchorDragEndListener → anchorPopovers.handleAnchorDrag(anchor, lat, lon, revert)
              resolveAnchorCandidates → (candidate picker, likely pass marked) → "Move photo?" card
              out of time order with another active anchor or stop → revert() and a notice saying which, and where to go
-             Move → anchors.moveAnchor → markerList.move (re-sort, renumber) → map.moveMarker
+             Move → anchors.moveAnchor → markerList.move (re-sort, renumber) → pins.move
              anything else (Keep, ×, click elsewhere, Esc, start/finish, same point) → revert()
 ```
 
@@ -1024,14 +1076,49 @@ map.addMarker({draggable})          (markerList's isDraggable: anchors.js says s
     (the anchor popover) and `durationOnly` (a stop's duration).
   - Every mode resolves to `{isValid, mode, resolvedDate, durationSeconds}`.
   - Average-speed mode computes
-    `duration = distance / speed + total stop time` in JS.
+    `duration = distance / speed + total stop time` in JS. Its boxes are
+    **`speedEntry.js`**'s `createSpeedEntry({getSport, onInput})` (km/h or
+    min:sec, the unit button, the quick-picks), which only reads a speed.
+  - `focusMode(mode)` and `nextMode()` open a tab and focus its first box,
+    for the shortcuts. Tested, as is `speedEntry`.
+- **Placement helpers** (`placement/`), around `anchorPopovers.js`:
+  - `stopPopover.js`: `openStopPopover(candidate, deps)`.
+  - `candidatePicker.js`: `openCandidatePicker({popovers, candidates,
+    estimateArrival, onPick, photoTime?, conflicts?, onDismiss?})`.
+  - `timeChecks.js`: `createTimeChecks({appState, anchors, stops})` returns
+    `isInsideWindow`, `typedTimeProblem(distance, time, until?)` (the
+    message under a typed anchor or stop time, or null) and
+    `photoOrderConflict`.
+  - `placementEstimates.js` (pure, tested): `estimateArrivalDate`,
+    `isRouteEnd`, `toggleDefaultsFromEstimate`, `offsetSecondsOf`.
+  - `popoverParts.js` (tested): `popoverHeading`, `popoverHint`,
+    `estimateHint`, `confirmButton`, `optionButton`, `cardActions`,
+    `photoSummary`.
+  - `popoverHost.js` (tested): `createPopoverHost({map, dialogEl,
+    isPhoneLayout})` returns `open(lat, lon, build, {onClose})`. On a
+    desktop that is `map.openPopup`. On a phone the content goes in the
+    `#routeDialog` modal instead (a popup above the sheet has no room). The
+    builders get the same `(container, close, updateLayout)` either way, and
+    an optional `onClose` runs once however the content goes (its `close()`,
+    the ×, the backdrop, Esc, or new content replacing it). The dialog's
+    `close` event arrives a task late, after a builder that closed itself to
+    open the next step has reopened the dialog. So the host ends the previous
+    content itself, and ignores a `close` event while the dialog is open
+    again. Tested against a dialog stand-in, since jsdom has no `showModal`.
+- **`anchorOrder.js`** (pure, tested): `timedPoints`, `findOrderConflict`
+  (a stop's span via `until`), and the messages: `describeOrderConflict`
+  (where to put a photo), `describeTimeConflict` (which way to change a
+  typed time) and `describeOrderConflictBriefly` (a disabled pass).
 - **`dateTimeField.js`**: custom date and time fields with quick-pick
   dropdowns. `linkSegmentPair` makes the arrow keys move between the
   hours and minutes boxes.
 - **Shared UI helpers**, each tested:
-  - `segmented.js`: `wireSegmented(control, onSelect)` for the tab strips in
-    `index.html` (sport, chart unit and axis) and `createSegmented` for the
-    ones built at runtime (start-time modes, the stop popover's modes).
+  - `segmented.js`: `wireSegmented(control, onSelect, {kind})` for the
+    controls in `index.html` (sport, chart unit and axis) and
+    `createSegmented` for the ones built at runtime (start-time modes, the
+    stop popover's modes). It owns the ARIA: `kind: 'radio'` (default) is a
+    radio group, `'tabs'` a tab list whose `linkPanel(value, panel)` ties
+    each tab to its panel. Both take the arrows, Home and End.
   - `focusDropdown.js`: `createFocusDropdown`, the list under the time
     fields, the speed presets and the day selector. It opens on focus (or a
     click), fills on a click and closes once focus leaves.
@@ -1044,13 +1131,17 @@ map.addMarker({draggable})          (markerList's isDraggable: anchors.js says s
   - `storage.js`: `readSetting`/`writeSetting`, which never throw.
   - `cssVars.js`: `readCssVar` and `accentColor`, for what CSS can't style
     (Leaflet's route line and hover dot, the toolbar's theme-color).
-- **`shortcuts.js`**: each entry in one `SHORTCUTS` array both binds a key
-  and renders a row in the "?" panel. Each action calls `.click()` on the
-  existing control, or focuses an existing box. Besides the sport, convert,
-  file and device keys, Alt+N focuses the start date, Alt+L the duration,
-  Alt+K steps through the start-time tabs, and Alt+G hides or reopens the
-  profile. For those it gets `startTimeFieldEl`, `startTimeToggleEl`,
-  `appShellEl` and the profile's close/show buttons from `main.js`.
+- **`shortcuts.js`**: each entry in one `SHORTCUTS` array binds a key,
+  renders a row in the "?" panel, carries its own `run(controls)` and lists
+  the controls it advertises `aria-keyshortcuts` on (`targets`). Each run
+  calls `.click()` on the existing control, or the start-time controls' own
+  focus methods. Besides the sport, convert, file and device keys, Alt+N
+  focuses the start date (`startTimeField.focus()`), Alt+L the duration
+  (`startTimeToggle.focusMode('duration')`), Alt+K steps through the
+  start-time tabs (`nextMode()`), and Alt+G hides or reopens the profile.
+  `main.js` passes the wired sport control (`wireSegmented`'s handle), the
+  start-time field and toggle, `appShellEl` and the profile's close/show
+  buttons, so it reads no other module's markup.
 - **`glass.js`**: `supportsBackdropRefraction(nav)` (true when
   `userAgentData` lists Chromium) and `initGlass()`, which sets
   `html.glass-refraction`. That turns on `index.html`'s `#liquidGlass` SVG
@@ -1072,33 +1163,33 @@ map.addMarker({draggable})          (markerList's isDraggable: anchors.js says s
   to the current pick, and the arrows then move over the grid through the
   exported pure `moveFocusIndex(rowLengths, index, key)`, which is tested.
   jsdom has no `showModal`, so the rest of the module is untested.
+- **`theme.js`**: `initTheme(button, {onChange})` picks the stored theme, or
+  the system's, sets `data-theme`, the button's icon and the toolbar tint,
+  then calls `onChange(theme)`; `main.js` passes `map.setTheme`. Tested.
+- **`profilePanel.js`**: `createProfilePanel({...elements, map})` returns
+  `show(samples, sport)` and `hide()`. It opens two animation frames after
+  `show`, defaults the unit to the sport until the user picks one, and never
+  lets the last series be hidden. Tested with the real chart.
 - **`profileChart.js`**: pure helpers (`niceTicks`, `linearScale`,
   `buildSeries`, `stopRuns`, `averageMovingSpeedMps`, `linePath`, …) plus
   `createProfileChart`. The pure part has tests.
 - **`format.js`**: every formatter, plus `describeError(err) →
   {message, kind: 'input'|'error'}`.
 - **`mobileLayout.js`**: the phone layout (`PHONE_LAYOUT_QUERY`, ≤ 860 px,
-  kept in step with `styles.css`). The CSS fixes the map full-screen behind
+  kept in step with `css/responsive.css`). The CSS fixes the map full-screen behind
   the sidebar, which becomes a sheet in the page's scroll. The module:
   - opens the page with the sheet half-way up
   - moves `#profilePanel` and `#profileShowButton` to the top of the sheet,
     and moves the Leaflet attribution to the top right
   - `coveredMapHeight()` tells `map.js` how much of the map the sheet hides,
-    via `setBottomInsetProvider`. `renderRoute` and `panToMarker` then aim at
-    the visible part.
+    via `setBottomInsetProvider`. `renderRoute` and a pin layer's `panTo`
+    then aim at the visible part.
   - `revealMap()` scrolls the sheet back to half-way. It runs after a GPX
     parses and when an anchor or stop row is clicked.
+  - `isPhoneLayout()` tells the popover host where to open (see
+    `popoverHost.js` above).
 
-  On phones, `map.js`'s `openAnchorPopup` builds the popover into the
-  `#routeDialog` modal instead of a Leaflet popup. The builders in
-  `anchorPopovers.js` get the same `(container, close, updateLayout)` either
-  way, and an optional `onClose` runs once however the content goes (its
-  `close()`, the ×, a click elsewhere, Esc, or new content replacing it). The
-  dialog's `close` event arrives a task late, after a builder that closed
-  itself to open the next step has reopened the dialog. So `openRouteDialog`
-  ends the previous content itself, and ignores a `close` event while the
-  dialog is open again. The layout logic is tested against a stubbed
-  `matchMedia`.
+  The layout logic is tested against a stubbed `matchMedia`.
 
 ---
 
@@ -1122,7 +1213,7 @@ sequenceDiagram
   Main->>B: parseGpx(bytes)
   B->>Py: bridge_api.parse(bytes) keeps _track = parse_gpx_bytes(...)
   Py-->>Main: points + {total_distance, total_elevation_gain} + warnings
-  Main->>Main: reset anchors/stops/photos, hideProfile,<br/>renderRoute, refresh time toggle
+  Main->>Main: reset anchors/stops/photos, profilePanel.hide(),<br/>renderRoute, refresh time toggle
   U->>Main: set start + duration/end/speed, place anchors/stops, drop photos
   Note over Main,Py: resolveAnchorCandidates / resolvePhotoAnchors (§7.3)
   U->>Main: Convert (button or Ctrl+Enter)
@@ -1139,7 +1230,7 @@ sequenceDiagram
   Py-->>B: {fitBytes, profile, warnings}
   B-->>Main: {fitBytes, profile, warnings}
   Main->>U: Blob → download link (name from GPX)
-  Main->>PP: showProfile(profile, sport)
+  Main->>PP: profilePanel.show(profile, sport)
 ```
 
 ### 8.2 Data flow
@@ -1282,8 +1373,9 @@ It touches the app in exactly three places:
 |-----------------|-------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | pytest, `core/` | `tests/core/`, `tests/core/pacing/` | every `core` module, including `bridge_api` (`test_bridge_api.py`: each call's result shape and the route kept between calls), plus `test_bridge_core_files.py` (every `core/` file is in `pyodideBridge.js`'s `CORE_FILES`). Shared track builders live in `tests/core/conftest.py`                                                                                                                                                                                                                                                                            |
 | pytest, harness | `tests/tuning/`                     | see [TUNING_ARCHITECTURE.md §13](TUNING_ARCHITECTURE.md#13-tests)                                                                                                                                                                                                                                                                                                                                                                                     |
-| node, GUI       | `tests/gui/<folder>/*.test.js`      | `format`, `dateTimeField`, `timeInput`, `markerList` (incl. the window re-check, `getActive`, `countInactive`), `activityWindow`, `anchors` + `stops` (`anchorsAndStops`: the activity-window re-check and `getActive*()`, with `map.js` mocked), `photoAnchors` (incl. `initPhotoDrop`'s per-status rows, the missing-location/missing-time split, thumbnails and both pickers), `photoPlacement` (the pending "Place on map" photo and its time pre-fill), `anchorOrder` (the time-order rule for a photo's point), `pyodideBridge` (against a fake Pyodide and a fake `bridge_api` that checks every proxy is destroyed), `shortcuts`, `profileChart`, `devices`, `devicePickerNav` (`moveFocusIndex`), `glass`, `rangeFill`, `mobileLayout`, `appState`, `status`, `settings`, and the shared helpers `segmented`, `focusDropdown`, `numericInput`, `dropzone`, `dates`, `storage`. `testUtils/domSetup.js` sets up jsdom |
-| untested        | none                                | `map.js`, `anchorPopovers.js`, `profilePanel.js`, `main.js` (Leaflet and popover UI), plus the row/pin rendering side of `anchors.js`/`stops.js`, which have to be checked by hand in a browser                                                                                                                                                                                                                                                       |
+| node, GUI       | `tests/gui/<folder>/*.test.js`      | `format`, `dateTimeField`, `timeInput`, `markerList` (against a fake pin layer: ids, order, rows ↔ pins, the window re-check, `getActive`, `countInactive`), `activityWindow`, `anchors` + `stops` (`anchorsAndStops`: the activity-window re-check and `getActive*()`, each list with its own ids), `photoAnchors` (incl. `createPhotoDrop`'s per-status rows, the missing-location/missing-time split, thumbnails, both pickers, and two drops staying apart), `photoPlacement` (the pending "Place on map" photo and its time pre-fill), `anchorPopovers` (`createAnchorPlacer` against a fake map: the anchor and stop popovers' time checks, the pass picker, the photo cards and a dragged pin's confirm), `placementEstimates`, `popoverParts`, `popoverHost` (desktop popup or phone dialog, and `onClose` exactly once), `anchorOrder` (the time-order rule, incl. a stop's span, and its messages), `speedEntry`, `pyodideBridge` (against a fake Pyodide and a fake `bridge_api` that checks every proxy is destroyed), `shortcuts`, `theme`, `profileChart`, `profilePanel`, `devices`, `devicePickerNav` (`moveFocusIndex`), `glass`, `rangeFill`, `mobileLayout`, `appState`, `status`, `settings`, and the shared helpers `segmented`, `focusDropdown`, `numericInput`, `dropzone`, `dates`, `storage`. `testUtils/domSetup.js` sets up jsdom |
+| node, pages     | `tests/gui/pages.test.js`           | `index.html` and `about.html` as files: every `css/` file linked (about.css by the about page only), the cascade order, and an integrity hash and `crossorigin` on every pinned CDN file |
+| untested        | none                                | `map.js` (Leaflet: pins, drag and snapping, the popup), `devicePicker.js` beyond `moveFocusIndex`, `main.js` (wiring), the placement banner and how the popovers, rows and pins look, which have to be checked by hand in a browser                                                                                                                                                                                                                                   |
 
 ---
 
@@ -1318,19 +1410,39 @@ It touches the app in exactly three places:
   `SportType` value (`bridge_api` reads the sport as `SportType(value)`).
 - Cycling also needs its own speed model in `gradient.py`.
 
+**Adding a stylesheet**
+- Put it in `gui/css/` and link it from `index.html` before
+  `responsive.css` and `glass.css`, which stay last (their overrides win by
+  order). `tests/gui/pages.test.js` fails on an unlinked or missing file.
+
+**Bumping Leaflet, exifr or Pyodide**
+- Change the version and its integrity hash together (in `index.html`, or
+  `PYODIDE_VERSION` and `PYODIDE_INTEGRITY` in `pyodideBridge.js`). A stale
+  hash makes the browser refuse the file. See CLAUDE.md for the command.
+
 **Adding a GUI module**
 - Put it in the `js/` folder for its concern (§2), and its test in the
   matching `tests/gui/` folder. Only `main.js` and `config.js` sit at the
   root of `js/`: the deploy's build command writes `gui/js/config.js`.
 - Add it to the graph in §7.1 and, if small, to §7.4.
+- Give its exports JSDoc types: `npm run typecheck` checks callers against
+  them. A shape another module also uses gets a `@typedef` here, and the
+  others `import('…')` it.
+
+**Giving a GUI module something with state or side effects**
+- Pass it in from `main.js` (the map, a list, the popover host, the status
+  line), as a factory argument, rather than importing it. Only `main.js`
+  imports `map.js`. That keeps the module testable with a fake.
 
 **Adding shared GUI state**
 - Add it to `appState.js` (a getter and a setter), not as a variable in
   `main.js`, and pass `appState` to the module that reads it.
 
 **Adding a keyboard shortcut**
-- Add one entry to `SHORTCUTS` in `shortcuts.js`. It should `.click()` an
-  existing control.
+- Add one entry to `SHORTCUTS` in `shortcuts.js`, with its `run` (and
+  `targets`, for `aria-keyshortcuts`). It should `.click()` an existing
+  control or call a method its module exposes, never query that module's
+  markup.
 
 **Adding a persisted setting**
 - Read and write it through `storage.js`, and validate what you read. A

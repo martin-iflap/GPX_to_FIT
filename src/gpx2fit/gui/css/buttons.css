@@ -1,0 +1,108 @@
+/* The Convert button, the status line and the download link. */
+
+/* ---------- buttons / status ---------- */
+
+/* Capsules, as in the kit's alert: the primary action a filled blue one,
+   the follow-up (.download-link) a tinted one. */
+.primary-button {
+  position: relative;
+  width: 100%;
+  border: none;
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--transition), transform var(--transition), opacity var(--transition);
+}
+
+.primary-button:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+/* See .icon-button:hover. */
+@media (hover: hover) {
+  .primary-button:hover:not(:disabled) {
+    transform: translateY(-1px);
+  }
+}
+
+.primary-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.primary-button.is-loading {
+  color: transparent;
+}
+
+.primary-button.is-loading::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  margin: -8px 0 0 -8px;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 700ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.status {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  min-height: 1.2em;
+}
+
+.status-error {
+  color: var(--danger);
+}
+
+/* Distinct from .status-error: a problem traced back to something the user
+   entered (bad anchor/stop times, missing setup) rather than an internal
+   failure — see format.js's describeError. Amber instead of red so it reads
+   as "fix this input" rather than "something broke". */
+.status-input {
+  color: var(--warning);
+}
+
+/* A step that succeeded with a caveat (a gap in the GPX, an implausible
+   segment pace, a failed surface lookup). Amber like .status-input, but
+   main.js doesn't clear it on a timer. */
+.status-warning {
+  color: var(--warning);
+}
+
+.download-link {
+  display: block;
+  text-align: center;
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
+  transition: background var(--transition);
+}
+
+.download-link:hover {
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+}
+
+/* This link receives focus programmatically after a successful convert (see
+   main.js), so the ring has to be visible — it's the cue that Enter now
+   downloads. */
+.download-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

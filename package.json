@@ -4,14 +4,16 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "lint": "eslint src/gpx2fit/gui/js",
-    "test": "node --experimental-test-module-mocks --test tests/gui",
-    "test:coverage": "node --experimental-test-module-mocks --experimental-test-coverage --test tests/gui"
+    "lint": "eslint src/gpx2fit/gui/js tests/gui",
+    "typecheck": "tsc -p jsconfig.json",
+    "test": "node --test tests/gui",
+    "test:coverage": "node --experimental-test-coverage --test tests/gui"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "eslint": "^10.10.0",
     "globals": "^17.12.0",
-    "jsdom": "^25.0.1"
+    "jsdom": "^25.0.1",
+    "typescript": "^5.9.3"
   }
 }

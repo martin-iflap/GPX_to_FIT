@@ -148,6 +148,7 @@ locally is for development.
 | Type check              | `uv run pyrefly check`                                            |
 | JS tests (Node + jsdom) | `npm install`, then `npm test`                                    |
 | JS lint                 | `npm run lint`                                                    |
+| JS type check (JSDoc)   | `npm run typecheck`                                               |
 | Tune pacing constants   | `uv run python -m tuning compare\|sweep\|fit\|check <corpus dir>` |
 
 There is no build step. The frontend is plain ES modules, and the Python is
@@ -164,7 +165,7 @@ gitignored, because real activities contain home locations and heart rate).
 ```
 src/gpx2fit/core/     Python conversion engine (runs in the browser via Pyodide)
 src/gpx2fit/core/pacing/  gradient, curve choice, surface, stops, anchors, fitting
-src/gpx2fit/gui/      static web app: index.html, about.html, styles.css, js/
+src/gpx2fit/gui/      static web app: index.html, about.html, css/, js/
 tuning/               dev-only calibration harness (reads real .fit files)
 tests/                pytest (core/, tuning/) and Node tests (gui/)
 docs/                 architecture documents

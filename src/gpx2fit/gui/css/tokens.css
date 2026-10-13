@@ -1,0 +1,158 @@
+/* Design tokens: the palette, spacing, radii and glass, for the light and
+   dark themes. Every other file reads these. */
+
+:root {
+  color-scheme: light dark;
+  --font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", sans-serif;
+
+  /* The palette follows Apple's macOS 26 design kit (the owner's reference
+     PNGs, 2026-10-09): neutral greys rather than blue-tinted ones, the
+     #0088ff / #0091ff system blue, capsule buttons, tinted-fill secondary
+     and destructive buttons, and opaque fields with a chevron chip. */
+  --bg-base: #f5f5f7;
+  /* Two tints share one blur. --bg-elevated is the near-opaque one, for
+     surfaces with nothing interesting behind them (the sidebar, its
+     dropdowns) and for the profile chart, whose lines would compete with
+     the map. It is the kit's alert fill exactly. --glass-bg is the
+     see-through one for popups floating over the map: thin enough that
+     shapes and colours behind them still read.
+     The "liquid glass" look on top of the tint: --glass-edge is the rim. In
+     light mode that's a grey hairline with a faint shade inside it, as the
+     kit's light alert has; in dark mode a lit hairline brightest along the
+     top. --glass-shadow is the kit's big, soft drop shadow. Chromium also
+     bends the backdrop at the edges of floating panes (#liquidGlass in
+     index.html, glass.js). */
+  --bg-elevated: rgba(245, 245, 245, 0.73);
+  --glass-bg: rgba(245, 245, 245, 0.55);
+  --glass-filter: blur(9px) saturate(190%) brightness(1.04);
+  --glass-edge:
+    inset 0 0 0 1px rgba(0, 0, 0, 0.08),
+    inset 0 1px 0 1px rgba(255, 255, 255, 0.6),
+    inset 0 0 10px rgba(0, 0, 0, 0.04);
+  --glass-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 16px 48px rgba(0, 0, 0, 0.18);
+  --bg-elevated-2: rgba(0, 0, 0, 0.05);
+  --bg-elevated-3: rgba(0, 0, 0, 0.09);
+  --border-subtle: rgba(0, 0, 0, 0.1);
+  /* Text fields and the device button: opaque, like the kit's combo box. */
+  --field-bg: #ffffff;
+  /* The square behind a field's chevron (the kit's combo-box button). */
+  --control-chip: rgba(0, 0, 0, 0.08);
+  --text-primary: #161616;
+  --text-secondary: #4a4a4f;
+  --text-tertiary: #8a8a8e;
+  --accent: #0088ff;
+  --accent-hover: #0077e6;
+  --accent-soft: rgba(0, 136, 255, 0.14);
+  --accent-contrast: #ffffff;
+  --danger: #ff3b30;
+  /* The kit's destructive button: red text on a red-tinted capsule. */
+  --danger-soft: rgba(255, 59, 48, 0.25);
+  --warning: #b5750a;
+  --shadow-color: rgba(0, 0, 0, 0.16);
+  --chart-elevation-fill: rgba(0, 0, 0, 0.08);
+  --chart-elevation-stroke: rgba(0, 0, 0, 0.26);
+  --chart-grid: rgba(0, 0, 0, 0.06);
+
+  --radius-sm: 10px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  /* The kit's alert corner: 24px around 16px of padding, so the 28px
+     capsule buttons inside sit concentric with it. */
+  --radius-xl: 24px;
+  --radius-pill: 999px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 40px;
+  --space-8: 48px;
+
+  --transition: 160ms ease;
+}
+
+/* color-scheme drives native scrollbars and form controls. "light dark" on
+   its own lets the browser follow the OS, so a light page on a dark OS got
+   dark scrollbars; an explicit pick pins it. */
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-base: #161616;
+  --bg-elevated: rgba(26, 26, 26, 0.82);
+  --glass-bg: rgba(30, 30, 30, 0.6);
+  --glass-filter: blur(9px) saturate(170%);
+  --glass-edge:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    inset 0 0 8px rgba(255, 255, 255, 0.05);
+  --glass-shadow: 0 1px 3px rgba(0, 0, 0, 0.35), 0 16px 48px rgba(0, 0, 0, 0.5);
+  --bg-elevated-2: rgba(255, 255, 255, 0.06);
+  --bg-elevated-3: rgba(255, 255, 255, 0.09);
+  --border-subtle: rgba(255, 255, 255, 0.1);
+  --field-bg: #1e1e1e;
+  --control-chip: rgba(255, 255, 255, 0.18);
+  --text-primary: #f5f5f5;
+  --text-secondary: #b4b4b9;
+  --text-tertiary: #7c7c80;
+  --accent: #0091ff;
+  --accent-hover: #33a7ff;
+  --accent-soft: rgba(0, 145, 255, 0.2);
+  --accent-contrast: #ffffff;
+  --danger: #ff453a;
+  --danger-soft: rgba(255, 69, 58, 0.25);
+  --warning: #d99b2b;
+  --shadow-color: rgba(0, 0, 0, 0.5);
+  --chart-elevation-fill: rgba(255, 255, 255, 0.1);
+  --chart-elevation-stroke: rgba(255, 255, 255, 0.3);
+  --chart-grid: rgba(255, 255, 255, 0.07);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg-base: #161616;
+    --bg-elevated: rgba(26, 26, 26, 0.82);
+    --glass-bg: rgba(30, 30, 30, 0.6);
+    --glass-filter: blur(9px) saturate(170%);
+    --glass-edge:
+      inset 0 0 0 1px rgba(255, 255, 255, 0.12),
+      inset 0 1px 0 rgba(255, 255, 255, 0.28),
+      inset 0 0 8px rgba(255, 255, 255, 0.05);
+    --glass-shadow: 0 1px 3px rgba(0, 0, 0, 0.35), 0 16px 48px rgba(0, 0, 0, 0.5);
+    --bg-elevated-2: rgba(255, 255, 255, 0.06);
+    --bg-elevated-3: rgba(255, 255, 255, 0.09);
+    --border-subtle: rgba(255, 255, 255, 0.1);
+    --field-bg: #1e1e1e;
+    --control-chip: rgba(255, 255, 255, 0.18);
+    --text-primary: #f5f5f5;
+    --text-secondary: #b4b4b9;
+    --text-tertiary: #7c7c80;
+    --accent: #0091ff;
+    --accent-hover: #33a7ff;
+    --accent-soft: rgba(0, 145, 255, 0.2);
+    --accent-contrast: #ffffff;
+    --danger: #ff453a;
+    --danger-soft: rgba(255, 69, 58, 0.25);
+    --warning: #d99b2b;
+    --shadow-color: rgba(0, 0, 0, 0.5);
+    --chart-elevation-fill: rgba(255, 255, 255, 0.1);
+    --chart-elevation-stroke: rgba(255, 255, 255, 0.3);
+    --chart-grid: rgba(255, 255, 255, 0.07);
+  }
+}
+
+/* The OS's "reduce transparency" setting: solid panes (glass.css drops
+   the blur and the bending). */
+@media (prefers-reduced-transparency: reduce) {
+  /* Listed with the dark-theme selectors so it outranks them by order. */
+  :root,
+  :root[data-theme="dark"],
+  :root:not([data-theme="light"]) {
+    --glass-bg: var(--bg-base);
+    --bg-elevated: var(--bg-base);
+  }
+}

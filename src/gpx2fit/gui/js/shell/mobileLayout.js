@@ -2,12 +2,12 @@
 // sidebar, and the page's own scroll moves the sheet. The sheet starts at
 // half the screen; scrolling it down shows up to MAX_MAP_SHARE of the map,
 // and scrolling it up shows all the controls. The layout itself is CSS (see
-// the 860px block in styles.css). This module does the three things CSS
+// the 860px block in css/responsive.css). This module does the three things CSS
 // can't: open the page at the half-way point, move the profile panel into
 // the sheet, and tell map.js how much of the map the sheet hides, so a
 // fitted route or a panned-to pin lands in the part that's still visible.
 
-/** Must match the phone breakpoint in styles.css. */
+/** Must match the phone breakpoint in css/responsive.css. */
 export const PHONE_LAYOUT_QUERY = '(max-width: 860px)';
 
 // Share of the screen height the map shows when the page first opens.

@@ -4,6 +4,7 @@ import { describe, it } from 'node:test';
 import {
   describeOrderConflict,
   describeOrderConflictBriefly,
+  describeTimeConflict,
   findOrderConflict,
   timedPoints,
 } from '../../../src/gpx2fit/gui/js/route/anchorOrder.js';
@@ -100,6 +101,37 @@ describe('findOrderConflict', () => {
       );
     });
   });
+
+  describe('for a new stop, which spans `time` to `until`', () => {
+    // An anchor at 1 km at 10:00, another at 3 km at 11:00.
+    const anchors = [pointAt(1000, at(10, 0), at(10, 0), 'anchor'), pointAt(3000, at(11, 0), at(11, 0), 'anchor')];
+
+    it('finds nothing for a stay between its neighbours', () => {
+      assert.equal(findOrderConflict(anchors, { distanceFromStart: 2000, time: at(10, 10), until: at(10, 50) }), null);
+    });
+
+    it('refuses a departure after the next point is already reached', () => {
+      // Arrives in time, but is still there at 11:00, when 3 km is reached.
+      assert.deepEqual(
+        findOrderConflict(anchors, { distanceFromStart: 2000, time: at(10, 30), until: at(11, 10) }),
+        { point: anchors[1], issue: 'mustGoAfter' },
+      );
+    });
+
+    it('refuses an arrival before the point behind it was passed', () => {
+      assert.deepEqual(
+        findOrderConflict(anchors, { distanceFromStart: 2000, time: at(9, 50), until: at(10, 30) }),
+        { point: anchors[0], issue: 'mustGoBefore' },
+      );
+    });
+
+    it('refuses a departure at the same time as another point', () => {
+      assert.deepEqual(
+        findOrderConflict(anchors, { distanceFromStart: 2000, time: at(10, 30), until: at(11, 0) }),
+        { point: anchors[1], issue: 'sameTime' },
+      );
+    });
+  });
 });
 
 describe('timedPoints', () => {
@@ -173,5 +205,46 @@ describe('describing a conflict', () => {
     assert.equal(describeOrderConflictBriefly(later), 'Out of time order with the photo at 3.00 km');
     assert.equal(describeOrderConflictBriefly(same), 'The photo at 3.00 km is already here');
     assert.equal(describeOrderConflictBriefly(sameTime), 'Same time as the photo at 3.00 km');
+  });
+});
+
+describe('describing a conflict for a typed-in time', () => {
+  // The point stays where it was tapped, so the fix is another time, not
+  // another place: `mustGoBefore` (something behind it is later) means the
+  // time has to be later, and `mustGoAfter` that it has to be earlier.
+  const behindAndLater = { point: pointAt(1000, at(11, 0), at(11, 0), 'anchor'), issue: 'mustGoBefore' };
+  const aheadAndEarlier = { point: pointAt(3000, at(10, 0), at(10, 20), 'stop'), issue: 'mustGoAfter' };
+
+  it('says which way to move an anchor\'s time, and past what', () => {
+    assert.equal(
+      describeTimeConflict(behindAndLater),
+      'The anchor at 1.00 km is at 11:00:00, so this time has to be later.',
+    );
+    assert.equal(
+      describeTimeConflict(aheadAndEarlier),
+      'The stop at 3.00 km is at 10:00:00–10:20:00, so this time has to be earlier.',
+    );
+  });
+
+  it('names the stop\'s arrival or departure for a stop', () => {
+    assert.equal(
+      describeTimeConflict(behindAndLater, { span: true }),
+      'The anchor at 1.00 km is at 11:00:00, so the arrival has to be later.',
+    );
+    assert.equal(
+      describeTimeConflict(aheadAndEarlier, { span: true }),
+      'The stop at 3.00 km is at 10:00:00–10:20:00, so the departure has to be earlier.',
+    );
+  });
+
+  it('says a shared time or a taken point plainly', () => {
+    assert.equal(
+      describeTimeConflict({ point: pointAt(3000, at(11, 0)), issue: 'sameTime' }),
+      'The photo at 3.00 km is at 11:00:00 too. Two points on the route can\'t share a time.',
+    );
+    assert.equal(
+      describeTimeConflict({ point: pointAt(3000, at(11, 0)), issue: 'samePoint' }),
+      'The photo at 3.00 km is already on this point. Pick a point a little before or after it.',
+    );
   });
 });
