@@ -5,8 +5,10 @@ import '../testUtils/domSetup.js';
 
 import { createAppState } from '../../../src/gpx2fit/gui/js/state/appState.js';
 import {
+  ANDROID_PHOTO_ACCEPT,
   createPhotoDrop,
   isLikelyPhotoFile,
+  photoAcceptFor,
   readPhotoMetadata,
 } from '../../../src/gpx2fit/gui/js/placement/photoAnchors.js';
 
@@ -132,6 +134,29 @@ describe('isLikelyPhotoFile', () => {
   });
 });
 
+describe('photoAcceptFor', () => {
+  const DEFAULT = 'image/*,.heic';
+  const chromium = (platform) => ({ userAgentData: { platform, brands: [{ brand: 'Chromium' }] } });
+
+  it('leaves the camera out in Chromium on Android', () => {
+    assert.equal(photoAcceptFor(chromium('Android'), DEFAULT), ANDROID_PHOTO_ACCEPT);
+  });
+
+  it('names no image type, or Chrome would offer the camera again', () => {
+    assert.ok(!/image\/|\.(jpe?g|heic|heif|png)\b/i.test(ANDROID_PHOTO_ACCEPT));
+  });
+
+  it('keeps the default on desktop Chromium and in browsers without userAgentData', () => {
+    assert.equal(photoAcceptFor(chromium('Windows'), DEFAULT), DEFAULT);
+    assert.equal(photoAcceptFor({}, DEFAULT), DEFAULT);
+  });
+
+  it('keeps the default on Android in a browser that is not Chromium', () => {
+    const nav = { userAgentData: { platform: 'Android', brands: [{ brand: 'Other' }] } };
+    assert.equal(photoAcceptFor(nav, DEFAULT), DEFAULT);
+  });
+});
+
 describe('createPhotoDrop', () => {
   const START = new Date(2024, 5, 1, 8, 0);
   const END = new Date(2024, 5, 1, 10, 0);
@@ -170,7 +195,7 @@ describe('createPhotoDrop', () => {
 
   // Mounts the photo drop with mocked dependencies. `tags` is what exifr
   // reads from every file, or a function of the file. `result` is merged into
-  // each route match. The fake resolver honours an activity window the way
+  // each route match. The fake resolver honors an activity window the way
   // photo_anchors.resolve_photo_anchors does: given one, a photo not strictly
   // inside it comes back "outside_activity_time" whatever its GPS match.
   function mountPhotoDrop({
@@ -222,6 +247,15 @@ describe('createPhotoDrop', () => {
       })),
     };
 
+    // A stand-in for map.js's pin layer: which pins are on the map, and each
+    // one's click handler.
+    const pinsShown = new Map();
+    const unresolvedPins = {
+      add: mock.fn((id, lat, lon, number, opts) => pinsShown.set(id, { lat, lon, ...opts })),
+      remove: mock.fn((id) => pinsShown.delete(id)),
+      highlight: mock.fn(),
+    };
+
     const appState = createAppState();
     if (routeLoaded) {
       appState.setRoute({ points: [], totalDistance: 1000, fileName: 'route.gpx' });
@@ -236,6 +270,7 @@ describe('createPhotoDrop', () => {
       emptyStateEl,
       summaryEl,
       appState,
+      unresolvedPins: /** @type {any} */ (unresolvedPins),
       ...mocks,
     });
     mountedDrops.push(photoDrop);
@@ -264,7 +299,7 @@ describe('createPhotoDrop', () => {
     const rows = () => [...listEl.querySelectorAll('.list-row')];
     return {
       dropzoneEl, inputEl, galleryInputEl, galleryLinkEl, listEl, emptyStateEl, summaryEl,
-      ...mocks, drop, choose, rows, deleteFromAnchorList, reset: photoDrop.reset,
+      ...mocks, drop, choose, rows, deleteFromAnchorList, reset: photoDrop.reset, pinsShown, unresolvedPins,
     };
   }
 
@@ -558,6 +593,140 @@ describe('createPhotoDrop', () => {
 
       assert.equal(addAnchor.mock.callCount(), 0);
     });
+
+    describe('its "!" pin on the map', () => {
+      function onlyPin(pinsShown) {
+        assert.equal(pinsShown.size, 1);
+        return [...pinsShown.values()][0];
+      }
+
+      it('is shown at the matched point, unnumbered and marked unresolved', async () => {
+        const { pinsShown } = await dropAmbiguous({ result: { status: 'ambiguous', passes: PASSES, lat: 45.5, lon: 7.5 } });
+
+        const pin = onlyPin(pinsShown);
+        assert.equal(pin.kind, 'photo-unresolved');
+        assert.deepEqual([pin.lat, pin.lon], [45.5, 7.5]);
+        assert.match(pin.title, /resolv/i);
+      });
+
+      it('opens the same picker as the row\'s Resolve button', async () => {
+        const { pinsShown, choosePhotoPass } = await dropAmbiguous();
+        onlyPin(pinsShown).onClick();
+
+        assert.equal(choosePhotoPass.mock.callCount(), 1);
+        const [photo] = choosePhotoPass.mock.calls[0].arguments;
+        assert.equal(photo.timestamp.getTime(), TAKEN.getTime());
+        assert.deepEqual(photo.passes, PASSES);
+      });
+
+      it('goes once a pass is picked, and the photo becomes an anchor', async () => {
+        const { pinsShown, choosePhotoPass, addAnchor } = await dropAmbiguous();
+        onlyPin(pinsShown).onClick();
+        pick(choosePhotoPass, PASSES[0]);
+
+        assert.equal(pinsShown.size, 0);
+        assert.equal(addAnchor.mock.callCount(), 1);
+      });
+
+      it('stays when the picker is closed without a pick', async () => {
+        const { pinsShown } = await dropAmbiguous();
+        onlyPin(pinsShown).onClick();
+
+        assert.equal(pinsShown.size, 1);
+      });
+
+      it('goes with its row\'s ×', async () => {
+        const { row, pinsShown } = await dropAmbiguous();
+        row.querySelector('.list-row-delete').click();
+
+        assert.equal(pinsShown.size, 0);
+      });
+
+      it('goes on a reset', async () => {
+        const { pinsShown, reset } = await dropAmbiguous();
+        reset();
+
+        assert.equal(pinsShown.size, 0);
+      });
+
+      it('is removed only once, even when the anchor it became is deleted later', async () => {
+        const { pinsShown, choosePhotoPass, unresolvedPins, deleteFromAnchorList } = await dropAmbiguous();
+        onlyPin(pinsShown).onClick();
+        pick(choosePhotoPass, PASSES[0]);
+        deleteFromAnchorList(1);
+
+        assert.equal(unresolvedPins.remove.mock.callCount(), 1);
+      });
+
+      it('lights up while its row is hovered', async () => {
+        const { row, unresolvedPins } = await dropAmbiguous();
+        row.dispatchEvent(new Event('mouseenter'));
+        row.dispatchEvent(new Event('mouseleave'));
+
+        assert.deepEqual(unresolvedPins.highlight.mock.calls.map((call) => call.arguments[1]), [true, false]);
+      });
+
+      it('gives every photo its own pin', async () => {
+        const drop = mountPhotoDrop({ tags: distinctPhotos, result: { status: 'ambiguous', passes: PASSES } });
+        await drop.drop([photoFile('a.jpg'), photoFile('b.jpg')]);
+
+        assert.equal(drop.pinsShown.size, 2);
+      });
+
+      for (const status of ['ok', 'too_far', 'at_route_end']) {
+        it(`is not shown for a photo that is ${status}`, async () => {
+          const drop = mountPhotoDrop({ result: { status } });
+          await drop.drop();
+
+          assert.equal(drop.unresolvedPins.add.mock.callCount(), 0);
+        });
+      }
+    });
+  });
+
+  describe('a photo too far from the route', () => {
+    async function dropTooFar() {
+      const drop = mountPhotoDrop({ result: { status: 'too_far', gapM: 2500 } });
+      await drop.drop();
+      return { ...drop, row: drop.rows()[0] };
+    }
+
+    it('says how far, and offers to place it on the map', async () => {
+      const { row, addAnchor, pinsShown } = await dropTooFar();
+
+      assert.equal(addAnchor.mock.callCount(), 0);
+      assert.match(row.textContent, /Too far from route \(2\.5 km away\)/);
+      assert.match(row.textContent, /place it on the map/i);
+      assert.equal(row.classList.contains('is-problem'), true);
+      assert.equal(placeButton(row).textContent, 'Place on map');
+      assert.equal(pinsShown.size, 0, 'its GPS may be far off, so nothing goes on the map');
+    });
+
+    it('arms a placement at the photo\'s own time, and becomes an anchor where the route is tapped', async () => {
+      const { row, placePhoto, addAnchor, rows } = await dropTooFar();
+      placeButton(row).click();
+
+      assert.equal(placePhoto.mock.callCount(), 1);
+      const [photo] = placePhoto.mock.calls[0].arguments;
+      assert.equal(photo.timestamp.getTime(), TAKEN.getTime());
+      photo.onPlaced({ lat: 46, lon: 8, distanceFromStart: 3000 });
+
+      assert.equal(addAnchor.mock.callCount(), 1);
+      const [anchor] = addAnchor.mock.calls[0].arguments;
+      assert.deepEqual([anchor.lat, anchor.lon, anchor.distanceFromStart], [46, 8, 3000]);
+      assert.equal(anchor.timestamp.getTime(), TAKEN.getTime());
+      assert.equal(rows().length, 0);
+    });
+
+    it('goes back to its too-far message when the placement is canceled', async () => {
+      const { row, placePhoto } = await dropTooFar();
+      placeButton(row).click();
+      placePhoto.mock.calls[0].arguments[0].onCancel();
+
+      assert.match(row.textContent, /Too far from route/);
+      assert.doesNotMatch(row.textContent, /No location/);
+      assert.equal(placeButton(row).textContent, 'Place on map');
+    });
   });
 
   describe('a photo with no capture time', () => {
@@ -791,13 +960,6 @@ describe('createPhotoDrop', () => {
     assert.equal(anchor.timestamp.getTime(), TAKEN.getTime());
     assert.equal(anchor.source, 'photo');
     assert.equal(row, undefined, 'the photo should have left the list');
-  });
-
-  it('still reports a too-far match with its gap', async () => {
-    const { row, addAnchor } = await dropPhotoResolvingTo({ status: 'too_far', gapM: 2500 });
-
-    assert.equal(addAnchor.mock.callCount(), 0);
-    assert.match(row.textContent, /Too far from route \(2\.5 km away\)/);
   });
 
   // A photo outside the current start–end is still placed as an anchor:

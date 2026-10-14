@@ -11,13 +11,21 @@
 // intact: Android's Photo Picker redacts location for the browser, and so do
 // email, Bluetooth and Quick Share. Such a photo gets a "Place on map" button
 // instead of an error, and the user taps the route where it was taken
-// (photoPlacement.js / anchorPopovers.js). The main file input therefore asks
-// for the file chooser rather than the Photo Picker (see index.html), and the
-// gallery input is the explicit fallback.
+// (photoPlacement.js / anchorPopovers.js). The main file input asks for the
+// file chooser rather than the Photo Picker (see index.html; on Android it
+// strips the location too, but shows the real files), and the gallery input
+// is the explicit fallback. On Android the main input also leaves out the
+// camera (photoAcceptFor).
+//
+// A photo whose GPS is too far from the route gets the same "Place on map"
+// button, with its own message, and nothing on the map until it's placed:
+// its GPS position may be kilometres away.
 //
 // A photo on a spot the route passes more than once (an out-and-back) gets a
 // "Resolve" button: the passes are metres apart, so its GPS can't tell which
 // one it was taken on, and the user picks (anchorPopovers' choosePhotoPass).
+// Until then it also has an unnumbered pin with a "!" on the map, which opens
+// the same picker.
 //
 // The photo list only holds photos that still need the user: the ones
 // waiting to be placed or resolved, and the ones that can't be used, with the
@@ -56,6 +64,17 @@ const NO_LOCATION_TEXT = 'No location. Phones often remove it when sharing a pho
 const PLACING_TEXT = 'Tap the route where this photo was taken.';
 const AMBIGUOUS_TEXT = 'The route passes here more than once (e.g. an out-and-back). '
   + 'Resolve it to pick which pass the photo was taken on.';
+const UNRESOLVED_PIN_TITLE = 'Photo needs resolving: click to pick the pass it was taken on';
+
+/**
+ * A photo whose GPS is too far from the route to trust can still be placed
+ * by hand (a bad fix, or a photo taken just off the trail).
+ * @param {number} gapM
+ */
+function tooFarText(gapM) {
+  return `Too far from route (${formatGapMeters(gapM)} away). If it was taken on the route anyway `
+    + '(e.g. a bad GPS fix), place it on the map at its own time.';
+}
 
 /**
  * Whether a file looks like a photo worth reading: anything the browser
@@ -73,6 +92,30 @@ export function isLikelyPhotoFile(file) {
   }
   const dot = file.name.lastIndexOf('.');
   return dot > 0 && PHOTO_EXTENSIONS.has(file.name.slice(dot + 1).toLowerCase());
+}
+
+// Chrome on Android puts "take a photo" next to the file chooser whenever
+// `accept` names an image type, and an image extension counts (it maps
+// extensions to types through Android's MimeTypeMap). An extension Android
+// doesn't know maps to application/octet-stream, so Chrome opens the
+// chooser for any file and leaves the camera out (SelectFileDialog.java,
+// read 2026-10-14). That drops the image filter, but isLikelyPhotoFile
+// skips the other files anyway.
+export const ANDROID_PHOTO_ACCEPT = '.gpx2fit-photo';
+
+/**
+ * The main photo input's `accept` for this browser: `ANDROID_PHOTO_ACCEPT`
+ * in Chromium on Android, where the usual one also offers the camera, and
+ * `defaultAccept` everywhere else (desktop filters by it).
+ * @param {Navigator|{userAgentData?: {platform?: string, brands?: {brand: string}[]}}} nav
+ * @param {string} defaultAccept
+ * @returns {string}
+ */
+export function photoAcceptFor(nav, defaultAccept) {
+  // userAgentData is Chromium-only, so the DOM types don't have it.
+  const data = /** @type {{userAgentData?: {platform?: string, brands?: {brand: string}[]}}} */ (nav).userAgentData;
+  const isChromium = (data?.brands ?? []).some(({ brand }) => brand === 'Chromium');
+  return isChromium && data?.platform === 'Android' ? ANDROID_PHOTO_ACCEPT : defaultAccept;
 }
 
 /**
@@ -119,6 +162,8 @@ export async function readPhotoMetadata(file) {
  *   so never with an anchor to remove too). `release` only frees what the
  *   photo holds, for a reset. `setOnRemove` runs in all three, and
  *   `isRemoved` says whether any has happened.
+ * - `setOnHover` gets `true` when the pointer enters the row, `false` when
+ *   it leaves (to highlight the photo's pin).
  * - `key`/`setKey` identify the photo by capture time and place, to catch
  *   the same photo added twice.
  *
@@ -155,6 +200,8 @@ function createPhotoRow(fileName, listEl, { onRemoved, onBecameAnchor }) {
   /** @type {HTMLElement|null} */
   let actionEl = null;
   let onRemove = () => {};
+  /** @type {(isOver: boolean) => void} */
+  let onHover = () => {};
   let removed = false;
   /** @type {string|null} */
   let key = null;
@@ -189,6 +236,8 @@ function createPhotoRow(fileName, listEl, { onRemoved, onBecameAnchor }) {
   setLabel(fileName);
 
   row.append(info, deleteBtn);
+  row.addEventListener('mouseenter', () => onHover(true));
+  row.addEventListener('mouseleave', () => onHover(false));
   listEl.append(row);
 
   const controls = {
@@ -234,6 +283,10 @@ function createPhotoRow(fileName, listEl, { onRemoved, onBecameAnchor }) {
     },
     setOnRemove: (callback) => {
       onRemove = callback;
+    },
+    /** @param {(isOver: boolean) => void} callback */
+    setOnHover: (callback) => {
+      onHover = callback;
     },
   };
   return controls;
@@ -297,6 +350,9 @@ function rowButton(text) {
  *   anchorPopovers' choosePhotoPass: asks which of `passes` the photo was
  *   taken on, and `onPicked` adds the anchor there
  * @param {(message: string, kind?: import('../shell/status.js').StatusKind) => void} opts.setStatus
+ * @param {import('../route/markerList.js').PinLayer|null} [opts.unresolvedPins] -
+ *   map.js's pin layer for the photos waiting to be resolved: each gets a "!"
+ *   pin that opens its "Which pass?" picker, until it's picked or removed
  * @returns {{ reset: () => void }} `reset` clears every photo (e.g. before
  *   loading a new route). The anchors they became are removed separately, by
  *   the anchor list's own reset, which runs no `onRemove` hooks.
@@ -316,10 +372,13 @@ export function createPhotoDrop({
   cancelPhotoPlacement,
   choosePhotoPass,
   setStatus,
+  unresolvedPins = null,
 }) {
   // Every photo still around: the ones listed, and the ones that became an
   // anchor (no longer listed, but they own its thumbnail).
   const livePhotos = new Set();
+  // Ids for the unresolved photos' pins.
+  let nextPinId = 1;
 
   function updateListState() {
     const added = [...livePhotos].filter((photo) => photo.isAnchor()).length;
@@ -363,11 +422,12 @@ export function createPhotoDrop({
   }
 
   /**
-   * Turns a time-only photo's row into its "Place on map" state: a button that
-   * arms a placement (the next route tap places this photo, at its own time),
-   * and turns into Cancel while armed.
+   * Turns the row of a photo with no usable location (none at all, or too far
+   * from the route) into its "Place on map" state: a button that arms a
+   * placement (the next route tap places this photo, at its own time), and
+   * turns into Cancel while armed. `idleText` says why it needs placing.
    */
-  function offerPlacement(row, timestamp) {
+  function offerPlacement(row, timestamp, idleText = NO_LOCATION_TEXT) {
     let armed = false;
     const button = rowButton('Place on map');
 
@@ -375,7 +435,7 @@ export function createPhotoDrop({
       armed = false;
       button.textContent = 'Place on map';
       row.setAction(button);
-      row.setStatus(NO_LOCATION_TEXT, true);
+      row.setStatus(idleText, true);
     }
 
     button.addEventListener('click', () => {
@@ -408,23 +468,62 @@ export function createPhotoDrop({
 
   /**
    * Turns the row of a photo on a spot the route passes more than once into a
-   * "Resolve" button, which opens the "Which pass?" picker. Closing the picker
-   * without a pick leaves the row as it was.
+   * "Resolve" button, which opens the "Which pass?" picker, and puts a "!"
+   * pin at `position` (the nearest pass) that opens the same picker. Closing
+   * the picker without a pick leaves both as they were; a pick, the row's ×
+   * or a reset removes the pin.
+   *
+   * @param {ReturnType<typeof createPhotoRow>} row
+   * @param {Date} timestamp
+   * @param {{lat: number, lon: number, distance_from_start: number}[]} passes
+   * @param {{lat: number, lon: number}} position
    */
-  function offerPassChoice(row, timestamp, passes) {
-    const button = rowButton('Resolve');
-    button.addEventListener('click', () => {
+  function offerPassChoice(row, timestamp, passes, position) {
+    const pinId = nextPinId++;
+    let pinShown = false;
+
+    function removePin() {
+      if (pinShown) {
+        pinShown = false;
+        unresolvedPins?.remove(pinId);
+      }
+    }
+
+    function resolve() {
       choosePhotoPass({
         timestamp,
         thumbnailUrl: row.thumbnailUrl(),
         passes,
         onPicked: ({ lat, lon, distance_from_start: distanceFromStart }) => {
+          // A photo removed while the picker was open keeps neither pin nor anchor.
+          if (row.isRemoved()) {
+            return;
+          }
+          removePin();
           addPhotoAnchor(row, { lat, lon, distanceFromStart, timestamp });
         },
       });
-    });
+    }
+
+    const button = rowButton('Resolve');
+    button.addEventListener('click', resolve);
     row.setAction(button);
     row.setStatus(AMBIGUOUS_TEXT, true);
+
+    if (unresolvedPins) {
+      unresolvedPins.add(pinId, position.lat, position.lon, 0, {
+        kind: 'photo-unresolved',
+        onClick: resolve,
+        title: UNRESOLVED_PIN_TITLE,
+      });
+      pinShown = true;
+    }
+    row.setOnHover((isOver) => {
+      if (pinShown) {
+        unresolvedPins?.highlight(pinId, isOver);
+      }
+    });
+    row.setOnRemove(removePin);
   }
 
   /**
@@ -539,11 +638,13 @@ export function createPhotoDrop({
         return;
       }
       if (result.status === 'ambiguous') {
-        offerPassChoice(reading.row, reading.timestamp, result.passes);
+        offerPassChoice(reading.row, reading.timestamp, result.passes, { lat: result.lat, lon: result.lon });
         return;
       }
       if (result.status !== 'ok') {
-        reading.row.setStatus(`Too far from route (${formatGapMeters(result.gapM)} away)`, true);
+        // Its GPS may be kilometres off, so nothing goes on the map until the
+        // user places it.
+        offerPlacement(reading.row, reading.timestamp, tooFarText(result.gapM));
         return;
       }
       addPhotoAnchor(reading.row, {

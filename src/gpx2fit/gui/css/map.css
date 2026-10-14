@@ -62,6 +62,52 @@
   transform: scale(1.2);
 }
 
+/* A photo that still needs its pass picked (an out-and-back): no number,
+   and a "!" bubble above the pin. Clicking it opens the "Which pass?" picker. */
+.photo-pin.is-unresolved {
+  position: relative;
+  cursor: pointer;
+}
+
+/* The bubble: a rounded square in the page's grey with the warnings' amber
+   "!", and a nib pointing down at the pin (a rotated square, like the
+   Leaflet popups' tip). drop-shadow rather than box-shadow, so the nib casts
+   one too. */
+.pin-badge {
+  position: absolute;
+  bottom: calc(100% + 7px);
+  left: 50%;
+  transform: translateX(-50%);
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: var(--bg-base);
+  border: 1px solid var(--border-subtle);
+  color: var(--warning);
+  font-size: 0.8rem;
+  font-weight: 800;
+  line-height: 1;
+  filter: drop-shadow(0 1px 2px var(--shadow-color));
+}
+
+.pin-badge::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  box-sizing: border-box;
+  width: 8px;
+  height: 8px;
+  background: inherit;
+  border-right: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
 /* The map side of .list-row.is-inactive (see map.js's createPinLayer, setDimmed). */
 .leaflet-marker-icon.is-dimmed {
   opacity: 0.4;

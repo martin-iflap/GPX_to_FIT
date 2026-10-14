@@ -23,14 +23,21 @@ import { formatDistanceKm } from '../util/format.js';
  */
 
 /**
+ * How a pin looks (css/map.css). `photo-unresolved` is a photo still waiting
+ * for its pass to be picked: no number, and a "!" bubble above it.
+ * @typedef {'anchor'|'stop'|'photo'|'photo-unresolved'} PinKind
+ */
+
+/**
  * What a list needs from the map: one layer of numbered pins, keyed by the
  * list's own ids. map.js's `createPinLayer()` returns one.
  * @typedef {{
  *   add: (id: number, lat: number, lon: number, number: number, opts: {
- *     kind: 'anchor'|'stop'|'photo',
+ *     kind: PinKind,
  *     onClick: (id: number) => void,
- *     draggable: boolean,
- *     onDragEnd: (id: number, lat: number, lon: number, revert: () => void) => void,
+ *     draggable?: boolean,
+ *     onDragEnd?: (id: number, lat: number, lon: number, revert: () => void) => void,
+ *     title?: string,
  *   }) => void,
  *   move: (id: number, lat: number, lon: number) => void,
  *   remove: (id: number) => void,

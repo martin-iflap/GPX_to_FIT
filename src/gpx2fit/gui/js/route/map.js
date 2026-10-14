@@ -218,18 +218,26 @@ export function hideHoverMarker() {
 
 const PIN_KINDS = new Set(['anchor', 'stop', 'photo']);
 
+/** @typedef {import('./markerList.js').PinKind} PinKind */
+
 /**
  * A numbered pin. Every kind is the same circle, colored by its
  * `.<kind>-pin` rule in css/map.css: a stop is a real pause, not just a timed
  * point, and a photo anchor came from a photo. An unknown kind is an anchor.
- * @param {'anchor'|'stop'|'photo'} kind
+ * A `photo-unresolved` pin (a photo that still needs its pass picked) is a
+ * photo pin with no number, under a "!" bubble.
+ * @param {PinKind} kind
  * @param {number} number
  */
 function pinIcon(kind, number) {
-  const pinKind = PIN_KINDS.has(kind) ? kind : 'anchor';
+  const unresolved = kind === 'photo-unresolved';
+  const pinKind = unresolved ? 'photo' : PIN_KINDS.has(kind) ? kind : 'anchor';
+  const html = unresolved
+    ? '<div class="photo-pin is-unresolved"><span class="pin-badge" aria-hidden="true">!</span></div>'
+    : `<div class="${pinKind}-pin">${number}</div>`;
   return L.divIcon({
     className: `${pinKind}-pin-wrapper`,
-    html: `<div class="${pinKind}-pin">${number}</div>`,
+    html,
     iconSize: [26, 26],
     iconAnchor: [13, 13],
   });
@@ -262,16 +270,17 @@ export function createPinLayer() {
      * @param {number} number - the number drawn inside the pin
      * @param {{
      *   onClick?: (id: number) => void,
-     *   kind?: 'anchor'|'stop'|'photo',
+     *   kind?: PinKind,
      *   draggable?: boolean,
      *   onDragEnd?: (id: number, lat: number, lon: number, revert: () => void) => void,
-     * }} [opts]
+     *   title?: string,
+     * }} [opts] - `title` is the pin's tooltip (a draggable pin has its own)
      */
-    add(id, lat, lon, number, { onClick, kind = 'anchor', draggable = false, onDragEnd } = {}) {
+    add(id, lat, lon, number, { onClick, kind = 'anchor', draggable = false, onDragEnd, title = '' } = {}) {
       const marker = L.marker([lat, lon], {
         icon: pinIcon(kind, number),
         draggable,
-        title: draggable ? 'Drag along the route to move' : '',
+        title: draggable ? 'Drag along the route to move' : title,
       }).addTo(map);
       if (onClick) {
         marker.on('click', () => onClick(id));

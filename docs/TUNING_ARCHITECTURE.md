@@ -5,7 +5,7 @@ becomes a score, and how the two independent searches in `fit.py` use those
 scores: `sweep` diagnoses the per-workout settings one activity wanted, and
 `fit` proposes new constants (§10.1). This assumes you know what the pacing
 model does (see
-[ARCHITECTURE.md §5](ARCHITECTURE.md#5-core-module-by-module)). The history
+[CORE_ARCHITECTURE.md §2](CORE_ARCHITECTURE.md#2-module-by-module)). The history
 of the corpus gates and of each fit run lives in `CLAUDE.md`, not here.
 
 Contents
@@ -456,20 +456,20 @@ every constant taken from a `PacingParams` instead.
 
 ### 8.1 What is borrowed and what is restated
 
-| In `core/`                                                      | In `model.py`                                                                                                    | Borrowed or restated                                                |
-|-----------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------|
-| `gradient.calculate_gradient`                                   | called in `TrackModel.build`                                                                                     | borrowed                                                            |
-| `minetti_speeds_from_gradients`, `tobler_speeds_from_gradients` | at exponent 1.0: Tobler once per track, Minetti once per descent cost slope (`raw_minetti(slope)`, `raw_tobler`) | borrowed                                                            |
-| `gradient._soften` (`raw ** exponent`)                          | `_blended.softened`                                                                                              | restated (trivial)                                                  |
-| `blended_speeds_from_gradients`                                 | `_blended`                                                                                                       | restated over the raw curves                                        |
-| `curve_selection.resolve_tobler_weight`                         | `tobler_weight_for`                                                                                              | restated, thresholds from params                                    |
-| `curve_selection.resolve_max_speed_ratio`                       | `max_speed_ratio_for`                                                                                            | restated, bounds from params, no smoothness                         |
-| `curve_selection.resolve_curve_shape`                           | `curve_shape_for`                                                                                                | restated, fills, reference grade and descent cost slope from params |
-| `smoothstep`, `_verticality`, `_reference_swings`               | imported                                                                                                         | borrowed                                                            |
-| `variation.route_noise`, `variation._spread_windows`            | called once in `TrackModel.build` (`noise`, `spread_lo`, `spread_hi`)                                            | borrowed                                                            |
-| `variation.local_spread`, `variation.pace_variation`            | `_varied`, scaled by `params.variation_scale`                                                                    | restated in numpy                                                   |
-| `combine._compress_speed_toward_typical`                        | `_compressed`                                                                                                    | restated in numpy                                                   |
-| `combine._pace_segment` scaling                                 | `elapsed_from_model`                                                                                             | restated, single segment only                                       |
+| In `core/`                                                      | In `model.py`                                                                                                                      | Borrowed or restated                                                |
+|-----------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------|
+| `gradient.calculate_gradient`                                   | called in `TrackModel.build`                                                                                                       | borrowed                                                            |
+| `minetti_speeds_from_gradients`, `tobler_speeds_from_gradients` | at exponent 1.0: Tobler once per track, Minetti once per descent cost slope (`raw_minetti(slope)`, `raw_tobler`)                   | borrowed                                                            |
+| `gradient._soften` (`raw ** exponent`)                          | `_blended.softened`                                                                                                                | restated (trivial)                                                  |
+| `blended_speeds_from_gradients`                                 | `_blended`                                                                                                                         | restated over the raw curves                                        |
+| `curve_selection.resolve_tobler_weight`                         | `tobler_weight_for`                                                                                                                | restated, thresholds from params                                    |
+| `curve_selection.resolve_max_speed_ratio`                       | `max_speed_ratio_for`                                                                                                              | restated, bounds from params, no smoothness                         |
+| `curve_selection.resolve_curve_shape`                           | `curve_shape_for`                                                                                                                  | restated, fills, reference grade and descent cost slope from params |
+| `smoothstep`, `_verticality`, `_reference_swings`               | imported                                                                                                                           | borrowed                                                            |
+| `variation.route_noise`, `variation._spread_windows`            | called once in `TrackModel.build` (`noise`, `spread_lo`, `spread_hi`)                                                              | borrowed                                                            |
+| `variation.local_spread`, `variation.pace_variation`            | `_varied`, scaled by `params.variation_scale`                                                                                      | restated in numpy                                                   |
+| `combine._compress_speed_toward_typical`                        | `_compressed`                                                                                                                      | restated in numpy                                                   |
+| `combine._pace_segment` scaling                                 | `elapsed_from_model`                                                                                                               | restated, single segment only                                       |
 | `combine._limit_leg_times` (the acceleration limit)             | `_acceleration_limited`: numpy skips it when nothing breaks the limit, else core's function, scaled by `params.acceleration_scale` | borrowed (sequential passes have no numpy form)                     |
 
 So a change to the Minetti polynomial or Tobler's slope factor reaches the

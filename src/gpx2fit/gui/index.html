@@ -272,8 +272,11 @@
                    every accepted type is an image, Chrome on Android opens the
                    system Photo Picker, which strips the GPS position and renames
                    the file to a number. One non-image type makes it open the
-                   file chooser instead, which keeps them. (Not
-                   application/octet-stream: that drops the image filter.) -->
+                   file chooser instead, which keeps the name (on current
+                   Android it strips the GPS too). (Not
+                   application/octet-stream: that drops the image filter.)
+                   On Android, main.js swaps this accept for one without the
+                   camera (photoAnchors.js's photoAcceptFor). -->
               <input id="photoFileInput" type="file" accept="image/*,.heic,.heif,application/x-gpx2fit-photo" multiple class="visually-hidden" tabindex="-1" />
               <div class="dropzone-content">
                 <span class="dropzone-icon" aria-hidden="true">📷</span>

@@ -22,7 +22,7 @@ import { initShortcuts } from './shell/shortcuts.js';
 import { initDevicePicker } from './devices/devicePicker.js';
 import { createAnchorPlacer } from './placement/anchorPopovers.js';
 import { createPopoverHost } from './placement/popoverHost.js';
-import { createPhotoDrop } from './placement/photoAnchors.js';
+import { createPhotoDrop, photoAcceptFor } from './placement/photoAnchors.js';
 import { wireDropzone } from './inputs/dropzone.js';
 import { wireSegmented } from './inputs/segmented.js';
 import { createProfilePanel } from './profile/profilePanel.js';
@@ -256,6 +256,9 @@ anchors.setAnchorDragEndListener(anchorPlacer.handleAnchorDrag);
 
 /* ---------- photo drop ---------- */
 
+// No "take a photo" in Android's chooser: a photo is never taken here.
+photoFileInputEl.accept = photoAcceptFor(navigator, photoFileInputEl.accept);
+
 const photoDrop = createPhotoDrop({
   dropzoneEl: photoDropzoneEl,
   inputEl: photoFileInputEl,
@@ -271,6 +274,8 @@ const photoDrop = createPhotoDrop({
   cancelPhotoPlacement: anchorPlacer.cancelPhotoPlacement,
   choosePhotoPass: anchorPlacer.choosePhotoPass,
   setStatus,
+  // A "!" pin per photo still waiting for its pass to be picked.
+  unresolvedPins: mapModule.createPinLayer(),
 });
 
 /* ---------- file upload ---------- */
