@@ -101,7 +101,7 @@ export function classifyPyError(error) {
  * says why, since otherwise a dead server and a successful lookup would look
  * the same to the user.
  *
- * @param {any} error - whatever `fetchSurfaceMultipliers` threw
+ * @param {any} error - whatever `ensureSurfaceResponse` threw
  * @returns {string}
  */
 export function describeSurfaceFailure(error) {
@@ -283,7 +283,7 @@ function callBridge(name, ...args) {
  *
  * @param {Uint8Array} bytes - raw contents of the uploaded .gpx file
  * @returns {Promise<{
- *   points: {lat: number, lon: number, elevation: number, distance: number}[],
+ *   points: {lat: number, lon: number}[],
  *   summary: {total_distance: number, total_elevation_gain: number},
  *   warnings: string[],
  * }>}
@@ -335,22 +335,26 @@ export async function resolvePhotoAnchors(photoReadings) {
 }
 
 /**
- * Fetches per-leg surface-based speed multipliers for the parsed route from
- * Valhalla's trace_attributes endpoint. The payload is built and the
- * response read in Python (`core/pacing/surface.py`); this function's only
- * job is the network round trip, since `core/` must stay I/O-free. The fetch
- * is aborted after `VALHALLA_FETCH_TIMEOUT_MS` so a hung public demo server
- * can't stall `convert()` indefinitely.
+ * Makes sure Python has Valhalla's trace_attributes answer for the parsed
+ * route. The payload is built, and the answer kept and read, in Python
+ * (`bridge_api`, `core/pacing/surface.py`); this function's only job is the
+ * network round trip, since `core/` must stay I/O-free. The answer depends
+ * only on the route, so it's fetched once per route: `trace_payload` returns
+ * nothing once one is stored, and a failed lookup stores nothing, so the
+ * next conversion asks again. The fetch is aborted after
+ * `VALHALLA_FETCH_TIMEOUT_MS` so a hung public demo server can't stall
+ * `convert()` indefinitely.
  *
  * Not exported: only `convert()` calls it, from inside its own queued task.
  *
- * @param {'running'|'hiking'} sport - picks the surface weight table
- * @returns {Promise<{multipliers: number[], warnings: string[]}>} one
- *   multiplier per leg of the parsed route, not yet expanded for stops
- *   (`bridge_api.convert` does that)
+ * @returns {Promise<void>} rejects if the lookup failed or Python couldn't
+ *   read the answer
  */
-async function fetchSurfaceMultipliers(sport) {
+async function ensureSurfaceResponse() {
   const payload = callBridge('trace_payload');
+  if (payload == null) {
+    return;
+  }
 
   const abortController = new AbortController();
   const timeoutId = setTimeout(() => abortController.abort(), VALHALLA_FETCH_TIMEOUT_MS);
@@ -379,8 +383,7 @@ async function fetchSurfaceMultipliers(sport) {
       isValhallaHttpError: true,
     });
   }
-  const valhallaResponse = await response.json();
-  return callBridge('surface_multipliers', valhallaResponse, sport);
+  callBridge('store_surface_response', await response.json());
 }
 
 /**
@@ -409,9 +412,9 @@ async function fetchSurfaceMultipliers(sport) {
  *   the FIT device identity: `manufacturer` + `product` are what Strava matches to show a
  *   device, `name` is written as `product_name` (falling back to the GPX's creator), and
  *   no `manufacturer` means a neutral "development" ID (see `fit_writer.write_fit`)
- * @param {boolean} [args.surfaceLookup=true] - whether to fetch surface multipliers from
- *   Valhalla; `false` skips the request entirely, so the route's coordinates never
- *   leave the browser (the user-facing privacy opt-out)
+ * @param {boolean} [args.surfaceLookup=true] - whether to pace on the route's surface,
+ *   looked up from Valhalla once per route; `false` skips the request entirely, so the
+ *   route's coordinates never leave the browser (the user-facing privacy opt-out)
  * @param {number} [args.smoothness=5] - pace-smoothness level, an integer 1–10
  *   (higher is more even pacing, 5 is the automatic terrain/sport-based swing);
  *   see `curve_selection.resolve_max_speed_ratio`
@@ -421,7 +424,8 @@ async function fetchSurfaceMultipliers(sport) {
  *   warnings: string[],
  * }>} the encoded FIT file, the paced activity's profile samples, and
  *   user-facing warnings about a conversion that went through but may not be
- *   what the user meant (a failed surface lookup, a segment whose anchors
+ *   what the user meant (a failed surface lookup first, then Python's own:
+ *   surface data unmatched for much of the route, a segment whose anchors
  *   imply an implausible pace)
  */
 export async function convert({
@@ -438,18 +442,16 @@ export async function convert({
     await ensurePyodide();
     const warnings = [];
 
-    // Surface multipliers are best-effort: a Valhalla outage or network
-    // hiccup must not block the whole conversion, so any failure here just
-    // means the FIT file comes out without surface-based pacing, and the
-    // user is told. Opting out lands on that same no-multipliers path, silently.
-    let surfaceMultipliers = null;
+    // The surface lookup is best-effort: a Valhalla outage or network hiccup
+    // must not block the whole conversion, so any failure here just means
+    // the FIT file comes out without surface-based pacing, and the user is
+    // told. Python then has no answer stored, which is the same path as
+    // opting out, minus the warning.
     if (surfaceLookup) {
       try {
-        const surface = await fetchSurfaceMultipliers(sport);
-        surfaceMultipliers = surface.multipliers;
-        warnings.push(...surface.warnings);
+        await ensureSurfaceResponse();
       } catch (err) {
-        console.warn('Surface multiplier fetch failed; continuing without surface-based pacing.', err);
+        console.warn('Surface lookup failed; continuing without surface-based pacing.', err);
         warnings.push(describeSurfaceFailure(err));
       }
     }
@@ -461,7 +463,7 @@ export async function convert({
       anchors,
       stops: stops ?? [],
       device: device ?? null,
-      surfaceMultipliers,
+      surfaceLookup,
       smoothness,
     });
     return { fitBytes: result.fitBytes, profile: result.profile, warnings: [...warnings, ...result.warnings] };

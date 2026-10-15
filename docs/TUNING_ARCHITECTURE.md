@@ -436,7 +436,7 @@ against the device's own distance. Notes are carried into every report, so
 a suspect activity stays visible.
 
 Why the round trip through GPX: `distance_from_start` is cumulative 3D
-distance (gpxpy's `distance_3d`), so gradients are rise over slope distance.
+distance (gpxpy's formula, from the cleaned elevations), so gradients are rise over slope distance.
 Parsing real GPX makes the harness match production by construction instead
 of by reimplementation. `compare --dump-gpx` writes the same bytes out, so
 an activity can be loaded into the browser GUI for a visual check.

@@ -293,7 +293,7 @@ describe('the bridge calls', () => {
   });
 
   it('parseGpx hands the bytes to parse() and returns its result', async () => {
-    const parsed = { points: [{ lat: 1, lon: 2, elevation: 3, distance: 0 }], summary: { total_distance: 0 }, warnings: ['gap'] };
+    const parsed = { points: [{ lat: 1, lon: 2 }], summary: { total_distance: 0 }, warnings: ['gap'] };
     fakeRuntime.responses.parse = parsed;
     const bytes = new Uint8Array([1, 2, 3]);
 
@@ -374,7 +374,6 @@ describe('convert', () => {
     fakeRuntime.reset();
     fakeRuntime.responses.convert = CONVERTED;
     fakeRuntime.responses.trace_payload = { shape: [{ lat: 1, lon: 2 }], costing: 'pedestrian' };
-    fakeRuntime.responses.surface_multipliers = { multipliers: [0.9, 0.8], warnings: [] };
     stubValhalla(() => ({ ok: true, json: async () => ({ edges: ['answer'] }) }));
   });
 
@@ -404,7 +403,7 @@ describe('convert', () => {
       anchors,
       stops,
       device: null,
-      surfaceMultipliers: null,
+      surfaceLookup: false,
       smoothness: 5,
     });
   });
@@ -416,29 +415,48 @@ describe('convert', () => {
     assert.deepEqual(convertRequest().device, device);
   });
 
-  it("asks Valhalla with bridge_api's payload, and paces with the multipliers from its answer", async () => {
+  it("asks Valhalla with bridge_api's payload, and hands its answer back for the conversion to use", async () => {
     await convert({ ...convertArgs, sport: 'running' });
 
     assert.equal(valhallaRequests.length, 1);
     assert.deepEqual(JSON.parse(valhallaRequests[0].body), fakeRuntime.responses.trace_payload);
-    assert.deepEqual(callsTo('surface_multipliers')[0].args, [{ edges: ['answer'] }, 'running']);
-    assert.deepEqual(convertRequest().surfaceMultipliers, [0.9, 0.8]);
+    assert.deepEqual(callsTo('store_surface_response').map((call) => call.args), [[{ edges: ['answer'] }]]);
+    assert.equal(convertRequest().surfaceLookup, true);
+    assert.equal('surfaceMultipliers' in convertRequest(), false);
+    assert.equal(fakeRuntime.live.size, 0);
+  });
+
+  it('stores the answer before converting', async () => {
+    await convert(convertArgs);
+    const order = fakeRuntime.calls.map((call) => call.name).filter((name) => name !== 'trace_payload');
+    assert.deepEqual(order, ['store_surface_response', 'convert']);
+  });
+
+  it('asks Valhalla nothing when Python already has the answer for this route', async () => {
+    fakeRuntime.responses.trace_payload = null;
+
+    const { warnings } = await convert(convertArgs);
+
+    assert.equal(valhallaRequests.length, 0);
+    assert.equal(callsTo('store_surface_response').length, 0);
+    assert.equal(convertRequest().surfaceLookup, true);
+    assert.deepEqual(warnings, []);
   });
 
   it('sends nothing to Valhalla when surfaceLookup is false', async () => {
     await convert({ ...convertArgs, surfaceLookup: false });
     assert.equal(valhallaRequests.length, 0);
     assert.equal(callsTo('trace_payload').length, 0);
-    assert.deepEqual(convertRequest().surfaceMultipliers, null);
+    assert.equal(convertRequest().surfaceLookup, false);
   });
 
-  it('puts the surface warnings ahead of the pacing ones', async () => {
-    fakeRuntime.responses.surface_multipliers = { multipliers: [1], warnings: ['surface'] };
-    fakeRuntime.responses.convert = { ...CONVERTED, warnings: ['pacing'] };
+  it("puts a failed lookup's warning ahead of the conversion's own", async () => {
+    stubValhalla(() => { throw new TypeError('Failed to fetch'); });
+    fakeRuntime.responses.convert = { ...CONVERTED, warnings: ['surface unmatched', 'pacing'] };
 
     const { warnings } = await convert(convertArgs);
 
-    assert.deepEqual(warnings, ['surface', 'pacing']);
+    assert.deepEqual(warnings, [describeSurfaceFailure(new TypeError('x')), 'surface unmatched', 'pacing']);
   });
 
   it("still converts when Valhalla rejects the route, and says why in Valhalla's words", async () => {
@@ -454,7 +472,8 @@ describe('convert', () => {
     assert.equal(warnings.length, 1);
     assert.match(warnings[0], /Path distance exceeds the max distance limit/);
     assert.match(warnings[0], /400/);
-    assert.equal(convertRequest().surfaceMultipliers, null);
+    assert.equal(callsTo('store_surface_response').length, 0);
+    assert.equal(convertRequest().surfaceLookup, true);
   });
 
   it('reports an HTTP error whose body is not JSON by its status', async () => {
@@ -480,12 +499,12 @@ describe('convert', () => {
   });
 
   it("still converts when Python can't use Valhalla's answer", async () => {
-    fakeRuntime.responses.surface_multipliers = new Error('Traceback\nKeyError: matched_points');
+    fakeRuntime.responses.store_surface_response = new Error('Traceback\nTypeError: unsupported operand');
 
     const { warnings } = await convert(convertArgs);
 
     assert.deepEqual(warnings, [describeSurfaceFailure(new Error('x'))]);
-    assert.equal(convertRequest().surfaceMultipliers, null);
+    assert.equal(callsTo('convert').length, 1);
     assert.equal(fakeRuntime.live.size, 0);
   });
 

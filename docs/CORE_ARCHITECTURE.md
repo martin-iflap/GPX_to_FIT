@@ -106,8 +106,10 @@ classDiagram
 Invariants that the rest of the code relies on:
 
 - `TrackPoint.distance_from_start` is the cumulative **3D** distance
-  (gpxpy's `distance_3d`, falling back to 2D when there's no elevation). It
-  never decreases. Gradients are therefore rise over slope distance.
+  (gpxpy's 3D formula, `gpxpy.geo.distance`), measured from the cleaned
+  elevations below, never the file's own: a −32768 sentinel used to make a
+  leg kilometres long. With no elevation it is 2D. It never decreases.
+  Gradients are therefore rise over slope distance.
 - A missing `<ele>`, or one outside −500…9000 m (a writer's "no data"
   sentinel such as −32768), inherits the previous point's elevation. Points
   before the first usable one take that first value. With no usable
@@ -170,8 +172,8 @@ the resulting multipliers to `combine()` as a plain list. `anchors.py`,
 ```
 parse_gpx_bytes(gpx_bytes, device=None, *, max_leg_m=MAX_LEG_M, warnings=None) -> Track
   bytes ─decode utf-8─▶ gpxpy.parse ─▶ for track/segment/point:
-      cumulative distance_3d (→ distance_2d) ,
       implausible elevation → missing, carry-forward, leading back-fill,
+      cumulative 3D distance from those cleaned elevations,
       join to the previous segment wider than SEGMENT_GAP_WARNING_M (100 m) → noted
   ─▶ densify_points(points, max_leg_m)   (skipped when max_leg_m is None)
   ─▶ Track(points, device = device or <gpx creator>, has_elevation)
@@ -195,9 +197,11 @@ the gradient window and the pace wander had nothing to smooth. Anchors,
 photos and stops also snapped up to half a leg away. 2 m (it was 15 m at
 first) is short enough for the acceleration limit (§2.10) to ramp a change
 of speed across several legs. The tuning harness densifies the same way. A
-dense GPX is left as it is. Because this happens in the parser, every later
-step uses the dense track: the map, nearest-point lookups, pacing and the
-FIT file. The Valhalla request doesn't: it is thinned back to a point every
+dense GPX is left as it is. Every later step uses the dense track:
+nearest-point lookups, pacing and the FIT file. The map doesn't:
+`bridge_api.parse` reads the file with `max_leg_m=None`, sends those points
+to the map, and densifies the route it keeps itself, which gives exactly
+the track the default would. The Valhalla request doesn't: it is thinned back to a point every
 15 m (§2.8).
 
 It reads only `<trk>` points. Route (`<rte>`) and waypoint elements are
@@ -473,7 +477,7 @@ flowchart TD
   ps --> sc["scale = (Δt − Mode A stop time) / Σ(d / v)"]
   ps --> llt["_limit_leg_times<br/>acceleration.limit_acceleration, then rescale"]
   ps --> st["stamp timestamps; add each Mode A<br/>stop's duration at its duplicate point"]
-  ps -.-> err["InputError: time goes backwards ·<br/>stops exceed the segment's time"]
+  ps -.-> err["InputError: time goes backwards ·<br/>stops exceed the segment's time ·<br/>faster than MAX_PLAUSIBLE_SPEED_KMH"]
   ps --> fitret["returns (active_seconds, modeled_time)"]
   C --> ipw["_implausible_pace_warnings(paced segments)<br/>only if warnings is given"]
 ```
@@ -487,7 +491,13 @@ Within one segment, `_pace_segment` does the following, in order:
    `median · exp(L · tanh(ln(v/median) / L))`, where `L = ln(max_ratio)`.
    This is a soft clamp, so it never produces a flat plateau.
 4. Modeled time per leg is `d_i / v_i`. Scale all of them so they add up
-   to the segment's active time.
+   to the segment's active time. Before that, a segment of at least
+   `PLAUSIBILITY_MIN_SEGMENT_M` whose active time means an average over
+   `MAX_PLAUSIBLE_SPEED_KMH` (60 km/h) is an `InputError` naming its two
+   anchors. That catches a mistyped time, which used to reach
+   `fit_encoder` as a speed too big for a FIT record. Shorter segments
+   aren't judged, since a photo a second after the start but matched 50 m
+   along is only GPS error.
 5. Unless `limit_acceleration=False`, limit the now absolute speeds to the
    sport's `MAX_ACCELERATION_MPS2` (§2.10) and rescale the times to the
    active time again. Limiting only slows legs, so the rescale speeds every
@@ -584,7 +594,8 @@ here, in Python.
 
 ```mermaid
 flowchart TD
-  GPX[/"GPX bytes"/] --> parse["gpx_reader.parse_gpx_bytes"] --> T[("_track: Track<br/>no timestamps")]
+  GPX[/"GPX bytes"/] --> parse["gpx_reader.parse_gpx_bytes(max_leg_m=None)"] --> dens["gpx_reader.densify_points"] --> T[("_track: Track<br/>no timestamps")]
+  parse --> MAP[/"the GPX's own {lat, lon} → map line"/]
 
   start[/"startIso + durationSeconds"/] --> ase["anchors.add_start_end_anchors"] --> boundary["boundary anchors (2)"]
   ua[/"mid-route + photo anchors<br/>{distanceFromStart, timestamp, source}"/] --> bua["anchors.build_user_anchors"] --> mid["mid-route anchors"]
@@ -604,7 +615,7 @@ flowchart TD
   mb --> ets
   ma --> ets
 
-  T -. optional .-> sp["surface.build_trace_attributes_payload"] -.-> VH(("Valhalla")) -.-> csm["surface.calculate_surface_multipliers"] -.-> em["stops.expand_multipliers_with_stops"] -.-> WM["working multipliers"]
+  T -. optional .-> sp["surface.build_trace_attributes_payload"] -.-> VH(("Valhalla")) -.-> csm["surface.calculate_surface_multipliers<br/>every sport"] -.-> SR[("bridge_api._surface<br/>once per route")] -.-> em["stops.expand_multipliers_with_stops"] -.-> WM["working multipliers"]
 
   WT --> comb["combine.combine"]
   all --> comb
@@ -622,10 +633,10 @@ flowchart TD
 
 This is the order `bridge_api.convert(request)` runs in. It first turns
 the request's dicts and ISO strings into dataclasses, and the sport name
-(`"running"`/`"hiking"`, the GUI's own) into a `SportType`. `combine`
-appends to a fresh `warnings` list per call, and the JS side puts the
-surface lookup's warnings (from `bridge_api.surface_multipliers`, or
-`describeSurfaceFailure`) ahead of them.
+(`"running"`/`"hiking"`, the GUI's own) into a `SportType`. The surface
+and `combine` append to a fresh `warnings` list per call, in that order,
+and the JS side puts a failed lookup's warning (`describeSurfaceFailure`)
+ahead of them.
 
 1. `boundary = add_start_end_anchors(_track, start, duration=…)`
 2. `mid_route = build_user_anchors(_track, raw_anchors, existing_anchors=boundary)`.
@@ -638,8 +649,13 @@ surface lookup's warnings (from `bridge_api.surface_multipliers`, or
    where `device` is the request's `device.name` or `_track.device`, plus the three device IDs.
    They go on the working track, never on `_track`, so clearing the device
    between two conversions of one route really clears it
-7. `working_multipliers = expand_multipliers_with_stops(...)` (if the
-   request carries `surfaceMultipliers`)
+7. If the request's `surfaceLookup` is set and multipliers are kept
+   (`store_surface_response`, once per route, ran
+   `calculate_surface_multipliers(_track, answer, sport, warnings=…)` for
+   every sport): `_surface[sport]`'s warnings are added to `warnings`, then
+   `working_multipliers = expand_multipliers_with_stops(...)` on its
+   multipliers.
+   Otherwise `None`, i.e. gradient alone
 8. `combine(working_track, all_anchors, sport, working_multipliers, mode_a_stops, smoothness, warnings=warnings)`
 9. `write_fit(working_track)` → `fitBytes`
 10. `build_activity_profile(working_track)`, converted to camelCase dicts
@@ -648,6 +664,12 @@ surface lookup's warnings (from `bridge_api.surface_multipliers`, or
 Surface multipliers are computed against `_track` (not yet expanded), and
 only then expanded to match `working_track`. Every conversion builds a fresh
 working track, so the same `_track` can be converted any number of times.
+The surface multipliers are kept for the same reason: Valhalla's answer
+depends only on the route, so `store_surface_response` works out every
+sport's multipliers once, and a re-conversion (a moved anchor, another
+sport) only looks them up. `parse` clears them with the route. An answer
+that raises while being read keeps nothing, and the next conversion asks
+again.
 
 ---
 

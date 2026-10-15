@@ -193,8 +193,9 @@ The full pipeline works end to end in the browser. Known limitations:
   supported.
 - Phones often remove a photo's location before the browser sees it
   (Android's gallery picker, email, Bluetooth, Quick Share). The page can't
-  get it back. The photo button opens the file chooser instead, which
-  normally keeps it, and a photo without location can be placed by hand.
+  get it back. Recent Android versions strip it in the file chooser too.
+  Copying the photos to a computer by cable keeps it, and a photo without
+  location can be placed by hand.
 
 ## Tech stack
 

@@ -41,6 +41,15 @@ IMPLAUSIBLE_PACE_RATIO = 2.5
 # minute, which on a short segment is a big share of its time.
 PLAUSIBILITY_MIN_SEGMENT_M = 300.0
 
+# Anchor times that leave a segment's moving time at a higher average speed
+# than this are refused (see _pace_segment). It is far past any speed on foot,
+# so it only catches a mistyped time, never a fast athlete. It also keeps the
+# legs well inside what a FIT record's speed can hold (65.5 m/s, 236 km/h),
+# which would otherwise fail in fit_encoder as a traceback. Like the pace
+# warnings, it skips segments under PLAUSIBILITY_MIN_SEGMENT_M: a photo taken a
+# second after the start but matched 50 m along is GPS error, not a mistake.
+MAX_PLAUSIBLE_SPEED_KMH = 60.0
+
 # Human-readable label for each Anchor.source, used only to make InputError
 # messages (contradictory anchor/stop times) point at a concrete, recognizable
 # entry rather than an opaque distance/timestamp pair.
@@ -178,7 +187,8 @@ def _pace_segment(
             pacing.curve_selection.resolve_max_speed_ratio. Must be > 1.
         curve_shape: Both curves' exponents, fitted to max_speed_ratio by
             pacing.curve_selection.resolve_curve_shape.
-        segment_multipliers: Optional per-leg surface multipliers, one per leg.
+        segment_multipliers: Optional per-leg surface multipliers, one per
+            leg (combine checks the whole track's count).
         segment_mode_a_stops: This segment's Mode A stops, sorted ascending
             by distance_from_start.
         segment_variation: Optional per-leg pace-variation multipliers, one
@@ -209,8 +219,10 @@ def _pace_segment(
             their distance order (e.g. a photo anchor built from a capture
             time that doesn't actually fall within the activity). Also
             raised if this segment's Mode A stop durations alone consume
-            the entire anchor-to-anchor time budget. Both are user-fixable
-            (bad anchor/stop times), not bugs.
+            the entire anchor-to-anchor time budget, or leave too little to
+            cover the segment below MAX_PLAUSIBLE_SPEED_KMH (judged from
+            PLAUSIBILITY_MIN_SEGMENT_M up). All are
+            user-fixable (bad anchor/stop times), not bugs.
     """
     segment_mode_a_stops = segment_mode_a_stops or []
     if len(segment_points) < 2:
@@ -234,10 +246,6 @@ def _pace_segment(
         return None
 
     if segment_multipliers is not None:
-        if len(segment_multipliers) != len(speeds):
-            raise ValueError(
-                f"Length of segment_multipliers ({len(segment_multipliers)}) does not match number of legs ({len(speeds)})."
-            )
         # Floored so a surface multiplier can never fully zero out a leg's speed.
         speeds = [
             speed * max(multiplier, _MIN_SURFACE_MULTIPLIER)
@@ -272,6 +280,17 @@ def _pace_segment(
             f"The stop(s) between the {_describe_anchor(start_anchor)} and the {_describe_anchor(end_anchor)} "
             "take longer than the time available between those two points. Shorten the stop duration(s), or "
             "adjust the anchor/stop times so there's enough time for them."
+        )
+
+    distance = segment_points[-1].distance_from_start - segment_points[0].distance_from_start
+    speed_kmh = distance / active_time * 3.6
+    if distance >= PLAUSIBILITY_MIN_SEGMENT_M and speed_kmh > MAX_PLAUSIBLE_SPEED_KMH:
+        after_stops = ", after the stops between them," if segment_mode_a_stops else ""
+        raise InputError(
+            f"The times of the {_describe_anchor(start_anchor)} and the {_describe_anchor(end_anchor)} leave "
+            f"{distance / 1000:.2f} km to cover at {speed_kmh:.0f} km/h{after_stops}, which is faster than anyone "
+            "moves on foot. Check the times you entered for these two points (a mistyped duration, say) and fix "
+            "whichever one is wrong."
         )
 
     scale = active_time / modeled_total_time
@@ -517,14 +536,21 @@ def combine(
             actually belong on this track — e.g. a photo anchor built from a
             capture time outside the activity, see pacing.photo_anchors), or
             if a segment's Mode A stop durations alone consume its entire
-            anchor-to-anchor time budget. Both are user-fixable data
-            problems, not bugs.
-        ValueError: If _resolve_anchor_bounds can't map every anchor to its
+            anchor-to-anchor time budget, or if a segment's average moving
+            speed would exceed MAX_PLAUSIBLE_SPEED_KMH. All are user-fixable
+            data problems, not bugs.
+        ValueError: If `multipliers` doesn't hold one entry per leg of
+            `track`, or if _resolve_anchor_bounds can't map every anchor to its
             own track point (see its docstring) — this should never happen
             for anchors built via pacing.anchors.build_user_anchors, which
             already rejects two anchors resolving to the same distance.
     """
     mode_a_stops = mode_a_stops or []
+    if multipliers is not None and len(multipliers) != len(track.points) - 1:
+        # Checked on the whole list: one entry too many still slices into segments of the right length.
+        raise ValueError(
+            f"Got {len(multipliers)} surface multipliers for a track of {len(track.points) - 1} legs."
+        )
     anchor_indexes = _resolve_anchor_bounds(track.points, anchors)
     buckets = _bucket_mode_a_stops(anchors, mode_a_stops)
     # Calculated once over the whole track: a mid-route anchor is a known
@@ -584,3 +610,5 @@ def combine(
 # _whole_track_variation, once inside _pace_segment.
 
 # Implausible pace ratio is a first guess.
+
+# cycling will need its own max plausible speed.

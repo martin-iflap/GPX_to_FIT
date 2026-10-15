@@ -8,15 +8,20 @@ are the JS side's (camelCase), except a nearest-point candidate's, which is
 
 The parsed route is kept here between calls (`parse` sets it), so one upload
 is parsed once and reused by the map clicks, the photo matching and every
-conversion. The bridge runs one call at a time, so nothing else can replace
-it between a surface lookup and the conversion that uses it.
+conversion. So are the surface multipliers read from Valhalla's answer for
+it, once the JS side has fetched one (`store_surface_response`): they depend
+only on the route and the sport, so every later conversion reuses them, and a
+new route clears them. The bridge runs
+one call at a time, so nothing else can replace either between a surface
+lookup and the conversion that uses it.
 """
 
 import datetime as dt
+from dataclasses import replace
 
 from gpx2fit.core.activity_profile import build_activity_profile
 from gpx2fit.core.fit_writer import write_fit
-from gpx2fit.core.gpx_reader import parse_gpx_bytes
+from gpx2fit.core.gpx_reader import MAX_LEG_M, densify_points, parse_gpx_bytes
 from gpx2fit.core.models import Anchor, RawAnchor, RawPhotoAnchor, RawStop, SportType, Track
 from gpx2fit.core.pacing.anchors import add_start_end_anchors, build_user_anchors, nearest_point_candidates
 from gpx2fit.core.pacing.combine import combine
@@ -27,6 +32,10 @@ from gpx2fit.core.pacing.stops import expand_multipliers_with_stops, expand_trac
 from gpx2fit.core.pacing.surface import build_trace_attributes_payload, calculate_surface_multipliers
 
 _track: Track | None = None
+# Each sport's per-leg surface multipliers for _track, read from Valhalla's
+# trace_attributes answer, with the warnings reading them gave. None until an
+# answer is stored.
+_surface: dict[SportType, tuple[list[float], list[str]]] | None = None
 
 
 def _require_track() -> Track:
@@ -46,23 +55,26 @@ def parse(gpx_bytes: bytes | memoryview) -> dict:
         gpx_bytes: The .gpx file's contents. A JS Uint8Array arrives as a memoryview.
 
     Returns:
-        {"points": [{"lat", "lon", "elevation", "distance"}], "summary":
-        {"total_distance", "total_elevation_gain"}, "warnings": [str]}, for
-        the map preview and the sidebar's stats.
+        {"points": [{"lat", "lon"}], "summary": {"total_distance",
+        "total_elevation_gain"}, "warnings": [str]}, for the map preview and
+        the sidebar's stats. The points are the GPX's own, without the ones
+        densifying adds: those lie on the straight lines between them, so the
+        drawn line is the same, with far fewer points to send and draw.
 
     Raises:
         InputError: If the file isn't valid GPX or has no track points. The
-            previously loaded route stays loaded.
+            previously loaded route stays loaded, with its surface answer.
     """
-    global _track
+    global _track, _surface
     warnings: list[str] = []
-    track = parse_gpx_bytes(bytes(gpx_bytes), warnings=warnings)
+    sparse = parse_gpx_bytes(bytes(gpx_bytes), max_leg_m=None, warnings=warnings)
+    # We densify only afterward because we also want the sparse points for the map since it
+    # doesn't need so many points. Densifying is last step so the resulting track is the same.
+    track = replace(sparse, points=densify_points(sparse.points, MAX_LEG_M))
     _track = track
+    _surface = None
     return {
-        "points": [
-            {"lat": p.lat, "lon": p.lon, "elevation": p.elevation, "distance": p.distance_from_start}
-            for p in track.points
-        ],
+        "points": [{"lat": p.lat, "lon": p.lon} for p in sparse.points],
         "summary": {"total_distance": track.total_distance, "total_elevation_gain": elevation_gain(track)},
         "warnings": warnings,
     }
@@ -110,25 +122,39 @@ def resolve_photos(readings: list[dict]) -> list[dict]:
     ]
 
 
-def trace_payload() -> dict:
-    """The request body for Valhalla's trace_attributes, which the JS side sends."""
-    return build_trace_attributes_payload(_require_track())
+def trace_payload() -> dict | None:
+    """The request body for Valhalla's trace_attributes, which the JS side sends.
+    Returns:
+        The body, or None when an answer for this route is already stored,
+        so there is nothing to ask.
+    """
+    track = _require_track()
+    return None if _surface is not None else build_trace_attributes_payload(track)
 
 
-def surface_multipliers(response: dict, sport: str) -> dict:
-    """Turn Valhalla's trace_attributes answer into per-leg speed multipliers.
+def store_surface_response(response: dict) -> None:
+    """Read Valhalla's answer to `trace_payload()`'s request into every conversion of this route.
+
+    Each sport's multipliers are worked out once, here, and kept, so a
+    conversion only looks its sport's up. That also means an answer the
+    conversion couldn't use fails now, while the JS side still treats it as
+    a failed lookup, and nothing is kept. The next conversion then asks
+    again.
 
     Args:
-        response: The decoded JSON answer to `trace_payload()`'s request.
-        sport: "running" or "hiking", which picks the surface weight table.
-
-    Returns:
-        {"multipliers": [float], one per leg of the parsed route (not yet
-        expanded for stops), "warnings": [str]}.
+        response: The decoded JSON answer.
+    Raises:
+        Whatever reading it raises (an AttributeError or TypeError for an
+        answer of the wrong shape). Nothing is kept then.
     """
-    warnings: list[str] = []
-    multipliers = calculate_surface_multipliers(_require_track(), response, SportType(sport), warnings=warnings)
-    return {"multipliers": multipliers, "warnings": warnings}
+    global _surface
+    track = _require_track()
+    surface = {}
+    for sport in SportType:
+        sport_warnings: list[str] = []
+        multipliers = calculate_surface_multipliers(track, response, sport, warnings=sport_warnings)
+        surface[sport] = (multipliers, sport_warnings)
+    _surface = surface
 
 
 def _raw_anchor(entry: dict) -> RawAnchor:
@@ -174,14 +200,16 @@ def convert(request: dict) -> dict:
             "device": {"name", "manufacturer", "product", "serialNumber"},
                 every key optional; set on the written track only, so a
                 cleared device really clears,
-            "surfaceMultipliers": `surface_multipliers()`' list, or absent,
+            "surfaceLookup": whether to pace on the stored surface answer,
+                optional (absent is off); with no answer stored, the route
+                paces on gradient alone either way,
             "smoothness": the pace-smoothness level 1-10, optional,
         }
 
     Returns:
         {"fitBytes": bytes, "profile": [{"distanceFromStart",
         "elapsedSeconds", "speedMps", "elevation", "lat", "lon", "isStop"}],
-        "warnings": [str]} with the pacing's warnings.
+        "warnings": [str]} with the surface's warnings, then the pacing's.
 
     Raises:
         InputError: If the anchors and stops contradict each other.
@@ -224,10 +252,11 @@ def convert(request: dict) -> dict:
         has_elevation=track.has_elevation,
     )
 
-    multipliers = request.get("surfaceMultipliers")
-    working_multipliers = (
-        expand_multipliers_with_stops(track.points, list(multipliers), all_stops) if multipliers is not None else None
-    )
+    working_multipliers = None
+    if request.get("surfaceLookup") and _surface is not None:
+        multipliers, surface_warnings = _surface[sport]
+        warnings.extend(surface_warnings)
+        working_multipliers = expand_multipliers_with_stops(track.points, multipliers, all_stops)
 
     smoothness = request.get("smoothness")
     combine(

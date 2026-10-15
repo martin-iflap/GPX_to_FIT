@@ -168,12 +168,15 @@ def expand_multipliers_with_stops(
             `points[-1]`, so every stop always duplicates a real entry of
             `multipliers`.
     Returns:
-        A new multipliers list, one longer per stop.
+        A new multipliers list, one longer per stop. Where the GPX repeats a
+        stop's point, only the first copy's leg is duplicated, as only the
+        first copy gets a duplicate point.
     """
     pending = {s.distance_from_start for s in stops}
     result: list[float] = []
-    for i, m in enumerate(multipliers):
-        result.append(m)
-        if points[i].distance_from_start in pending:
-            result.append(m)
+    for point, multiplier in zip(points, multipliers):
+        result.append(multiplier)
+        if point.distance_from_start in pending:
+            pending.remove(point.distance_from_start)
+            result.append(multiplier)
     return result

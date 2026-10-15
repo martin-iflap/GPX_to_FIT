@@ -3,6 +3,8 @@
 import math
 
 import gpxpy
+from gpxpy.geo import distance as geo_distance
+
 from gpx2fit.core.models import InputError, Track, TrackPoint
 
 # An elevation outside this range can't be on Earth's surface (the Dead Sea
@@ -109,9 +111,10 @@ def parse_gpx_bytes(
     Returns:
         A Track with one TrackPoint per GPX trackpoint, in file order, plus
         any points densifying inserts between them, with distance_from_start
-        computed as the cumulative 3D (falling back to 2D) distance from the
-        first point. Points have no timestamp yet — that's assigned later by
-        pacing.
+        computed as the cumulative 3D distance from the first point, using
+        the cleaned elevations (see Note), so a route without any is
+        measured flat. Points have no timestamp yet — that's assigned later
+        by pacing.
     Raises:
         InputError: If gpx_bytes isn't valid UTF-8, isn't parseable as GPX,
             contains no track points, or describes a route with no length
@@ -146,21 +149,26 @@ def parse_gpx_bytes(
     for track in gpx.tracks:
         for segment in track.segments:
             for index, point in enumerate(segment.points):
-                if prev_point is not None:
-                    segment_distance = prev_point.distance_3d(point)
-                    if segment_distance is None:
-                        segment_distance = prev_point.distance_2d(point) or 0.0
-                    cumulative_distance += segment_distance
-                    if index == 0:
-                        gap_m = prev_point.distance_2d(point) or 0.0
-                        if gap_m > SEGMENT_GAP_WARNING_M:
-                            gaps_m.append(gap_m)
-
                 elevation = _usable_elevation(point.elevation)
                 if elevation is None:
                     elevation = last_elevation
                 if elevation is None:
                     leading_missing += 1
+
+                if prev_point is not None:
+                    # gpxpy's 3D distance, but from the cleaned elevations: the file's own would turn a
+                    # -32768 "no data" value into a 33 km leg, and a nan into a nan route. A leading
+                    # point without one (None) is measured flat, as its back-filled value will be.
+                    cumulative_distance += geo_distance(
+                        prev_point.latitude, prev_point.longitude, last_elevation,
+                        point.latitude, point.longitude, elevation,
+                    )
+                    if index == 0:
+                        gap_m = geo_distance(
+                            prev_point.latitude, prev_point.longitude, None, point.latitude, point.longitude, None
+                        )
+                        if gap_m > SEGMENT_GAP_WARNING_M:
+                            gaps_m.append(gap_m)
                 last_elevation = elevation
 
                 track_points.append(TrackPoint(

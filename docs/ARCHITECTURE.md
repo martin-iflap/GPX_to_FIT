@@ -123,8 +123,8 @@ flowchart TB
     end
     bridge["pyodideBridge.js<br/>parseGpx · resolveAnchorCandidates ·<br/>resolvePhotoAnchors · convert"]
     subgraph Py["Pyodide runtime (WASM)"]
-      api["core/bridge_api.py<br/>parse · nearest_candidates · resolve_photos ·<br/>trace_payload · surface_multipliers · convert"]
-      track[("bridge_api._track<br/>parsed once per upload")]
+      api["core/bridge_api.py<br/>parse · nearest_candidates · resolve_photos ·<br/>trace_payload · store_surface_response · convert"]
+      track[("bridge_api._track + _surface<br/>once per upload")]
       core["gpx2fit.core<br/>models · gpx_reader · pacing/* ·<br/>fit_writer · activity_profile"]
     end
     main --> ui
@@ -172,15 +172,21 @@ so pytest and pyrefly cover it like any other `core/` module
 numbers, strings and bytes. Its dict keys are the GUI's camelCase, except a
 nearest-point candidate's, which is `nearest_point_candidates`' own dict.
 
-| Export                              | `bridge_api` call                                      | Returns                                                   |
-|-------------------------------------|--------------------------------------------------------|-----------------------------------------------------------|
-| `parseGpx(bytes)`                   | `parse(bytes)`, which keeps the route as `_track`      | `{points, summary, warnings}` for the map and sidebar     |
-| `resolveAnchorCandidates(lat, lon)` | `nearest_candidates(lat, lon)`                         | 1–4 candidates                                            |
-| `resolvePhotoAnchors(readings)`     | `resolve_photos(readings)`, with no activity window    | status per photo                                          |
-| `convert({...})`                    | `trace_payload`, `surface_multipliers`, then `convert` | `{fitBytes, profile, warnings}`                           |
-| `warmUpPyodide()`                   | none                                                   | starts loading the runtime once the page is idle          |
-| `classifyPyError(err)`              | none                                                   | tags `InputError`s ([§6](#6-errors))                      |
-| `describeSurfaceFailure(err)`       | none                                                   | the warning for a failed surface lookup ([§6](#6-errors)) |
+| Export                              | `bridge_api` call                                                            | Returns                                                   |
+|-------------------------------------|------------------------------------------------------------------------------|-----------------------------------------------------------|
+| `parseGpx(bytes)`                   | `parse(bytes)`, which keeps the route as `_track`                            | `{points, summary, warnings}` for the map and sidebar     |
+| `resolveAnchorCandidates(lat, lon)` | `nearest_candidates(lat, lon)`                                               | 1–4 candidates                                            |
+| `resolvePhotoAnchors(readings)`     | `resolve_photos(readings)`, with no activity window                          | status per photo                                          |
+| `convert({...})`                    | `trace_payload`, and `store_surface_response` once per route, then `convert` | `{fitBytes, profile, warnings}`                           |
+| `warmUpPyodide()`                   | none                                                                         | starts loading the runtime once the page is idle          |
+| `classifyPyError(err)`              | none                                                                         | tags `InputError`s ([§6](#6-errors))                      |
+| `describeSurfaceFailure(err)`       | none                                                                         | the warning for a failed surface lookup ([§6](#6-errors)) |
+
+`parse` sends back only the GPX's own points, as `{lat, lon}`, for the map
+line. The route it keeps is densified (legs ≤ `MAX_LEG_M`), but the added
+points lie on straight lines, so the line looks the same. Sending the dense
+route (until 2026-10-15) gave a 32 km planner GPX 17,165 points instead of
+its 2,000, each drawn twice and scanned on every mouse move.
 
 Four mechanisms keep the bridge working:
 
@@ -210,15 +216,28 @@ Four mechanisms keep the bridge working:
    The argument proxies, the function proxy and the result proxy are all
    destroyed before the call returns, so no conversion's data stays alive in
    Python. Only the parsed route does, in `bridge_api._track`, so a GPX file
-   is parsed once and reused for clicks, photos and every conversion.
+   is parsed once and reused for clicks, photos and every conversion. So
+   do the surface multipliers read from Valhalla's answer for it, in
+   `_surface` (see 5).
 3. **Serial queue (`enqueue`).** Calls are chained on one promise.
    `convert` awaits the Valhalla request between `trace_payload` and
    `convert`, and a parse landing in that gap would swap the route under
    it. A failed call rejects only for its own caller, and the next call in
-   the queue still runs. `fetchSurfaceMultipliers` isn't exported and isn't
+   the queue still runs. `ensureSurfaceResponse` isn't exported and isn't
    queued, because it runs inside `convert`'s queued task. Queueing it
    again would deadlock.
 4. **Errors are classified once, in `enqueue`** ([§6](#6-errors)).
+5. **One surface lookup per route.** Valhalla's answer depends only on the
+   route (the sport only picks the weight table applied to it), so
+   `store_surface_response` reads it with every sport's table once and
+   `bridge_api` keeps each sport's multipliers, with their warnings, next
+   to `_track` as `_surface`. `parse` clears them. `trace_payload` returns
+   `None` once they're kept, and the bridge then skips the request. If
+   reading the answer raises, nothing is kept, so an unusable answer, like
+   a failed fetch, is a warning on this conversion and asked for again on
+   the next. `convert` only looks its sport's multipliers up, and its
+   `surfaceLookup` decides whether they're used, so unticking the checkbox
+   needs no new request either way.
 
 ---
 
@@ -244,8 +263,8 @@ sequenceDiagram
   B->>B: once idle: ensurePyodide()<br/>load runtime, micropip, fetch core/*.py, import bridge_api
   U->>Main: drop GPX
   Main->>B: parseGpx(bytes)
-  B->>Py: bridge_api.parse(bytes) keeps _track = parse_gpx_bytes(...)
-  Py-->>Main: points + {total_distance, total_elevation_gain} + warnings
+  B->>Py: bridge_api.parse(bytes) keeps _track, densified, and clears _surface
+  Py-->>Main: the GPX's own {lat, lon} + {total_distance, total_elevation_gain} + warnings
   Main->>Main: reset anchors/stops/photos, profilePanel.hide(),<br/>renderRoute, refresh time toggle
   U->>Main: set start + duration/end/speed, place anchors/stops, drop photos
   Note over Main,Py: resolveAnchorCandidates / resolvePhotoAnchors (GUI_ARCHITECTURE §3)
@@ -254,10 +273,12 @@ sequenceDiagram
   Main->>B: convert({startIso, durationSeconds, sport,<br/>anchors, stops, device, surfaceLookup, smoothness})
   opt surfaceLookup
     B->>Py: bridge_api.trace_payload()
-    B->>V: POST trace_attributes (30 s timeout)
-    V-->>B: edges + matched_points
-    B->>Py: bridge_api.surface_multipliers(answer, sport)
-    Note over B: on any failure: describeSurfaceFailure → warning, continue with no multipliers
+    opt no answer stored for this route yet
+      B->>V: POST trace_attributes (30 s timeout)
+      V-->>B: edges + matched_points
+      B->>Py: bridge_api.store_surface_response(answer)
+    end
+    Note over B: on any failure: describeSurfaceFailure → warning, nothing stored, continue
   end
   B->>Py: bridge_api.convert(request) (CORE_ARCHITECTURE §4)
   Py-->>B: {fitBytes, profile, warnings}
@@ -294,12 +315,12 @@ not as the user meant. Same writing rules as an `InputError` message.
   optional keyword `warnings: list[str]` and append to it. Their return
   values don't change, so callers that don't care (tests, the tuning
   harness) pass nothing.
-- `bridge_api` returns them as `warnings` from `parse`,
-  `surface_multipliers` and `convert`, and the bridge from `parseGpx` and
-  `convert`. `convert` puts the surface lookup's first: Python's, or the
+- `bridge_api` returns them as `warnings` from `parse` and `convert`, and
+  the bridge from `parseGpx` and `convert`. The surface's come first: the
   JS side's own when the lookup failed (`describeSurfaceFailure`: a
   timeout, an HTTP error with Valhalla's own `error` text, no network, or an
-  answer Python couldn't use).
+  answer Python couldn't use), then Python's (surface unmatched for much of
+  the route), then the pacing's.
 - `format.statusWithWarnings` appends them to the success message as kind
   `'warning'`: amber (`.status-warning`) and, unlike `'input'`/`'error'`,
   not cleared on a timer.

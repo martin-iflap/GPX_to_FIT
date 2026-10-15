@@ -149,6 +149,36 @@ class TestMissingElevation:
         assert [p.elevation for p in track.points] == [100.0, 100.0, 130.0]
 
 
+class TestDistanceUsesTheCleanedElevation:
+    """Distances come from the elevations the Track holds, never from the file's raw ones."""
+
+    @staticmethod
+    def _distances(elevations: list) -> list[float]:
+        trkpts = "".join(_trkpt(45.0 + i * 0.001, 7.0, ele) for i, ele in enumerate(elevations))
+        return [p.distance_from_start for p in parse_gpx_bytes(_gpx(trkpts), max_leg_m=None).points]
+
+    @pytest.mark.parametrize(("raw", "cleaned"), [
+        # A "no data" sentinel once made a 0.2 km route 66 km long, and a nan made every distance nan.
+        ([100.0, -32768.0, 110.0], [100.0, 100.0, 110.0]),
+        ([100.0, 99999.0, 110.0], [100.0, 100.0, 110.0]),
+        ([100.0, "nan", 110.0], [100.0, 100.0, 110.0]),
+        # A missing elevation carries the previous one forward, so the climb counts on the leg after it.
+        ([100.0, None, 130.0], [100.0, 100.0, 130.0]),
+        # Leading gaps are back-filled, so they add no climb.
+        ([None, None, 50.0], [50.0, 50.0, 50.0]),
+        ([-32768.0, 20.0, 30.0], [20.0, 20.0, 30.0]),
+    ])
+    def test_distances_match_the_same_route_with_the_cleaned_elevations(self, raw, cleaned):
+        assert self._distances(raw) == self._distances(cleaned)
+
+    def test_a_climb_lengthens_the_leg_by_pythagoras(self):
+        flat_leg = self._distances([0.0, 0.0])[1]
+        assert self._distances([0.0, 100.0])[1] == pytest.approx(math.hypot(flat_leg, 100.0))
+
+    def test_a_route_without_any_elevation_is_measured_flat(self):
+        assert self._distances([None, None, None]) == self._distances([0.0, 0.0, 0.0])
+
+
 def _multi_gpx(*tracks: list[list[tuple[float, float]]]) -> bytes:
     """A GPX with one <trk> per argument, each a list of <trkseg>s, each a list of (lat, lon)."""
     body = "".join(

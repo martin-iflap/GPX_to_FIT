@@ -19,6 +19,7 @@ from gpx2fit.core.pacing.gradient import (
     calculate_gradient,
     minetti_speeds_from_gradients,
 )
+from gpx2fit.core.pacing.stops import expand_track_with_stops
 from tests.core.conftest import (
     START,
     anchor,
@@ -191,6 +192,69 @@ class TestCombineDegenerateSegment:
         assert result.points[0].timestamp == START
         assert result.points[1].timestamp == mid_time
         assert result.points[-1].timestamp == end_time
+
+
+class TestCombineImpossibleSpeed:
+    """Anchor times that put a segment beyond any speed on foot are refused, naming the two points."""
+
+    @staticmethod
+    def _seconds_for(distance_m: float, speed_kmh: float) -> float:
+        return distance_m / (speed_kmh / 3.6)
+
+    def test_a_segment_faster_than_the_limit_is_an_input_error(self):
+        track = flat_track([0.0, 500.0, 1000.0])
+        seconds = self._seconds_for(1000.0, combine_module.MAX_PLAUSIBLE_SPEED_KMH * 1.05)
+        boundary = add_start_end_anchors(track, START, duration=timedelta(seconds=seconds))
+
+        with pytest.raises(InputError, match=r"63 km/h") as error:
+            combine(track, boundary, SportType.RUNNING)
+        assert "start (" in str(error.value)
+        assert "end (" in str(error.value)
+
+    def test_a_segment_just_under_the_limit_is_paced(self):
+        track = flat_track([0.0, 500.0, 1000.0])
+        seconds = self._seconds_for(1000.0, combine_module.MAX_PLAUSIBLE_SPEED_KMH * 0.95)
+        end_time = START + timedelta(seconds=seconds)
+
+        result = combine(track, [anchor(0.0, START), anchor(1000.0, end_time)], SportType.RUNNING)
+
+        assert result.points[-1].timestamp == end_time
+
+    def test_only_the_offending_segment_is_named(self):
+        track = flat_track([0.0, 1000.0, 2000.0])
+        mid_time = START + timedelta(minutes=10)
+        too_soon = mid_time + timedelta(seconds=self._seconds_for(1000.0, combine_module.MAX_PLAUSIBLE_SPEED_KMH * 2))
+        anchors = [anchor(0.0, START), anchor(1000.0, mid_time, source="photo"), anchor(2000.0, too_soon)]
+
+        with pytest.raises(InputError, match=r"photo anchor at 1\.00 km .* anchor at 2\.00 km"):
+            combine(track, anchors, SportType.HIKING)
+
+    @pytest.mark.parametrize(("segment_m", "refused"), [
+        (combine_module.PLAUSIBILITY_MIN_SEGMENT_M, True),
+        (combine_module.PLAUSIBILITY_MIN_SEGMENT_M - 1.0, False),
+    ])
+    def test_a_short_segment_is_not_judged(self, segment_m, refused):
+        # A photo a second after the start, matched a few tens of metres along, is GPS
+        # error. Like the pace warnings, only segments from PLAUSIBILITY_MIN_SEGMENT_M up are judged.
+        track = flat_track([0.0, segment_m, 5000.0])
+        too_soon = START + timedelta(seconds=self._seconds_for(segment_m, combine_module.MAX_PLAUSIBLE_SPEED_KMH * 2))
+        anchors = [anchor(0.0, START, "start"), anchor(segment_m, too_soon, "photo"),
+                   anchor(5000.0, START + timedelta(hours=1), "end")]
+
+        if refused:
+            with pytest.raises(InputError, match="photo anchor"):
+                combine(track, anchors, SportType.HIKING)
+        else:
+            assert combine(track, anchors, SportType.HIKING).points[1].timestamp == too_soon
+
+    def test_moving_time_left_after_the_stops_is_what_counts(self):
+        # 1 km in 10 min is a walk, but a 9.5 min stop leaves 30 s to cover it.
+        stops = [ModeAStop(500.0, timedelta(minutes=9, seconds=30))]
+        track = Track(points=expand_track_with_stops(flat_track([0.0, 500.0, 1000.0]).points, [*stops]))
+        anchors = [anchor(0.0, START), anchor(1000.0, START + timedelta(minutes=10))]
+
+        with pytest.raises(InputError, match="stop"):
+            combine(track, anchors, SportType.HIKING, mode_a_stops=stops)
 
 
 class TestCombineHandlesExtremeLocalGradient:
@@ -919,6 +983,14 @@ class TestCombineSurfaceMultipliers:
         with pytest.raises(ValueError):
             combine(track, anchors, SportType.RUNNING, multipliers=[1.0, 1.0])
 
+    def test_one_multiplier_too_many_raises_too(self):
+        # Slicing per segment would silently drop the extra entry.
+        track = Track(points=[point(elevation=0.0, distance_from_start=d) for d in (0.0, 100.0, 200.0, 300.0)])
+        anchors = [anchor(0.0, START), anchor(300.0, START + timedelta(minutes=2))]
+
+        with pytest.raises(ValueError, match="multipliers"):
+            combine(track, anchors, SportType.RUNNING, multipliers=[1.0, 1.0, 1.0, 1.0])
+
     def test_multipliers_are_sliced_per_segment_in_multi_segment_tracks(self):
         # Two segments of 2 legs each; only the second segment's legs get a
         # non-trivial multiplier, so only its own internal split should
@@ -1014,11 +1086,11 @@ class TestCombineImplausibleSegmentPace:
         assert "start (" not in warnings[0] and "end (" not in warnings[0]
 
     def test_opposite_flags_without_a_shared_anchor_are_reported_separately(self):
-        # 0.35 s/m overall: 1 km in 30 min (5.1x slower), 4 km at exactly the workout's pace,
-        # then 5 km in 5 min (5.8x faster). Nothing points at a single anchor.
+        # 0.375 s/m overall: 1 km in 30 min (4.8x slower), 4 km at exactly the workout's pace,
+        # then 5 km in 7.5 min (4.2x faster). Nothing points at a single anchor.
         anchors = [anchor(0.0, START, "start"), anchor(1000.0, START + timedelta(seconds=1800)),
-                   anchor(5000.0, START + timedelta(seconds=3200)),
-                   anchor(10000.0, START + timedelta(seconds=3500), "end")]
+                   anchor(5000.0, START + timedelta(seconds=3300)),
+                   anchor(10000.0, START + timedelta(seconds=3750), "end")]
 
         warnings = _paced_warnings(_flat_10k(), anchors, vary_pace=False)
 
@@ -1057,7 +1129,8 @@ class TestCombineImplausibleSegmentPace:
         assert _paced_warnings(_flat_10k(), anchors, vary_pace=False) == []
 
     def test_start_and_end_alone_never_warn(self):
-        anchors = [anchor(0.0, START), anchor(10000.0, START + timedelta(minutes=1))]
+        # As fast as the speed limit allows, and still the workout's own pace.
+        anchors = [anchor(0.0, START), anchor(10000.0, START + timedelta(minutes=11))]
 
         assert _paced_warnings(_flat_10k(), anchors, vary_pace=False) == []
 

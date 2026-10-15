@@ -299,6 +299,22 @@ class TestExpandMultipliersWithStops:
 
         assert result == [1.0, 0.8, 0.8]
 
+    def test_a_stop_on_a_repeated_point_duplicates_only_one_leg_like_the_track(self):
+        # A GPX that repeats a point (a paused recording's export) puts two
+        # points at the stop's distance. The track gets one duplicate, so the
+        # multipliers must get one too, or every later leg reads its neighbor's.
+        points = [
+            point(distance_from_start=0.0), point(distance_from_start=500.0),
+            point(distance_from_start=500.0), point(distance_from_start=1000.0),
+        ]
+        multipliers = [1.0, 0.7, 0.8]
+        stops: list[ResolvedStop | ModeAStop] = [ModeAStop(500.0, timedelta(minutes=5))]
+
+        result = expand_multipliers_with_stops(points, multipliers, stops)
+
+        assert result == [1.0, 0.7, 0.7, 0.8]
+        assert len(result) == len(expand_track_with_stops(points, stops)) - 1
+
 
 class TestStopsEndToEnd:
     def test_resolved_stops_expanded_and_combined_leave_every_point_timestamped(self):
