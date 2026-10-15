@@ -4,7 +4,7 @@ The frontend only extracts EXIF GPS + timestamp from a dropped photo.
 
 from datetime import datetime
 
-from gpx2fit.core.models import Track, RawPhotoAnchor, ResolvedPhotoAnchor
+from gpx2fit.core.models import PhotoMatchStatus, RawPhotoAnchor, ResolvedPhotoAnchor, Track
 from gpx2fit.core.pacing.anchors import distance_meters, nearest_point_candidates
 
 # Photos whose nearest route point is farther than this from the photo's own
@@ -85,6 +85,7 @@ def resolve_photo_anchors(
         gap = distance_meters(raw.lat, raw.lon, nearest["lat"], nearest["lon"])
         passes = [c for c in candidates if c["distance_from_start"] not in route_ends]
 
+        status: PhotoMatchStatus
         if (
             activity_start is not None
             and activity_end is not None

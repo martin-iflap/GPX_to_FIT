@@ -3,6 +3,31 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
+from typing import Literal, TypedDict
+
+
+# Where an Anchor's time came from. "start"/"end" are the boundary anchors
+# (pacing.anchors.add_start_end_anchors), "stop_arrival"/"stop_departure" a
+# stop with explicit times (bridge_api.convert); only error messages read it.
+type AnchorSource = Literal["start", "end", "user", "photo", "stop_arrival", "stop_departure"]
+
+# The sources the GUI can place mid-route: a map click or a photo.
+type UserAnchorSource = Literal["user", "photo"]
+
+# How a photo matched the route, in the order they're checked; see ResolvedPhotoAnchor.status.
+# ambiguous means the route passes the spot multiple times and user has to select which is correct.
+type PhotoMatchStatus = Literal["outside_activity_time", "too_far", "at_route_end", "ambiguous", "ok"]
+
+
+class Candidate(TypedDict):
+    """One pass of the route near a spot (see pacing.anchors.nearest_point_candidates).
+
+    Its keys are snake_case although the GUI reads it as it is: it crosses
+    the bridge unchanged, and the GUI's Candidate typedef (placement/candidatePicker.js) matches.
+    """
+    distance_from_start: float
+    lat: float
+    lon: float
 
 
 class InputError(ValueError):
@@ -10,7 +35,7 @@ class InputError(ValueError):
     contradictory anchor/stop times, a corrupt GPX file) rather than a bug in
     this code.
 
-    The GUI (`gui/js/pyodideBridge.js`'s `classifyPyError`) distinguishes
+    The GUI (`gui/js/bridge/pyodideBridge.js`'s `classifyPyError`) distinguishes
     this from every other exception by name, to show its message directly
     instead of a raw traceback. That means every `raise InputError(...)`
     message must be written for the end user, not a developer: plain
@@ -104,13 +129,13 @@ class RawAnchor:
         distance_from_start: Distance in meters from the track start, if known directly.
         lat: Latitude of the anchor, used for nearest-point resolution when distance_from_start isn't given.
         lon: Longitude of the anchor, used the same way as lat.
-        source: "user" | "photo".
+        source: A map click or a photo.
     """
     timestamp: datetime
     distance_from_start: float | None = None
     lat: float | None = None
     lon: float | None = None
-    source: str = "user"
+    source: UserAnchorSource = "user"
 
 
 @dataclass
@@ -124,14 +149,12 @@ class Anchor:
     Attributes:
         distance_from_start: Distance in meters from the track start.
         timestamp: The known time at this point.
-        source: "start" | "end" (the boundary anchors from
-            pacing.anchors.add_start_end_anchors) | "user" | "photo" |
-            "stop_arrival" | "stop_departure". Used only to word error
-            messages.
+        source: Where the time came from (see AnchorSource). Used only to
+            word error messages.
     """
     distance_from_start: float
     timestamp: datetime
-    source: str
+    source: AnchorSource
 
 
 @dataclass
@@ -226,16 +249,15 @@ class ResolvedPhotoAnchor:
             pass (see pacing.photo_anchors.resolve_photo_anchors).
         gap_m: Distance in meters between the photo's raw GPS and the matched point.
         passes: Every pass of the route near the photo that could carry it,
-            as nearest_point_candidates dicts ("distance_from_start", "lat",
-            "lon") in route order. Route ends are left out.
+            in route order. Route ends are left out.
     """
     distance_from_start: float
     lat: float
     lon: float
     timestamp: datetime
-    status: str
+    status: PhotoMatchStatus
     gap_m: float
-    passes: list[dict]
+    passes: list[Candidate]
 
 
 @dataclass

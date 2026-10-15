@@ -358,6 +358,15 @@ class TestConvert:
         bridge_api.convert(_request(anchors=anchors))
         assert [a.source for a in seen] == ["photo", "user"]
 
+    @pytest.mark.parametrize("source", ["photos", "start", "stop_arrival", ""])
+    def test_an_anchor_source_the_gui_never_sends_is_refused(self, straight_route, source):
+        # Only "user" and "photo" come from the GUI; anything else is a bug on
+        # the JS side, so it isn't an InputError worded for the user.
+        anchor = {"distanceFromStart": _on_route(556.0), "timestamp": "2026-06-01T08:07:00Z", "source": source}
+        with pytest.raises(ValueError, match="source") as raised:
+            bridge_api.convert(_request(anchors=[anchor]))
+        assert not isinstance(raised.value, InputError)
+
     def test_an_anchor_on_the_routes_start_is_an_input_error(self, straight_route):
         anchor = {"distanceFromStart": 0.0, "timestamp": "2026-06-01T08:05:00Z", "source": "user"}
         with pytest.raises(InputError, match="start"):

@@ -1,4 +1,4 @@
-"""The browser's entry points into core/: every call gui/js/pyodideBridge.js makes.
+"""The browser's entry points into core/: every call gui/js/bridge/pyodideBridge.js makes.
 
 The GUI talks to Python only through these functions. Each takes and returns
 plain dicts, lists, numbers, strings and bytes, which Pyodide converts to and
@@ -22,7 +22,16 @@ from dataclasses import replace
 from gpx2fit.core.activity_profile import build_activity_profile
 from gpx2fit.core.fit_writer import write_fit
 from gpx2fit.core.gpx_reader import MAX_LEG_M, densify_points, parse_gpx_bytes
-from gpx2fit.core.models import Anchor, RawAnchor, RawPhotoAnchor, RawStop, SportType, Track
+from gpx2fit.core.models import (
+    Anchor,
+    Candidate,
+    RawAnchor,
+    RawPhotoAnchor,
+    RawStop,
+    SportType,
+    Track,
+    UserAnchorSource,
+)
 from gpx2fit.core.pacing.anchors import add_start_end_anchors, build_user_anchors, nearest_point_candidates
 from gpx2fit.core.pacing.combine import combine
 from gpx2fit.core.pacing.curve_selection import DEFAULT_SMOOTHNESS
@@ -80,12 +89,11 @@ def parse(gpx_bytes: bytes | memoryview) -> dict:
     }
 
 
-def nearest_candidates(lat: float, lon: float) -> list[dict]:
+def nearest_candidates(lat: float, lon: float) -> list[Candidate]:
     """Every pass of the route near a map click, for the GUI to choose from.
 
     Returns:
-        `anchors.nearest_point_candidates`' dicts: {"lat", "lon",
-        "distance_from_start"}, one per distinct pass.
+        `anchors.nearest_point_candidates`' Candidates, one per distinct pass.
     """
     return nearest_point_candidates(_require_track(), lat, lon)
 
@@ -157,11 +165,25 @@ def store_surface_response(response: dict) -> None:
     _surface = surface
 
 
+def _anchor_source(value: object) -> UserAnchorSource:
+    """The source the GUI sent for a mid-route anchor; absent means a map click.
+
+    Raises:
+        ValueError: For anything else, which is a bug on the JS side, not the user's.
+    """
+    match value:
+        case None | "user":
+            return "user"
+        case "photo":
+            return "photo"
+    raise ValueError(f"Unknown anchor source {value!r}: expected 'user' or 'photo'.")
+
+
 def _raw_anchor(entry: dict) -> RawAnchor:
     return RawAnchor(
         timestamp=dt.datetime.fromisoformat(entry["timestamp"]),
         distance_from_start=entry["distanceFromStart"],
-        source=entry.get("source") or "user",
+        source=_anchor_source(entry.get("source")),
     )
 
 

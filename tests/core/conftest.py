@@ -1,7 +1,7 @@
 import math
 from datetime import datetime
 
-from gpx2fit.core.models import Anchor, SportType, Track, TrackPoint
+from gpx2fit.core.models import Anchor, AnchorSource, SportType, Track, TrackPoint
 from gpx2fit.core.pacing.curve_selection import (
     DEFAULT_SMOOTHNESS,
     resolve_curve_shape,
@@ -24,7 +24,7 @@ def point(
     return TrackPoint(lat=lat, lon=lon, elevation=elevation, distance_from_start=distance_from_start, timestamp=timestamp)
 
 
-def anchor(distance_from_start: float, timestamp: datetime, source: str = "user") -> Anchor:
+def anchor(distance_from_start: float, timestamp: datetime, source: AnchorSource = "user") -> Anchor:
     return Anchor(distance_from_start=distance_from_start, timestamp=timestamp, source=source)
 
 

@@ -3,7 +3,7 @@
 import math
 from datetime import datetime, timedelta
 
-from gpx2fit.core.models import Anchor, InputError, RawAnchor, Track, TrackPoint
+from gpx2fit.core.models import Anchor, AnchorSource, Candidate, InputError, RawAnchor, Track, TrackPoint
 
 _EARTH_RADIUS_M = 6371000.0
 
@@ -60,7 +60,7 @@ def nearest_point_candidates(
     proximity_radius_m: float = 25.0,
     cluster_gap_m: float = 50.0,
     max_candidates: int = 4,
-) -> list[dict]:
+) -> list[Candidate]:
     """Find every distinct pass of the route near (lat, lon).
 
     Disambiguates out-and-back routes, where the outbound and return legs run
@@ -90,8 +90,7 @@ def nearest_point_candidates(
         max_candidates: Maximum number of candidates to return.
 
     Returns:
-        A list of at most max_candidates dicts, each with keys
-        "distance_from_start", "lat", "lon", sorted by distance_from_start.
+        At most max_candidates Candidates, sorted by distance_from_start.
     Raises:
         ValueError: If the track has no points.
     """
@@ -119,7 +118,7 @@ def nearest_point_candidates(
     representatives.sort(key=lambda p: p.distance_from_start)
 
     return [
-        {"distance_from_start": p.distance_from_start, "lat": p.lat, "lon": p.lon}
+        Candidate(distance_from_start=p.distance_from_start, lat=p.lat, lon=p.lon)
         for p in representatives[:max_candidates]
     ]
 
@@ -174,12 +173,12 @@ def add_start_end_anchors(
     ]
 
 
-def route_end_collision_message(what: str, source: str) -> str | None:
+def route_end_collision_message(what: str, source: AnchorSource | None) -> str | None:
     """User-facing InputError text for `what` landing on the route's start or finish.
 
     Args:
         what: What collided, as the sentence's subject (e.g. "An anchor").
-        source: The existing anchor's source it collided with.
+        source: The source of the anchor it collided with, or None for a stop.
     Returns:
         The message when `source` is "start" or "end", otherwise None (a
         collision between two mid-route entries keeps its caller's wording).
@@ -235,7 +234,7 @@ def build_user_anchors(
     anchors: list[Anchor] = []
     # Distance → source of whatever already sits there, so a collision with
     # the start or finish can be named as such.
-    seen_distances = {a.distance_from_start: a.source for a in (existing_anchors or [])}
+    seen_distances: dict[float, AnchorSource] = {a.distance_from_start: a.source for a in (existing_anchors or [])}
     for raw in raw_anchors:
         if raw.distance_from_start is not None:
             distance = raw.distance_from_start

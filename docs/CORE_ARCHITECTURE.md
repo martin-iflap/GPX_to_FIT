@@ -50,13 +50,13 @@ classDiagram
   class Anchor {
     distance_from_start: float
     timestamp: datetime
-    source: user|photo|stop_arrival|stop_departure
+    source: AnchorSource
   }
   class RawAnchor {
     timestamp: datetime
     distance_from_start: float?
     lat, lon: float?
-    source: str
+    source: UserAnchorSource
   }
   class RawStop {
     distance_from_start: float?
@@ -80,9 +80,13 @@ classDiagram
   class ResolvedPhotoAnchor {
     distance_from_start, lat, lon: float
     timestamp: datetime
-    status: ok|outside_activity_time|too_far|at_route_end|ambiguous
+    status: PhotoMatchStatus
     gap_m: float
-    passes: list~dict~
+    passes: list~Candidate~
+  }
+  class Candidate {
+    <<TypedDict>>
+    distance_from_start, lat, lon: float
   }
   class ProfileSample {
     distance_from_start, elapsed_seconds: float
@@ -100,8 +104,21 @@ classDiagram
   ResolvedStop ..> Anchor : two anchors, built in the bridge
   RawPhotoAnchor ..> ResolvedPhotoAnchor : resolve_photo_anchors
   ResolvedPhotoAnchor ..> RawAnchor : GUI, only if status is ok
+  ResolvedPhotoAnchor --> Candidate
   Track ..> ProfileSample : build_activity_profile
 ```
+
+The string fields are `Literal` aliases, so `pyrefly check` rejects a
+misspelt value or key:
+
+| Alias              | Values                                                                                               |
+|--------------------|------------------------------------------------------------------------------------------------------|
+| `AnchorSource`     | `start`, `end` (the boundary anchors), `user`, `photo`, `stop_arrival`, `stop_departure`             |
+| `UserAnchorSource` | `user`, `photo`: the only ones the GUI sends; `bridge_api` refuses anything else with a `ValueError` |
+| `PhotoMatchStatus` | `outside_activity_time`, `too_far`, `at_route_end`, `ambiguous`, `ok`, in the order they're checked  |
+
+`Candidate` is a `TypedDict`, not a dataclass, because it crosses the bridge
+as it is (keys and all), matching `candidatePicker.js`'s typedef.
 
 Invariants that the rest of the code relies on:
 
@@ -467,12 +484,11 @@ flowchart TD
   C --> r1["curve_selection.resolve_tobler_weight"]
   C --> r2["curve_selection.resolve_max_speed_ratio"]
   r2 --> r3["curve_selection.resolve_curve_shape"]
-  C --> wtv["_whole_track_variation<br/>variation.pace_variation, once, whole track"]
+  C --> bs["_base_speeds(gradients, weight, shape, multipliers)<br/>blended curve × max(surface multiplier, 0.05), once, whole track"]
+  bs --> b["gradient.blended_speeds_from_gradients"]
+  C --> pv["× variation.pace_variation, once, whole track<br/>(judged on the base speeds; skipped when vary_pace is False)"]
   C --> loop{{"for each consecutive anchor pair"}}
-  loop --> ps["_pace_segment(points, gradients, a, b,<br/>weight, ratio, shape, multipliers, stops, variation,<br/>max_acceleration)"]
-  ps --> b["gradient.blended_speeds_from_gradients"]
-  ps --> sf["× max(surface multiplier, 0.05)"]
-  ps --> pvm["× pace-variation multiplier"]
+  loop --> ps["_pace_segment(points, speeds, a, b,<br/>ratio, stops, max_acceleration)"]
   ps --> cst["_compress_speed_toward_typical<br/>tanh in log space around the segment median"]
   ps --> sc["scale = (Δt − Mode A stop time) / Σ(d / v)"]
   ps --> llt["_limit_leg_times<br/>acceleration.limit_acceleration, then rescale"]
@@ -485,8 +501,11 @@ flowchart TD
 Within one segment, `_pace_segment` does the following, in order:
 
 1. Stamp the first and last points from the two anchors.
-2. `v_i` = blended curve speed × surface multiplier × pace-variation
-   multiplier (see §2.9; 1.0 wherever the pace already varies).
+2. Take its slice of the whole track's `v_i` = blended curve speed ×
+   surface multiplier (`_base_speeds`) × pace-variation multiplier (see
+   §2.9; 1.0 wherever the pace already varies). `combine` builds these once,
+   so the variation judges steadiness on exactly the speeds the segments are
+   paced from.
 3. Compress `v_i` toward the segment median with
    `median · exp(L · tanh(ln(v/median) / L))`, where `L = ln(max_ratio)`.
    This is a soft clamp, so it never produces a flat plateau.
@@ -509,8 +528,8 @@ Within one segment, `_pace_segment` does the following, in order:
    zero-distance leg, add the stop's duration to that point and every later
    point.
 
-Gradients and the pace variation are computed once for the whole track and
-then sliced per segment, so neither is cut off at an anchor.
+Gradients, base speeds and the pace variation are computed once for the
+whole track and then sliced per segment, so none is cut off at an anchor.
 
 Each segment is scaled on its own, so a misplaced anchor shows as a step in
 pace. That is inherent, so instead of smoothing it away `combine()` reports
@@ -641,7 +660,9 @@ ahead of them.
 1. `boundary = add_start_end_anchors(_track, start, duration=…)`
 2. `mid_route = build_user_anchors(_track, raw_anchors, existing_anchors=boundary)`.
    The GUI always sends `distanceFromStart`, so no lat/lon lookup happens
-   here.
+   here. Each anchor's `source` must be `"user"` (or absent) or `"photo"`
+   (`_anchor_source`); anything else is a JS bug and raises a plain
+   `ValueError`, not an `InputError`.
 3. `hard_anchors = sorted(boundary + mid_route)`
 4. `resolved_mode_b, mode_a_stops = resolve_stops(_track, raw_stops, hard_anchors)`
 5. `all_anchors = sorted(hard_anchors + stop_arrival/departure anchors)`

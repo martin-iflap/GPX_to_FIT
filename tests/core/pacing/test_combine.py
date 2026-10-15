@@ -2,17 +2,18 @@ import math
 import random
 import statistics
 from datetime import timedelta
+from typing import get_args
 
 import pytest
 
 from gpx2fit.core.fit_writer import _resample
 from gpx2fit.core.gpx_reader import MAX_LEG_M, densify_points
-from gpx2fit.core.models import InputError, ModeAStop, SportType, Track, TrackPoint
+from gpx2fit.core.models import Anchor, AnchorSource, InputError, ModeAStop, SportType, Track, TrackPoint
 from gpx2fit.core.pacing.anchors import add_start_end_anchors
 from gpx2fit.core.pacing import acceleration as acceleration_module
 from gpx2fit.core.pacing import combine as combine_module
 from gpx2fit.core.pacing.combine import combine
-from gpx2fit.core.pacing.curve_selection import DEFAULT_SMOOTHNESS, MAX_SPEED_RATIO_BOUNDS
+from gpx2fit.core.pacing.curve_selection import DEFAULT_SMOOTHNESS, MAX_SPEED_RATIO_BOUNDS, resolve_curve_shape
 from gpx2fit.core.pacing.gradient import (
     GRADIENT_WINDOW_M,
     blended_speeds_from_gradients,
@@ -305,8 +306,8 @@ class TestCombineBoundsExtremeSpeedRatio:
         # calibrated Minetti domain, so its own domain fallback doesn't
         # touch this at all (that only kicks in past ~45%). Minetti's raw
         # cost curve alone models a sustained climb like this at a small
-        # fraction of the flat legs' speed, which — once scaled to fit a
-        # slow enough overall pace — can be slow enough to look
+        # fraction of the flat legs' speed, which - once scaled to fit a
+        # slow enough overall pace. Can be slow enough to look
         # indistinguishable from "stopped" to a real device or platform's
         # own moving-time detection discarding that whole climb's real
         # distance and duration from the activity's moving stats even
@@ -1012,6 +1013,71 @@ class TestCombineSurfaceMultipliers:
         second_segment_seconds = [(times[3] - times[2]).total_seconds(), (times[4] - times[3]).total_seconds()]
         for actual, expected in zip(second_segment_seconds, _expected_leg_seconds_for_multipliers([1.0, 2.0], 300.0)):
             assert actual == pytest.approx(expected)
+
+
+class TestBaseSpeeds:
+    """The per-leg speeds both the pace variation and every segment start from."""
+
+    GRADIENTS = [-0.2, -0.05, 0.0, 0.08, 0.3]
+    WEIGHT = 0.4
+    SHAPE = resolve_curve_shape(2.2, SportType.RUNNING)
+
+    def _curve(self) -> list[float]:
+        return blended_speeds_from_gradients(self.GRADIENTS, self.WEIGHT, self.SHAPE)
+
+    def test_without_surface_data_it_is_the_blended_curve(self):
+        assert combine_module._base_speeds(self.GRADIENTS, self.WEIGHT, self.SHAPE, None) == self._curve()
+
+    def test_each_leg_is_scaled_by_its_own_surface_multiplier(self):
+        multipliers = [0.5, 1.0, 1.3, 0.8, 2.0]
+        speeds = combine_module._base_speeds(self.GRADIENTS, self.WEIGHT, self.SHAPE, multipliers)
+        assert speeds == pytest.approx([c * m for c, m in zip(self._curve(), multipliers)])
+
+    @pytest.mark.parametrize("multiplier", [0.0, -1.0, 0.01])
+    def test_a_surface_multiplier_never_drags_a_leg_below_the_floor(self, multiplier):
+        multipliers = [1.0, multiplier, 1.0, 1.0, 1.0]
+        speeds = combine_module._base_speeds(self.GRADIENTS, self.WEIGHT, self.SHAPE, multipliers)
+        assert speeds[1] == pytest.approx(self._curve()[1] * combine_module._MIN_SURFACE_MULTIPLIER)
+
+    def test_a_multiplier_above_the_floor_is_kept_as_it_is(self):
+        multipliers = [1.0, 0.06, 1.0, 1.0, 1.0]
+        speeds = combine_module._base_speeds(self.GRADIENTS, self.WEIGHT, self.SHAPE, multipliers)
+        assert speeds[1] == pytest.approx(self._curve()[1] * 0.06)
+
+
+class TestCombineVariationSeesTheSurface:
+    def test_a_flat_route_whose_surface_keeps_changing_gets_no_added_wander(self):
+        # The gradient alone is steady here, but the surface changes every
+        # 40 m, so the speeds already vary and wander must stay off.
+        def flat() -> Track:
+            return Track(points=[
+                point(lat=46.0 + d * 1e-5, lon=14.0, distance_from_start=float(d)) for d in range(0, 4001, 20)
+            ])
+
+        multipliers = [1.0 if (leg // 2) % 2 == 0 else 0.8 for leg in range(len(flat().points) - 1)]
+        anchors = [anchor(0.0, START), anchor(4000.0, START + timedelta(minutes=25))]
+
+        varied = combine(flat(), anchors, SportType.RUNNING, multipliers=multipliers)
+        unvaried = combine(flat(), anchors, SportType.RUNNING, multipliers=multipliers, vary_pace=False)
+        assert [p.timestamp for p in varied.points] == [p.timestamp for p in unvaried.points]
+
+        # Premise: without the surface the same route does get wander.
+        assert [p.timestamp for p in combine(flat(), anchors, SportType.RUNNING).points] != [
+            p.timestamp for p in combine(flat(), anchors, SportType.RUNNING, vary_pace=False).points
+        ]
+
+
+class TestAnchorDescriptions:
+    def test_every_anchor_source_has_its_own_label(self):
+        assert set(combine_module._ANCHOR_SOURCE_LABELS) == set(get_args(AnchorSource.__value__))
+
+    @pytest.mark.parametrize("source, described", [
+        ("start", "start (2024-01-01 08:00)"),
+        ("photo", "photo anchor at 1.50 km (2024-01-01 08:00)"),
+        ("stop_departure", "stop departure at 1.50 km (2024-01-01 08:00)"),
+    ])
+    def test_an_anchor_is_named_by_its_source(self, source, described):
+        assert combine_module._describe_anchor(Anchor(1500.0, START, source)) == described
 
 
 class TestCombineReturnsSameTrack:

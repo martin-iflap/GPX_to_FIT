@@ -5,7 +5,7 @@ import statistics
 from bisect import bisect_left, bisect_right
 from datetime import timedelta
 
-from gpx2fit.core.models import Anchor, InputError, ModeAStop, SportType, Track, TrackPoint
+from gpx2fit.core.models import Anchor, AnchorSource, InputError, ModeAStop, SportType, Track, TrackPoint
 from gpx2fit.core.pacing.acceleration import MAX_ACCELERATION_MPS2, limit_acceleration
 from gpx2fit.core.pacing.curve_selection import (
     DEFAULT_SMOOTHNESS,
@@ -19,7 +19,7 @@ from gpx2fit.core.pacing.variation import pace_variation, route_noise
 
 
 # A surface multiplier can never drag a leg's speed below this fraction of
-# its gradient-modeled speed — see _pace_segment.
+# its gradient-modeled speed — see _base_speeds.
 _MIN_SURFACE_MULTIPLIER = 0.05
 
 # Relative speeds are floored here before compression — see _pace_segment.
@@ -53,7 +53,7 @@ MAX_PLAUSIBLE_SPEED_KMH = 60.0
 # Human-readable label for each Anchor.source, used only to make InputError
 # messages (contradictory anchor/stop times) point at a concrete, recognizable
 # entry rather than an opaque distance/timestamp pair.
-_ANCHOR_SOURCE_LABELS = {
+_ANCHOR_SOURCE_LABELS: dict[AnchorSource, str] = {
     "start": "start",
     "end": "end",
     "user": "anchor",
@@ -64,7 +64,7 @@ _ANCHOR_SOURCE_LABELS = {
 
 def _describe_anchor(anchor: Anchor) -> str:
     """Human-readable description of an anchor for InputError messages, e.g. "photo anchor at 5.30 km (2026-09-13 14:02)"."""
-    label = _ANCHOR_SOURCE_LABELS.get(anchor.source, "anchor")
+    label = _ANCHOR_SOURCE_LABELS[anchor.source]
     if anchor.source in ("start", "end"):
         # Its place is implied, and "the start at 0.00 km" only adds noise.
         return f"{label} ({anchor.timestamp:%Y-%m-%d %H:%M})"
@@ -142,25 +142,48 @@ def _limit_leg_times(
     return [seconds / factor for seconds in limited_seconds]
 
 
+def _base_speeds(
+    gradients: list[float],
+    tobler_weight: float,
+    curve_shape: CurveShape,
+    multipliers: list[float] | None,
+) -> list[float]:
+    """Each leg's modeled speed from its terrain alone: the blended curve times its surface multiplier.
+
+    This is what the pace variation judges steadiness on and what every
+    segment is paced from, so it is built once, here, for both.
+
+    Args:
+        gradients: Per-leg gradients, from calculate_gradient.
+        tobler_weight: The workout's blend of the two curves (see
+            pacing.curve_selection.resolve_tobler_weight).
+        curve_shape: Both curves' exponents (see
+            pacing.curve_selection.resolve_curve_shape).
+        multipliers: Per-leg surface multipliers, one per gradient, or None
+            for none. Each is floored at _MIN_SURFACE_MULTIPLIER, so a surface
+            can slow a leg but never stop it.
+    Returns:
+        One relative speed per leg, 1.0 on flat ground of a neutral surface.
+    """
+    speeds = blended_speeds_from_gradients(gradients, tobler_weight, curve_shape)
+    if multipliers is None:
+        return speeds
+    return [speed * max(multiplier, _MIN_SURFACE_MULTIPLIER) for speed, multiplier in zip(speeds, multipliers)]
+
+
 def _pace_segment(
     segment_points: list[TrackPoint],
-    segment_gradients: list[float],
+    segment_speeds: list[float],
     start_anchor: Anchor,
     end_anchor: Anchor,
-    tobler_weight: float,
     max_speed_ratio: float,
-    curve_shape: CurveShape,
-    segment_multipliers: list[float] | None = None,
-    segment_mode_a_stops: list[ModeAStop] | None = None,
-    segment_variation: list[float] | None = None,
-    max_acceleration: float | None = None,
+    segment_mode_a_stops: list[ModeAStop],
+    max_acceleration: float | None,
 ) -> tuple[float, float] | None:
     """Assign timestamps to one anchor-to-anchor segment's points, in place.
 
-    Computes a per-leg relative speed from the workout's blend of the Minetti
-    and Tobler curves, applies any surface multipliers and pace variation,
-    compresses each leg's resulting speed toward the segment's
-    own median leg speed (see _compress_speed_toward_typical).
+    Compresses each leg's relative speed toward the segment's own median leg
+    speed (see _compress_speed_toward_typical).
     Then scales the modeled per-leg times so the segment's total *active* time
     (anchor-to-anchor duration minus any Mode A stop durations in this segment)
     matches exactly. Ramps any change of speed steeper than `max_acceleration`
@@ -174,26 +197,18 @@ def _pace_segment(
             duplicated, zero-distance point pair (see pacing.stops
             expand_track_with_stops) — the first of the pair becomes its
             arrival, the second its departure.
-        segment_gradients: This segment's per-leg gradients, sliced from the
-            whole track's smoothed gradients so the smoothing window isn't cut
-            off at this segment's anchors.
+        segment_speeds: This segment's per-leg relative speeds, one per leg,
+            sliced from the whole track's (_base_speeds times any pace
+            variation), so neither the gradient window nor the variation is
+            cut off at this segment's anchors. Compressed here, so the bound
+            holds for the variation too.
         start_anchor: Anchor at the beginning of this segment.
         end_anchor: Anchor at the end of this segment.
-        tobler_weight: How far this workout's speed curve sits between Minetti
-            (0.0) and Tobler (1.0), resolved once for the whole workout by
-            pacing.curve_selection.resolve_tobler_weight.
         max_speed_ratio: Soft bound on how far a leg's speed may swing from
             the segment's median, resolved once for the whole workout by
             pacing.curve_selection.resolve_max_speed_ratio. Must be > 1.
-        curve_shape: Both curves' exponents, fitted to max_speed_ratio by
-            pacing.curve_selection.resolve_curve_shape.
-        segment_multipliers: Optional per-leg surface multipliers, one per
-            leg (combine checks the whole track's count).
         segment_mode_a_stops: This segment's Mode A stops, sorted ascending
             by distance_from_start.
-        segment_variation: Optional per-leg pace-variation multipliers, one
-            per leg, sliced from the whole track's (see pacing.variation).
-            Applied before the compression, so its bound still holds.
         max_acceleration: The steepest change of speed between two legs, in
             m/s² (see pacing.acceleration). None leaves every change instant.
             Stops still start and end instantly either way.
@@ -224,7 +239,6 @@ def _pace_segment(
             PLAUSIBILITY_MIN_SEGMENT_M up). All are
             user-fixable (bad anchor/stop times), not bugs.
     """
-    segment_mode_a_stops = segment_mode_a_stops or []
     if len(segment_points) < 2:
         return None
 
@@ -241,24 +255,10 @@ def _pace_segment(
             "one is wrong."
         )
 
-    speeds = blended_speeds_from_gradients(segment_gradients, tobler_weight, curve_shape)
-    if not speeds:
-        return None
-
-    if segment_multipliers is not None:
-        # Floored so a surface multiplier can never fully zero out a leg's speed.
-        speeds = [
-            speed * max(multiplier, _MIN_SURFACE_MULTIPLIER)
-            for speed, multiplier in zip(speeds, segment_multipliers)
-        ]
-
-    if segment_variation is not None:
-        speeds = [speed * variation for speed, variation in zip(speeds, segment_variation)]
-
     # A curve can underflow to 0.0 on an absurd gradient.
     # Floored, the compression below lifts it
     # to the slowest speed the bound allows instead.
-    speeds = [max(speed, _MIN_RELATIVE_SPEED) for speed in speeds]
+    speeds = [max(speed, _MIN_RELATIVE_SPEED) for speed in segment_speeds]
 
     # Pull each leg's speed toward this segment's own typical pace.
     typical_speed = statistics.median(speeds)
@@ -435,29 +435,6 @@ def _bucket_mode_a_stops(anchors: list[Anchor], mode_a_stops: list[ModeAStop]) -
     return buckets
 
 
-def _whole_track_variation(
-    track: Track,
-    gradients: list[float],
-    leg_distances: list[float],
-    tobler_weight: float,
-    curve_shape: CurveShape,
-    multipliers: list[float] | None,
-    smoothness: int,
-) -> list[float]:
-    """pacing.variation's per-leg multipliers for the whole track.
-
-    Steadiness is judged on the same speeds _pace_segment starts from (the
-    blended curve times the floored surface multipliers), across anchors, since
-    an anchor is a known time and not a change in the terrain.
-    """
-    base_speeds = blended_speeds_from_gradients(gradients, tobler_weight, curve_shape)
-    if multipliers is not None:
-        base_speeds = [
-            speed * max(multiplier, _MIN_SURFACE_MULTIPLIER) for speed, multiplier in zip(base_speeds, multipliers)
-        ]
-    return pace_variation(leg_distances, base_speeds, route_noise(track.points), SMOOTHNESS_SCALES[smoothness])
-
-
 def combine(
     track: Track,
     anchors: list[Anchor],
@@ -567,22 +544,18 @@ def combine(
     tobler_weight = resolve_tobler_weight(gradients, leg_distances, active_seconds, sport)
     max_speed_ratio = resolve_max_speed_ratio(gradients, leg_distances, sport, smoothness)
     curve_shape = resolve_curve_shape(max_speed_ratio, sport)
-    variation = (
-        _whole_track_variation(track, gradients, leg_distances, tobler_weight, curve_shape, multipliers, smoothness)
-        if vary_pace
-        else None
-    )
+    speeds = _base_speeds(gradients, tobler_weight, curve_shape, multipliers)
+    if vary_pace:
+        # Judged across anchors too, since an anchor is a known time, not a change in the terrain.
+        variation = pace_variation(leg_distances, speeds, route_noise(track.points), SMOOTHNESS_SCALES[smoothness])
+        speeds = [speed * factor for speed, factor in zip(speeds, variation)]
     max_acceleration = MAX_ACCELERATION_MPS2[sport] if acceleration_limit else None
 
     paced_segments = []
     for i in range(len(anchors) - 1):
         lo, hi = anchor_indexes[i], anchor_indexes[i + 1]
         fit = _pace_segment(
-            track.points[lo: hi + 1], gradients[lo: hi], anchors[i], anchors[i + 1], tobler_weight, max_speed_ratio,
-            curve_shape,
-            multipliers[lo: hi] if multipliers is not None else None,
-            buckets[i],
-            variation[lo: hi] if variation is not None else None,
+            track.points[lo: hi + 1], speeds[lo: hi], anchors[i], anchors[i + 1], max_speed_ratio, buckets[i],
             max_acceleration,
         )
         if fit is not None:
@@ -595,20 +568,5 @@ def combine(
 
 
 # todo:
-# Possible optimization once the pacing logic settles: the Minetti curve is
-# currently evaluated twice over the whole track - once inside
-# resolve_tobler_weight as its probe, once inside blended_speeds_from_gradients
-# per segment. Both could be computed once here, next to calculate_gradient,
-# and the resulting speeds sliced per segment the way gradients already are;
-# _pace_segment would then take segment speeds instead of tobler_weight and
-# stop knowing curve names at all. Measured cost of the duplicate pass is only
-# ~3 ms per 10k legs, so this is about structure, not speed. And it does mean
-# threading a speeds list through three call sites, so it is worth doing only
-# if _pace_segment comes out simpler for it.
-
-# We also compute the blended_speeds_from_gradients twice per segment: once for the whole track in
-# _whole_track_variation, once inside _pace_segment.
-
 # Implausible pace ratio is a first guess.
-
 # cycling will need its own max plausible speed.
