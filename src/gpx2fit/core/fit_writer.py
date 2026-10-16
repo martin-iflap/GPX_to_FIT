@@ -232,7 +232,7 @@ def write_fit(track: Track, *, resample: bool = True, record_interval_s: int | N
     Args:
         track: A track whose points all have a timestamp, in route order.
         resample: False writes one record per track point at its own time
-            instead of the whole-second grid, the way a watches "smart
+            instead of the whole-second grid, the way a watch's "smart
             recording" does. The app always resamples. The tuning harness's
             tests write their synthetic recordings this way: they read them
             back with fit_tool, which decodes slowly, and 1 Hz would mean

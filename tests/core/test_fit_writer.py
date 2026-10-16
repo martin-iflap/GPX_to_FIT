@@ -467,7 +467,7 @@ class TestWriteFitRecordInterval:
 
 
 class TestWriteFitPerPoint:
-    # resample=False: one record per point at its own time, as a watches smart
+    # resample=False: one record per point at its own time, as a watch's smart
     # recording writes. The tuning harness's synthetic recordings use it.
 
     def test_one_record_per_point_at_its_own_time(self):
@@ -480,14 +480,10 @@ class TestWriteFitPerPoint:
         assert [r.speed for r in records] == pytest.approx([100.0 / 30.0, 100.0 / 30.0, 150.0 / 30.0], abs=0.01)
 
     def test_a_stop_is_still_a_timer_pause(self):
+        # The timer events come from the spans, as TestWriteFitTimerEvents
+        # checks for the resampled file; here only the per-point split is on test.
         messages = _decoded_messages_of(_track_with_stop())
 
-        assert _timer_events(messages) == [
-            (EventType.START.value, _fit_timestamp(_T0)),
-            (EventType.STOP_ALL.value, _fit_timestamp(_T0 + timedelta(seconds=60))),
-            (EventType.START.value, _fit_timestamp(_T0 + timedelta(seconds=660))),
-            (EventType.STOP_ALL.value, _fit_timestamp(_T0 + timedelta(seconds=720))),
-        ]
         assert len([m for m in messages if isinstance(m, RecordMessage)]) == 4
         session = next(m for m in messages if isinstance(m, SessionMessage))
         assert session.total_timer_time == pytest.approx(120.0)

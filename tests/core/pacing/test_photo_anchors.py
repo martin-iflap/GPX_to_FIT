@@ -196,6 +196,17 @@ class TestResolvePhotoAnchorsActivityTimeWindow:
         assert resolved[0].gap_m == pytest.approx(0.0)
         assert resolved[0].status == "outside_activity_time"
 
+    def test_outside_activity_time_is_reported_before_too_far(self):
+        track = Track(points=[point(lat=45.0, lon=7.0, distance_from_start=0.0)])
+        start = datetime(2024, 6, 1, 8, 0, 0)
+        end = datetime(2024, 6, 1, 10, 0, 0)
+        raw = [RawPhotoAnchor(lat=46.0, lon=7.0, timestamp=datetime(2024, 1, 1, 9, 0, 0))]
+
+        resolved = resolve_photo_anchors(track, raw, activity_start=start, activity_end=end)
+
+        assert resolved[0].gap_m > MAX_MATCH_DISTANCE_M
+        assert resolved[0].status == "outside_activity_time"
+
     @pytest.mark.parametrize("offset", [
         timedelta(minutes=-10),  # coffee at the trailhead before setting off
         timedelta(0),            # exactly on the start
@@ -233,7 +244,7 @@ class TestResolvePhotoAnchorsActivityTimeWindow:
         [resolved] = resolve_photo_anchors(track, raw, activity_start=start, activity_end=end)
         assert resolved.status == "ok"
 
-        boundary = add_start_end_anchors(track, start, end_time=end)
+        boundary = add_start_end_anchors(track, start, end - start)
         photo = build_user_anchors(
             track,
             [RawAnchor(distance_from_start=resolved.distance_from_start, timestamp=resolved.timestamp, source="photo")],
@@ -338,7 +349,7 @@ class TestResolvePhotoAnchorsPasses:
         resolved = self._resolve(track, 45.0011, timestamp=timestamp)
         chosen = resolved.passes[pass_index]
 
-        boundary = add_start_end_anchors(track, self.START, end_time=self.END)
+        boundary = add_start_end_anchors(track, self.START, self.END - self.START)
         photo = build_user_anchors(
             track,
             [RawAnchor(distance_from_start=chosen["distance_from_start"], timestamp=timestamp, source="photo")],
@@ -423,7 +434,7 @@ class TestResolvePhotoAnchorsRouteEnds:
         timestamp = min(max(timestamp, self.START + timedelta(seconds=1)), self.END - timedelta(seconds=1))
         resolved = self._resolve(track, target.lat, target.lon, timestamp=timestamp)
 
-        boundary = add_start_end_anchors(track, self.START, end_time=self.END)
+        boundary = add_start_end_anchors(track, self.START, self.END - self.START)
         raw_anchor = RawAnchor(distance_from_start=resolved.distance_from_start, timestamp=resolved.timestamp, source="photo")
 
         if resolved.status == "ok":

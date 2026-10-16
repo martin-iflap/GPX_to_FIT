@@ -104,31 +104,21 @@ def nearest_point_candidates(
     return [Candidate(distance_from_start=p.distance_from_start, lat=p.lat, lon=p.lon) for p in representatives]
 
 
-def add_start_end_anchors(
-    track: Track,
-    start_time: datetime,
-    end_time: datetime | None = None,
-    duration: timedelta | None = None,
-) -> list[Anchor]:
+def add_start_end_anchors(track: Track, start_time: datetime, duration: timedelta) -> list[Anchor]:
     """Build the two boundary anchors every track needs: its start and end.
 
     Args:
         track: Track to anchor. Must contain at least one point.
         start_time: Timestamp for the track's first point.
-        end_time: Timestamp for the track's last point. Takes priority over
-            duration if both are given.
         duration: Elapsed time from start_time to the track's last point.
-            Only used if end_time is not given.
 
     Returns:
         A two-element list: an Anchor at distance 0.0 (start_time) with
         source="start", and an Anchor at the track's total_distance
-        (end_time, or start_time + duration) with source="end". The sources
-        let error messages name "the start"/"the finish" instead of a bare
-        distance.
+        (start_time + duration) with source="end". The sources let error
+        messages name "the start"/"the finish" instead of a bare distance.
     Raises:
-        ValueError: If the track has no points, or if neither end_time nor
-            duration is provided.
+        ValueError: If the track has no points.
         InputError: If the route has no length (one point, or every point in
             the same place): the end anchor would sit on the start, leaving
             nothing to pace.
@@ -141,16 +131,9 @@ def add_start_end_anchors(
             "so there's nothing to pace. Load a GPX file with the full track."
         )
 
-    if end_time is not None:
-        resolved_end_time = end_time
-    elif duration is not None:
-        resolved_end_time = start_time + duration
-    else:
-        raise ValueError("Either end_time or duration must be provided.")
-
     return [
         Anchor(distance_from_start=0.0, timestamp=start_time, source="start"),
-        Anchor(distance_from_start=track.total_distance, timestamp=resolved_end_time, source="end"),
+        Anchor(distance_from_start=track.total_distance, timestamp=start_time + duration, source="end"),
     ]
 
 

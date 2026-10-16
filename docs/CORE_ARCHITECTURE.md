@@ -231,7 +231,7 @@ followed, so its routes are ignored, as waypoints always are.
 flowchart TD
   dm["distance_meters(lat,lon,lat,lon)<br/>haversine"]
   npc["nearest_point_candidates(track, lat, lon,<br/>radius 25 m, gap 50 m, max 4)<br/>→ [Candidate]"] --> dm
-  ase["add_start_end_anchors(track, start, end|duration)<br/>→ [Anchor@0 'start', Anchor@total 'end']"]
+  ase["add_start_end_anchors(track, start, duration)<br/>→ [Anchor@0 'start', Anchor@total 'end']"]
   ase -.-> lenerr["InputError: route has no length"]
   bua["build_user_anchors(track, raw_anchors, existing)<br/>→ sorted [Anchor]"]
   bua -.-> err["InputError: two anchors on one point"]
@@ -293,6 +293,12 @@ resolve_photo_anchors(track, raw_photo_anchors, max_match 150 m,
             | "ok"
   → [ResolvedPhotoAnchor]   (never raises for a bad match; the caller decides)
 ```
+
+`bridge_api.resolve_photos` doesn't pass a window today: the GUI keeps
+every match and lets the activity window decide whether it's used, again
+whenever the start or duration changes. The window check stays in Python
+anyway (decided 2026-10-16): `core/` is the engine and checks its own
+inputs rather than relying on the GUI.
 
 ### 2.6 `pacing/gradient.py`: terrain to relative speed
 

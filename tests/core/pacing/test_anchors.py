@@ -197,39 +197,16 @@ class TestNearestPointCandidates:
 
 
 class TestAddStartEndAnchors:
-    def test_uses_explicit_end_time(self):
-        start = datetime(2024, 1, 1, 8, 0, 0)
-        end = datetime(2024, 1, 1, 9, 0, 0)
-        track = Track(points=[point(distance_from_start=0.0), point(distance_from_start=1000.0)])
-
-        anchors = add_start_end_anchors(track, start, end_time=end)
-
-        assert anchors[0].distance_from_start == 0.0
-        assert anchors[0].timestamp == start
-        assert anchors[1].distance_from_start == 1000.0
-        assert anchors[1].timestamp == end
-
-    def test_derives_end_time_from_duration(self):
+    def test_anchors_the_first_point_at_the_start_and_the_last_after_the_duration(self):
         start = datetime(2024, 1, 1, 8, 0, 0)
         track = Track(points=[point(distance_from_start=0.0), point(distance_from_start=1000.0)])
 
-        anchors = add_start_end_anchors(track, start, duration=timedelta(minutes=30))
+        anchors = add_start_end_anchors(track, start, timedelta(minutes=30))
 
-        assert anchors[1].timestamp == start + timedelta(minutes=30)
-
-    def test_end_time_takes_priority_over_duration(self):
-        start = datetime(2024, 1, 1, 8, 0, 0)
-        end = datetime(2024, 1, 1, 9, 0, 0)
-        track = Track(points=[point(distance_from_start=0.0), point(distance_from_start=1000.0)])
-
-        anchors = add_start_end_anchors(track, start, end_time=end, duration=timedelta(minutes=30))
-
-        assert anchors[1].timestamp == end
-
-    def test_neither_end_time_nor_duration_raises(self):
-        track = Track(points=[point(distance_from_start=0.0), point(distance_from_start=1000.0)])
-        with pytest.raises(ValueError, match="end_time or duration"):
-            add_start_end_anchors(track, datetime(2024, 1, 1, 8, 0, 0))
+        assert [(a.distance_from_start, a.timestamp) for a in anchors] == [
+            (0.0, start),
+            (1000.0, start + timedelta(minutes=30)),
+        ]
 
     def test_empty_track_raises(self):
         with pytest.raises(ValueError):
