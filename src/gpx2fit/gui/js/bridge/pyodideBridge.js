@@ -277,7 +277,7 @@ function callBridge(name, ...args) {
  * returns a JS-friendly preview of it. Call this once per upload.
  *
  * Rejects with an `Error` whose `isInputError` is `true` (see
- * `classifyPyError`) if the file isn't valid GPX or has no track points —
+ * `classifyPyError`) if the file isn't valid GPX or has no track or route points —
  * callers should show that message to the user as-is. The previous route
  * stays loaded then.
  *

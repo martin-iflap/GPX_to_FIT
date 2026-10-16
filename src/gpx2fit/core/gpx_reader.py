@@ -1,9 +1,11 @@
 """Read GPX route files and convert them into the core Track representation."""
 
 import math
+from collections.abc import Sequence
 
 import gpxpy
 from gpxpy.geo import distance as geo_distance
+from gpxpy.gpx import GPX, GPXRoutePoint, GPXTrackPoint
 
 from gpx2fit.core.models import InputError, Track, TrackPoint
 
@@ -12,7 +14,7 @@ from gpx2fit.core.models import InputError, Track, TrackPoint
 MIN_PLAUSIBLE_ELEVATION_M = -500.0
 MAX_PLAUSIBLE_ELEVATION_M = 9000.0
 
-# Successive <trk>/<trkseg>s are joined with a straight leg. A join longer than
+# Successive <trk>/<trkseg>s (or <rte>s) are joined with a straight leg. A join longer than
 # this is reported to the user. A paused recording's export usually restarts
 # where it stopped, so a real gap is something else (a lift, a car, a missing
 # chunk). A first guess.
@@ -28,15 +30,30 @@ def _usable_elevation(elevation: float | None) -> float | None:
     return elevation
 
 
-def _gap_warning(gaps_m: list[float]) -> str:
+def _gap_warning(gaps_m: list[float], parts: str) -> str:
     count = len(gaps_m)
     noun = "gap" if count == 1 else "gaps"
     width = f"{max(gaps_m) / 1000:.2f} km wide" if count == 1 else f"the widest {max(gaps_m) / 1000:.2f} km"
     joined = "It's" if count == 1 else "Each is"
     return (
-        f"This GPX has {count} {noun} between its track segments, {width}. {joined} joined with a straight "
+        f"This GPX has {count} {noun} between its {parts}, {width}. {joined} joined with a straight "
         "line and paced like the rest of the route. If that's not where you went, fix the route before converting."
     )
+
+
+def _point_runs(gpx: GPX) -> tuple[list[Sequence[GPXTrackPoint | GPXRoutePoint]], str]:
+    """The GPX's points as runs to join end to end, and what to call the runs.
+
+    Its track segments, or, in a file with no track points, its <rte> routes:
+    some planners export a route that way. A file with both is a recording
+    and the plan it followed, and the recording is the route.
+    """
+    segments: list[Sequence[GPXTrackPoint | GPXRoutePoint]] = [
+        segment.points for track in gpx.tracks for segment in track.segments
+    ]
+    if any(segments):
+        return segments, "track segments"
+    return [route.points for route in gpx.routes], "routes"
 
 
 # Parsing splits every leg longer than this, so pacing, anchors and stops are
@@ -109,7 +126,8 @@ def parse_gpx_bytes(
             are joined across a gap longer than SEGMENT_GAP_WARNING_M. The
             parse itself is the same either way.
     Returns:
-        A Track with one TrackPoint per GPX trackpoint, in file order, plus
+        A Track with one TrackPoint per GPX trackpoint (or routepoint, in a
+        file with no track points), in file order, plus
         any points densifying inserts between them, with distance_from_start
         computed as the cumulative 3D distance from the first point, using
         the cleaned elevations (see Note), so a route without any is
@@ -117,7 +135,7 @@ def parse_gpx_bytes(
         by pacing.
     Raises:
         InputError: If gpx_bytes isn't valid UTF-8, isn't parseable as GPX,
-            contains no track points, or describes a route with no length
+            contains no track or route points, or describes a route with no length
             (a single point, or every point in the same place) — all signs of
             a corrupt file or one that isn't actually a GPX track export.
 
@@ -143,45 +161,45 @@ def parse_gpx_bytes(
     cumulative_distance = 0.0
     last_elevation: float | None = None
     leading_missing = 0  # points before the first usable elevation
-    gaps_m: list[float] = []  # joins between segments wider than SEGMENT_GAP_WARNING_M
+    gaps_m: list[float] = []  # joins between runs wider than SEGMENT_GAP_WARNING_M
     device = device or gpx.creator
+    runs, run_noun = _point_runs(gpx)
 
-    for track in gpx.tracks:
-        for segment in track.segments:
-            for index, point in enumerate(segment.points):
-                elevation = _usable_elevation(point.elevation)
-                if elevation is None:
-                    elevation = last_elevation
-                if elevation is None:
-                    leading_missing += 1
+    for run in runs:
+        for index, point in enumerate(run):
+            elevation = _usable_elevation(point.elevation)
+            if elevation is None:
+                elevation = last_elevation
+            if elevation is None:
+                leading_missing += 1
 
-                if prev_point is not None:
-                    # gpxpy's 3D distance, but from the cleaned elevations: the file's own would turn a
-                    # -32768 "no data" value into a 33 km leg, and a nan into a nan route. A leading
-                    # point without one (None) is measured flat, as its back-filled value will be.
-                    cumulative_distance += geo_distance(
-                        prev_point.latitude, prev_point.longitude, last_elevation,
-                        point.latitude, point.longitude, elevation,
+            if prev_point is not None:
+                # gpxpy's 3D distance, but from the cleaned elevations: the file's own would turn a
+                # -32768 "no data" value into a 33 km leg, and a nan into a nan route. A leading
+                # point without one (None) is measured flat, as its back-filled value will be.
+                cumulative_distance += geo_distance(
+                    prev_point.latitude, prev_point.longitude, last_elevation,
+                    point.latitude, point.longitude, elevation,
+                )
+                if index == 0:
+                    gap_m = geo_distance(
+                        prev_point.latitude, prev_point.longitude, None, point.latitude, point.longitude, None
                     )
-                    if index == 0:
-                        gap_m = geo_distance(
-                            prev_point.latitude, prev_point.longitude, None, point.latitude, point.longitude, None
-                        )
-                        if gap_m > SEGMENT_GAP_WARNING_M:
-                            gaps_m.append(gap_m)
-                last_elevation = elevation
+                    if gap_m > SEGMENT_GAP_WARNING_M:
+                        gaps_m.append(gap_m)
+            last_elevation = elevation
 
-                track_points.append(TrackPoint(
-                    lat=point.latitude,
-                    lon=point.longitude,
-                    elevation=0.0 if elevation is None else elevation,
-                    distance_from_start=cumulative_distance,
-                    timestamp=None,
-                ))
-                prev_point = point
+            track_points.append(TrackPoint(
+                lat=point.latitude,
+                lon=point.longitude,
+                elevation=0.0 if elevation is None else elevation,
+                distance_from_start=cumulative_distance,
+                timestamp=None,
+            ))
+            prev_point = point
 
     if not track_points:
-        raise InputError("This GPX file doesn't contain any track points.")
+        raise InputError("This GPX file doesn't contain any track or route points.")
     if len(track_points) < 2:
         raise InputError(
             "This GPX file has only one point, so there's no route to pace. Export the full track and try again."
@@ -199,7 +217,7 @@ def parse_gpx_bytes(
             track_point.elevation = first_elevation
 
     if gaps_m and warnings is not None:
-        warnings.append(_gap_warning(gaps_m))
+        warnings.append(_gap_warning(gaps_m, run_noun))
 
     # After the elevation back-fill, so inserted points interpolate real values.
     if max_leg_m is not None:

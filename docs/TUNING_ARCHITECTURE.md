@@ -871,8 +871,9 @@ the mirror test must be updated whenever `_pace_segment` changes.
 
 **Added a sport**
 - Add it to `_FIT_SPORT_TO_SPORT_TYPE` if FIT has a matching value.
-- `TOBLER_THRESHOLDS` and `MAX_SPEED_RATIO_BOUNDS` in `core/` need entries
-  first; the harness reads both.
+- `TOBLER_THRESHOLDS`, `DEFAULT_TOBLER_WEIGHT`, `MAX_SPEED_RATIO_BOUNDS`,
+  `CURVE_FILLS` and `MAX_ACCELERATION_MPS2` in `core/` need entries first;
+  the harness reads them all.
 
 **Added a command**
 - Write `command_<name>(args) -> int`, add a sub-parser with

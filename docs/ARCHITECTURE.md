@@ -378,8 +378,10 @@ These touch both sides. The ones that stay on one side are in
 **Adding a sport**
 - Extend `SportType`.
 - Add the sport to every `SportType`-keyed table: `TOBLER_THRESHOLDS`,
-  `MAX_SPEED_RATIO_BOUNDS`, `MAX_ACCELERATION_MPS2` and `surface_weights.json`.
-- Update the sport mapping in `fit_writer`.
+  `DEFAULT_TOBLER_WEIGHT`, `MAX_SPEED_RATIO_BOUNDS`, `CURVE_FILLS`,
+  `MAX_ACCELERATION_MPS2`, `fit_writer`'s `RECORD_INTERVAL_S` and
+  `FIT_SPORT`, and `surface_weights.json`. `tests/core/test_sport_tables.py`
+  fails until every one has it; none falls back to another sport's entry.
 - Add a segment in the GUI's sport control whose `data-value` is the
   `SportType` value (`bridge_api` reads the sport as `SportType(value)`).
 - Cycling also needs its own speed model in `gradient.py`.

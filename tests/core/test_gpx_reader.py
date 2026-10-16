@@ -77,6 +77,65 @@ class TestBasicParsing:
             parse_gpx_bytes(b"this is not gpx or xml at all")
 
 
+def _rte(*routes: list[tuple[float, float, float]], trkpts: str = "") -> bytes:
+    """A GPX of <rte> routes (as some planners export), plus an optional track of `trkpts`."""
+    body = "".join(
+        "<rte>" + "".join(f'<rtept lat="{lat}" lon="{lon}"><ele>{ele}</ele></rtept>' for lat, lon, ele in route)
+        + "</rte>"
+        for route in routes
+    )
+    track = f"<trk><trkseg>{trkpts}</trkseg></trk>" if trkpts else ""
+    return f'<?xml version="1.0"?>\n<gpx version="1.1" creator="Planner">{body}{track}</gpx>'.encode("utf-8")
+
+
+class TestRoutePoints:
+    """A GPX with only <rte> points is read as if they were one track's."""
+
+    def test_a_route_only_file_is_read_like_the_same_points_as_a_track(self):
+        points = [(45.0, 7.0, 100.0), (45.001, 7.0, 110.0), (45.001, 7.002, 104.0)]
+        from_route = parse_gpx_bytes(_rte(points))
+        from_track = parse_gpx_bytes(_gpx("".join(_trkpt(*p) for p in points)))
+        assert from_route.points == from_track.points
+        assert from_route.has_elevation and from_route.device == "Planner"
+
+    @staticmethod
+    def _as_routes(*runs: list[tuple[float, float]]) -> bytes:
+        """The same runs of (lat, lon) as _multi_gpx's segments, written as <rte>s."""
+        return _rte(*[[(lat, lon, 100.0) for lat, lon in run] for run in runs])
+
+    def test_several_routes_join_in_file_order_like_segments(self):
+        first, second = _two_segments(0.001)
+        from_routes = parse_gpx_bytes(self._as_routes(first, second), max_leg_m=None)
+        from_segments = parse_gpx_bytes(_multi_gpx([first, second]), max_leg_m=None)
+        assert from_routes.points == from_segments.points
+
+    def test_a_gap_between_routes_warns_like_one_between_segments(self):
+        first, second = _two_segments(0.0126)  # ~1.40 km
+        route_warnings: list[str] = []
+        segment_warnings: list[str] = []
+        parse_gpx_bytes(self._as_routes(first, second), warnings=route_warnings)
+        parse_gpx_bytes(_multi_gpx([first, second]), warnings=segment_warnings)
+        assert route_warnings == [segment_warnings[0].replace("track segments", "routes")]
+        assert "between its routes" in route_warnings[0]
+
+    def test_a_track_is_used_and_routes_ignored_when_the_file_has_both(self):
+        track = parse_gpx_bytes(
+            _rte([(46.0, 8.0, 0.0), (46.001, 8.0, 0.0)], trkpts=_TWO_POINTS), max_leg_m=None
+        )
+        assert [(p.lat, p.lon) for p in track.points] == [(45.0, 7.0), (45.001, 7.0)]
+
+    def test_routes_are_used_when_the_track_is_empty(self):
+        gpx_bytes = _rte([(45.0, 7.0, 100.0), (45.001, 7.0, 100.0)]).replace(
+            b"</gpx>", b"<trk><trkseg></trkseg></trk></gpx>"
+        )
+        track = parse_gpx_bytes(gpx_bytes, max_leg_m=None)
+        assert [(p.lat, p.lon) for p in track.points] == [(45.0, 7.0), (45.001, 7.0)]
+
+    def test_a_file_with_neither_says_both_are_missing(self):
+        with pytest.raises(InputError, match="track or route points"):
+            parse_gpx_bytes(_rte())
+
+
 _TWO_POINTS = _trkpt(45.0, 7.0, 100.0) + _trkpt(45.001, 7.0, 100.0)
 
 

@@ -36,6 +36,15 @@ RECORD_INTERVAL_S = {
     SportType.HIKING: 3,
 }
 
+# The FIT profile's sport for each of ours.
+FIT_SPORT = {
+    SportType.RUNNING: SPORT_RUNNING,
+    SportType.HIKING: SPORT_WALKING,
+}
+
+# What a track with no sport is written as.
+_DEFAULT_SPORT = SportType.RUNNING
+
 
 def _fit_timestamp(value: datetime) -> int:
     """Convert a datetime to Unix epoch milliseconds, the unit fit_encoder takes timestamps in.
@@ -284,12 +293,9 @@ def _build_content(track: Track, *, resample: bool, record_interval_s: int | Non
     if any(point.timestamp is None for point in track.points):
         raise RuntimeError("Missing timestamp for fit file creation.")
 
-    sport = SPORT_RUNNING
-    if track.sport is not None and track.sport.value == "hiking":
-        sport = SPORT_WALKING
-
+    sport = track.sport or _DEFAULT_SPORT
     if record_interval_s is None:
-        record_interval_s = RECORD_INTERVAL_S[track.sport or SportType.RUNNING]
+        record_interval_s = RECORD_INTERVAL_S[sport]
     spans = _resample(track.points, record_interval_s) if resample else _per_point(track.points)
     first_ms = spans[0][0].timestamp_ms
     last_ms = spans[-1][-1].timestamp_ms
@@ -308,7 +314,7 @@ def _build_content(track: Track, *, resample: bool, record_interval_s: int | Non
         manufacturer, product = track.device_manufacturer, track.device_product or 0
 
     return _FitContent(
-        sport=sport,
+        sport=FIT_SPORT[sport],
         manufacturer=manufacturer,
         product=product,
         serial_number=track.device_serial,

@@ -52,6 +52,7 @@ from gpx2fit.core.pacing.curve_selection import (
     CURVE_FILLS,
     CURVE_REFERENCE_GRADE,
     DEFAULT_SMOOTHNESS,
+    DEFAULT_TOBLER_WEIGHT,
     FLAT_EQUIVALENT_BAND_MPS,
     HILLY_VERTICALITY,
     HILLY_VERTICALITY_BAND,
@@ -323,7 +324,7 @@ def tobler_weight_for(
 
     equivalent = model.flat_equivalent_mps(active_seconds, params.minetti_downhill_cost_slope)
     if equivalent <= 0:
-        return 1.0 if sport == SportType.HIKING else 0.0
+        return DEFAULT_TOBLER_WEIGHT[sport]
 
     slow_weight = 1.0 - smoothstep(equivalent, flat_threshold, params.flat_equivalent_band_mps)
     steep_weight = smoothstep(model.verticality, steep_threshold, params.verticality_band)

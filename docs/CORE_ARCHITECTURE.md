@@ -54,13 +54,11 @@ classDiagram
   }
   class RawAnchor {
     timestamp: datetime
-    distance_from_start: float?
-    lat, lon: float?
+    distance_from_start: float
     source: UserAnchorSource
   }
   class RawStop {
-    distance_from_start: float?
-    lat, lon: float?
+    distance_from_start: float
     duration: timedelta?
     start_timestamp, end_timestamp: datetime?
   }
@@ -188,14 +186,15 @@ the resulting multipliers to `combine()` as a plain list. `anchors.py`,
 
 ```
 parse_gpx_bytes(gpx_bytes, device=None, *, max_leg_m=MAX_LEG_M, warnings=None) -> Track
-  bytes ─decode utf-8─▶ gpxpy.parse ─▶ for track/segment/point:
+  bytes ─decode utf-8─▶ gpxpy.parse ─▶ _point_runs: the track segments, or the <rte>s if no track points
+      ─▶ for run/point:
       implausible elevation → missing, carry-forward, leading back-fill,
       cumulative 3D distance from those cleaned elevations,
       join to the previous segment wider than SEGMENT_GAP_WARNING_M (100 m) → noted
   ─▶ densify_points(points, max_leg_m)   (skipped when max_leg_m is None)
   ─▶ Track(points, device = device or <gpx creator>, has_elevation)
-  appends to warnings: one message if any segment join was a gap
-  raises InputError: not UTF-8 · not GPX · no track points · one point · no length
+  appends to warnings: one message if any segment (or route) join was a gap
+  raises InputError: not UTF-8 · not GPX · no track or route points · one point · no length
 
 densify_points(points, max_leg_m) -> list[TrackPoint]
   each leg longer than max_leg_m ─▶ ceil(leg / max_leg_m) equal pieces,
@@ -221,19 +220,20 @@ to the map, and densifies the route it keeps itself, which gives exactly
 the track the default would. The Valhalla request doesn't: it is thinned back to a point every
 15 m (§2.8).
 
-It reads only `<trk>` points. Route (`<rte>`) and waypoint elements are
-ignored.
+It reads the `<trk>` points. A file with none is read from its `<rte>`
+points instead (since 2026-10-16), which some planners export: each route
+is joined like a segment. A file with both is a recording plus the plan it
+followed, so its routes are ignored, as waypoints always are.
 
 ### 2.3 `pacing/anchors.py`: finding points and building anchors
 
 ```mermaid
 flowchart TD
   dm["distance_meters(lat,lon,lat,lon)<br/>haversine"]
-  np1["nearest_point_distance_from_start(track, lat, lon)<br/>→ float"] --> dm
-  npc["nearest_point_candidates(track, lat, lon,<br/>radius 25 m, gap 50 m, max 4)<br/>→ [{distance_from_start, lat, lon}]"] --> dm
+  npc["nearest_point_candidates(track, lat, lon,<br/>radius 25 m, gap 50 m, max 4)<br/>→ [Candidate]"] --> dm
   ase["add_start_end_anchors(track, start, end|duration)<br/>→ [Anchor@0 'start', Anchor@total 'end']"]
   ase -.-> lenerr["InputError: route has no length"]
-  bua["build_user_anchors(track, raw_anchors, existing)<br/>→ sorted [Anchor]"] --> np1
+  bua["build_user_anchors(track, raw_anchors, existing)<br/>→ sorted [Anchor]"]
   bua -.-> err["InputError: two anchors on one point"]
   bua --> recm["route_end_collision_message(what, source)<br/>names the start/finish, else None"]
 ```
@@ -242,15 +242,29 @@ flowchart TD
 the closest point, collects every point within 25 m of it, and splits them
 into clusters wherever the distance along the route jumps by more than
 50 m. Each cluster is one pass of the route, and one representative per
-pass is returned. A normal route always returns exactly one candidate.
+pass is returned: the pass's point closest to the click. A normal route
+always returns exactly one candidate.
+
+It measures every point's distance to the click once, and only the points
+within that nearest distance + 25 m of the click (all a point within 25 m of
+the nearest one can be) get measured against the nearest point. That
+halved its time on a 13,751-point route (9.8 → 5.0 ms per call in
+CPython, 2026-10-15); it runs once per map click and once per photo.
+`test_anchors.py` checks it against the plain three-scan version on random
+out-and-back routes.
+
+**Anchors and stops are placed by distance only (since 2026-10-15).**
+`RawAnchor` and `RawStop` used to take a lat/lon instead, resolved by a
+single nearest-point lookup (`nearest_point_distance_from_start`). Only tests
+used it, and on an out-and-back it quietly took the first pass, which is what
+the pass picker exists to prevent. Both now require `distance_from_start`.
 
 ### 2.4 `pacing/stops.py`
 
 ```mermaid
 flowchart TD
   rs["resolve_stops(track, raw_stops, hard_anchors)<br/>→ (mode_b: [ResolvedStop], mode_a: [ModeAStop])"]
-  rd["_resolve_distance(track, raw)"] --> np["anchors.nearest_point_distance_from_start"]
-  rs --> rd
+  rs -.-> verr["ValueError: distance outside the route ·<br/>not exactly one of duration, arrival+departure"]
   rs -.-> err["InputError: stop on an anchor/stop ·<br/>departure ≤ arrival"]
   ets["expand_track_with_stops(points, stops)<br/>→ new list of copied points, +1 duplicate per stop"]
   ems["expand_multipliers_with_stops(points, mults, stops)<br/>→ new list, +1 duplicated multiplier per stop"]
@@ -308,6 +322,12 @@ flowchart TD
   symmetrically so that it ends at the turning point, but not below 30 m.
   Past that limit it slides away from the turning point instead. At the
   track's ends it slides inward at full length.
+- **Where a turning point sits.** A crest or valley that is a flat (several
+  consecutive points at one elevation) turns at the flat's middle. One
+  reached twice with lower (or higher) points between turns at the first
+  flat (since 2026-10-16; before that, the middle of both could land on
+  the bump between them, which cut up to 5 m off `elevation_gain` per
+  such valley).
 - **Curves are relative.** Every curve returns 1.0 on flat ground, so every
   blend of them does too. Absolute speed comes later, when `combine` scales
   each segment to its duration.
@@ -556,7 +576,7 @@ write_fit(track, *, resample=True, record_interval_s=None) -> bytes
   _encode(content) -> bytes                 fit_encoder.FitEncoder
     file_id (manufacturer/product = track.device_manufacturer/_product, or DEVELOPMENT/0 when None;
              serial only if track.device_serial; product_name = track.device)
-    sport (RUNNING | WALKING for hiking)
+    sport (FIT_SPORT[sport]: RUNNING, or WALKING for hiking; no sport is written as running)
     event START
     per span: [event STOP_ALL + START between spans]  add_many(record: ts, lat, lon, alt if has_elevation, distance, speed)
     event STOP_ALL
@@ -659,8 +679,7 @@ ahead of them.
 
 1. `boundary = add_start_end_anchors(_track, start, duration=…)`
 2. `mid_route = build_user_anchors(_track, raw_anchors, existing_anchors=boundary)`.
-   The GUI always sends `distanceFromStart`, so no lat/lon lookup happens
-   here. Each anchor's `source` must be `"user"` (or absent) or `"photo"`
+   Each anchor is placed by its `distanceFromStart`. Its `source` must be `"user"` (or absent) or `"photo"`
    (`_anchor_source`); anything else is a JS bug and raises a plain
    `ValueError`, not an `InputError`.
 3. `hard_anchors = sorted(boundary + mid_route)`
@@ -699,8 +718,10 @@ again.
 pytest, in `tests/core/` and `tests/core/pacing/`, covers every `core`
 module, including `bridge_api` (`test_bridge_api.py`: each call's result
 shape and the route kept between calls), plus `test_bridge_core_files.py`
-(every `core/` file is in `pyodideBridge.js`'s `CORE_FILES`). Shared track
-builders live in `tests/core/conftest.py`.
+(every `core/` file is in `pyodideBridge.js`'s `CORE_FILES`) and
+`test_sport_tables.py` (every `SportType` has an entry in every per-sport
+table, see [ARCHITECTURE.md](ARCHITECTURE.md)'s "Adding a sport"). Shared
+track builders live in `tests/core/conftest.py`.
 
 The harness's own tests are in
 [TUNING_ARCHITECTURE.md §13](TUNING_ARCHITECTURE.md#13-tests).

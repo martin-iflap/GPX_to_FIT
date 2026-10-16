@@ -8,29 +8,7 @@ adjacent leg's pace.
 from dataclasses import replace
 
 from gpx2fit.core.models import Anchor, AnchorSource, InputError, ModeAStop, RawStop, ResolvedStop, Track, TrackPoint
-from gpx2fit.core.pacing.anchors import nearest_point_distance_from_start, route_end_collision_message
-
-
-def _resolve_distance(track: Track, raw: RawStop) -> float:
-    """Resolve a raw stop's distance_from_start from either its explicit value or its lat/lon.
-    Args:
-        track: The track the stop belongs to.
-        raw: The raw stop to resolve.
-    Returns:
-        The resolved distance_from_start in meters.
-    Raises:
-        ValueError: If the raw stop provides neither distance_from_start nor lat/lon.
-    """
-    if raw.distance_from_start is not None:
-        distance = raw.distance_from_start
-    elif raw.lat is not None and raw.lon is not None:
-        distance = nearest_point_distance_from_start(track, raw.lat, raw.lon)
-    else:
-        raise ValueError("Each raw stop must provide distance_from_start or lat/lon.")
-
-    if distance < 0 or distance > track.total_distance:
-        raise ValueError("Stop distance_from_start is outside track bounds.")
-    return distance
+from gpx2fit.core.pacing.anchors import route_end_collision_message
 
 
 def resolve_stops(
@@ -38,20 +16,19 @@ def resolve_stops(
     raw_stops: list[RawStop],
     hard_anchors: list[Anchor],
 ) -> tuple[list[ResolvedStop], list[ModeAStop]]:
-    """Resolve frontend-provided stop candidates to distances, splitting by mode.
+    """Check frontend-provided stops against the route and the anchors, splitting them by mode.
 
     Each raw stop is either Mode B (explicit `start_timestamp`/
     `end_timestamp`): resolved directly to a `ResolvedStop`, or Mode A
     (`duration` only): its arrival time isn't known yet — it's derived later
     by pacing.combine from the normal gradient-based pacing model, as if it
     were an ordinary unconstrained point, with departure = arrival +
-    duration. This function only resolves each stop's distance and returns
+    duration. This function only checks each stop's distance and returns
     the Mode A stops as plain distance+duration facts (`ModeAStop`).
 
     Args:
-        track: The track the stops belong to (used for distance resolution
-            via nearest-point lookup). Not mutated.
-        raw_stops: Frontend-provided stop candidates.
+        track: The track the stops belong to, for the bounds check. Not mutated.
+        raw_stops: Frontend-provided stops.
         hard_anchors: Boundary + user anchors already resolved for this
             conversion, used only to reject a stop coinciding with one.
 
@@ -60,9 +37,8 @@ def resolve_stops(
         and Mode A stops as pending ModeAStops — each list sorted by
         distance_from_start.
     Raises:
-        ValueError: If a raw stop provides neither distance_from_start nor
-            lat/lon, a resolved distance falls outside track bounds, or
-            neither/both of duration and (start_timestamp, end_timestamp)
+        ValueError: If a distance falls outside [0, track.total_distance],
+            or neither/both of duration and (start_timestamp, end_timestamp)
             are given.
         InputError: If end_timestamp isn't later than start_timestamp, or a
             stop's distance coincides with a hard anchor's or another
@@ -75,7 +51,9 @@ def resolve_stops(
     seen_distances: dict[float, AnchorSource | None] = {a.distance_from_start: a.source for a in hard_anchors}
 
     for raw in raw_stops:
-        distance = _resolve_distance(track, raw)
+        distance = raw.distance_from_start
+        if distance < 0 or distance > track.total_distance:
+            raise ValueError("Stop distance_from_start is outside track bounds.")
         if distance in seen_distances:
             raise InputError(
                 route_end_collision_message("A stop", seen_distances[distance])

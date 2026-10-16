@@ -1,4 +1,6 @@
 import math
+import random
+
 import pytest
 from gpx2fit.core.models import Track
 from gpx2fit.core.pacing.gradient import (
@@ -191,6 +193,19 @@ class TestElevationGain:
         track = _track([(100.0 + i + (2.0 if i % 2 else -2.0), i * 10.0) for i in range(101)])
         assert elevation_gain(track) == pytest.approx(100.0, abs=TURNING_POINT_MIN_RISE_M)
 
+    def test_a_bump_in_a_valley_floor_does_not_shorten_the_climb_out(self):
+        # Down to 100 m, a 3 m bump, back to 100 m, then up to 120 m: the
+        # climb out of the valley starts at 100 m, not on the bump.
+        elevations = [120.0, 110.0, 100.0, 103.0, 100.0, 110.0, 120.0]
+        track = _track([(ele, i * 50.0) for i, ele in enumerate(elevations)])
+        assert elevation_gain(track) == 20.0
+
+    def test_a_dip_between_two_equal_hilltops_does_not_shorten_the_climb(self):
+        # Up to 120 m, a 3 m dip, back to 120 m, down to 100 m and up again.
+        elevations = [100.0, 110.0, 120.0, 117.0, 120.0, 110.0, 100.0, 110.0, 120.0]
+        track = _track([(ele, i * 50.0) for i, ele in enumerate(elevations)])
+        assert elevation_gain(track) == 40.0
+
 
 class TestTurningPoints:
     """The window never averages a climb against the descent on the other side of its crest."""
@@ -289,6 +304,37 @@ class TestTurningPoints:
                 assert -0.1 - 1e-9 <= g <= 0.1 + 1e-9
         top = [g for g, a in zip(gradients, track.points) if 1000.0 <= a.distance_from_start < 1040.0]
         assert top[0] > 0 > top[-1]
+
+    def test_a_flat_extreme_is_turned_at_its_middle(self):
+        assert _turning_points([100.0, 105.0, 110.0, 110.0, 110.0, 105.0, 100.0], 5.0) == [3]
+        assert _turning_points([110.0, 105.0, 100.0, 100.0, 100.0, 100.0, 105.0, 110.0], 5.0) == [3]
+
+    def test_equal_extremes_apart_turn_at_the_first_not_between_them(self):
+        # The middle of the two 100 m points is the 103 m bump between them.
+        assert _turning_points([120.0, 110.0, 100.0, 103.0, 100.0, 110.0, 120.0], 5.0) == [2]
+        assert _turning_points([100.0, 110.0, 120.0, 117.0, 120.0, 110.0, 100.0], 5.0) == [2]
+
+    def test_a_flat_extreme_after_an_equal_point_turns_at_the_first(self):
+        # The middle of 2..7 would be the 107 m dip at 4.
+        elevations = [100.0, 105.0, 110.0, 107.0, 107.0, 110.0, 110.0, 110.0, 105.0, 100.0]
+        assert _turning_points(elevations, 5.0) == [2]
+
+    @pytest.mark.parametrize("seed", range(20))
+    def test_every_turning_point_is_the_extreme_of_its_run(self, seed):
+        # Whole-metre random walks, so equal extremes apart from each other
+        # are common: each hilltop is the highest point between the turning
+        # points (or track ends) either side of it, each valley the lowest.
+        rng = random.Random(seed)
+        elevations = [100.0]
+        for _ in range(400):
+            elevations.append(elevations[-1] + rng.choice((-2.0, -1.0, 0.0, 0.0, 1.0, 2.0)))
+        turns = _turning_points(elevations, TURNING_POINT_MIN_RISE_M)
+        assert turns  # premise: the walk has turning points to check
+        bounds = [0, *turns, len(elevations) - 1]
+        for before, turn, after in zip(bounds, bounds[1:], bounds[2:]):
+            between = elevations[before:after + 1]
+            is_peak = elevations[turn] > elevations[before]
+            assert elevations[turn] == (max(between) if is_peak else min(between))
 
     def test_duplicated_stop_point_does_not_distort_neighbouring_gradients(self):
         # pacing.stops duplicates a point (same distance and elevation) to

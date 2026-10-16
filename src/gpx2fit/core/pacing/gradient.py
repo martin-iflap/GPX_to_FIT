@@ -170,9 +170,12 @@ def _turning_points(elevations: list[float], min_rise: float) -> list[int]:
     between peak and valley, each at least `min_rise` from the last. The
     track's own first and last points are never returned.
 
-    Where the extreme is a flat top (several points at the same elevation,
-    common with whole-metre DEM data), the middle of them is used, so the
-    flat is shared between the climb and the descent either side of it.
+    Where the extreme is a flat top (several consecutive points at the same
+    elevation, common with whole-metre DEM data), the middle of them is
+    used. So the flat is shared between the climb and the descent either
+    side of it. Where the extreme is reached more than once with lower
+    points between (a bump in a valley floor), the first flat is used: the
+    middle of all of them could be the bump.
 
     Args:
         elevations: Elevation per point, in route order.
@@ -182,17 +185,17 @@ def _turning_points(elevations: list[float], min_rise: float) -> list[int]:
     """
     turns = []
     direction = 0  # +1 climbing, -1 descending, 0 not yet known
-    # First and last index of the lowest/highest elevation since the last turning point.
+    # First and last index of the first flat at the lowest/highest elevation since the last turning point.
     low_first = low_last = high_first = high_last = 0
     for index in range(1, len(elevations)):
         elevation = elevations[index]
         if elevation > elevations[high_first]:
             high_first = high_last = index
-        elif elevation == elevations[high_first]:
+        elif elevation == elevations[high_last] and high_last == index - 1:
             high_last = index
         if elevation < elevations[low_first]:
             low_first = low_last = index
-        elif elevation == elevations[low_first]:
+        elif elevation == elevations[low_last] and low_last == index - 1:
             low_last = index
 
         if direction <= 0 and elevation - elevations[low_first] >= min_rise:

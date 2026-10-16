@@ -49,12 +49,21 @@ class TestResolveStopsModeA:
         assert mode_b == []
         assert mode_a == [ModeAStop(500.0, duration)]
 
-    def test_missing_lat_lon_and_distance_raises(self):
+    def test_a_raw_stop_needs_its_distance_along_the_route(self):
+        with pytest.raises(TypeError):
+            RawStop(duration=timedelta(minutes=5))  # pyrefly: ignore
+
+    def test_a_raw_stop_cannot_be_placed_by_lat_lon(self):
+        # Like an anchor: a lat/lon would quietly take the first pass of an out-and-back.
+        with pytest.raises(TypeError):
+            RawStop(lat=45.0, lon=7.0, duration=timedelta(minutes=5))  # pyrefly: ignore
+
+    def test_distance_beyond_track_end_raises(self):
         track = Track(points=[point(distance_from_start=0.0), point(distance_from_start=500.0), point(distance_from_start=1000.0)])
         hard_anchors = [anchor(0.0, START), anchor(1000.0, START + timedelta(minutes=20))]
-        raw = [RawStop(duration=timedelta(minutes=5))]
+        raw = [RawStop(distance_from_start=1500.0, duration=timedelta(minutes=5))]
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="outside"):
             resolve_stops(track, raw, hard_anchors)
 
 

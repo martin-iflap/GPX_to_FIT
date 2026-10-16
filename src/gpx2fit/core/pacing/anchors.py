@@ -3,9 +3,14 @@
 import math
 from datetime import datetime, timedelta
 
-from gpx2fit.core.models import Anchor, AnchorSource, Candidate, InputError, RawAnchor, Track, TrackPoint
+from gpx2fit.core.models import Anchor, AnchorSource, Candidate, InputError, RawAnchor, Track
 
 _EARTH_RADIUS_M = 6371000.0
+
+# Slack on nearest_point_candidates' prefilter, so rounding can never drop a
+# point the exact check after it would keep. Far above any rounding error, and
+# costs nothing, since the exact check still decides.
+_REACH_ROUNDING_MARGIN_M = 1.0
 
 
 def distance_meters(lat_a: float, lon_a: float, lat_b: float, lon_b: float) -> float:
@@ -25,32 +30,6 @@ def distance_meters(lat_a: float, lon_a: float, lat_b: float, lon_b: float) -> f
     d_lambda = math.radians(lon_b - lon_a)
     a = math.sin(d_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
     return 2 * _EARTH_RADIUS_M * math.asin(math.sqrt(a))
-
-
-def nearest_point_distance_from_start(track: Track, lat: float, lon: float) -> float:
-    """Find the track point nearest to a lat/lon and return its distance_from_start.
-
-    Args:
-        track: Track to search. Must contain at least one point.
-        lat: Latitude to match against, in degrees.
-        lon: Longitude to match against, in degrees.
-
-    Returns:
-        The distance_from_start of the nearest point in the track.
-    Raises:
-        ValueError: If the track has no points.
-
-    Note:
-        On an out-and-back route, several points can be equally close to
-        (lat, lon) — one on the outbound leg, one on the return. Ties are
-        broken by taking the first such point in track order. Use
-        `nearest_point_candidates` instead if the caller needs to
-        disambiguate between such passes.
-    """
-    if not track.points:
-        raise ValueError("Track must contain points to resolve anchor position.")
-    nearest_point = min(track.points, key=lambda p: distance_meters(p.lat, p.lon, lat, lon))
-    return nearest_point.distance_from_start
 
 
 def nearest_point_candidates(
@@ -75,9 +54,9 @@ def nearest_point_candidates(
       closest to the original click), sorted by distance_from_start, capped
       at max_candidates.
 
-    A normal (non-overlapping) route always yields exactly one candidate, so
-    this is a drop-in replacement for a plain nearest-point lookup when the
-    caller only wants a single result.
+    A normal (non-overlapping) route always yields exactly one candidate.
+    There is deliberately no single-match lookup: on an out-and-back it
+    would quietly take one pass, so the caller has to choose.
 
     Args:
         track: Track to search. Must contain at least one point.
@@ -94,33 +73,35 @@ def nearest_point_candidates(
     Raises:
         ValueError: If the track has no points.
     """
-    if not track.points:
+    points = track.points
+    if not points:
         raise ValueError("Track must contain points to resolve anchor position.")
 
-    nearest_point = min(track.points, key=lambda p: distance_meters(p.lat, p.lon, lat, lon))
+    # Measured once: it picks both the nearest point and each pass's representative.
+    to_click = [distance_meters(p.lat, p.lon, lat, lon) for p in points]
+    nearest_index = min(range(len(points)), key=to_click.__getitem__)
+    nearest = points[nearest_index]
 
-    nearby_points = [
-        p for p in track.points
-        if distance_meters(p.lat, p.lon, nearest_point.lat, nearest_point.lon) <= proximity_radius_m
+    # A point within proximity_radius_m of the nearest point is, by the
+    # triangle inequality, within `reach` of the click, so only the few
+    # points that close need measuring against the nearest one. They stay in
+    # route order, which is distance_from_start order.
+    reach = to_click[nearest_index] + proximity_radius_m + _REACH_ROUNDING_MARGIN_M
+    nearby = [
+        i for i, d in enumerate(to_click)
+        if d <= reach and distance_meters(points[i].lat, points[i].lon, nearest.lat, nearest.lon) <= proximity_radius_m
     ]
-    nearby_points.sort(key=lambda p: p.distance_from_start)
 
-    clusters: list[list[TrackPoint]] = []
-    for point in nearby_points:
-        if clusters and point.distance_from_start - clusters[-1][-1].distance_from_start <= cluster_gap_m:
-            clusters[-1].append(point)
+    clusters: list[list[int]] = []
+    for i in nearby:
+        if clusters and points[i].distance_from_start - points[clusters[-1][-1]].distance_from_start <= cluster_gap_m:
+            clusters[-1].append(i)
         else:
-            clusters.append([point])
+            clusters.append([i])
 
-    representatives = [
-        min(cluster, key=lambda p: distance_meters(p.lat, p.lon, lat, lon)) for cluster in clusters
-    ]
-    representatives.sort(key=lambda p: p.distance_from_start)
-
-    return [
-        Candidate(distance_from_start=p.distance_from_start, lat=p.lat, lon=p.lon)
-        for p in representatives[:max_candidates]
-    ]
+    # The clusters follow each other along the route, so their representatives are in route order already.
+    representatives = [points[min(cluster, key=to_click.__getitem__)] for cluster in clusters[:max_candidates]]
+    return [Candidate(distance_from_start=p.distance_from_start, lat=p.lat, lon=p.lon) for p in representatives]
 
 
 def add_start_end_anchors(
@@ -201,48 +182,35 @@ def build_user_anchors(
     raw_anchors: list[RawAnchor],
     existing_anchors: list[Anchor] | None = None,
 ) -> list[Anchor]:
-    """Resolve frontend-provided anchor candidates to concrete Anchor objects.
+    """Check frontend-provided anchors against the route and turn them into Anchors.
 
-    For each RawAnchor: distance_from_start is used directly if given,
-    otherwise it's resolved from lat/lon via a nearest-point lookup
-    (see `nearest_point_distance_from_start`). Two anchors resolving to the
-    same distance would later make pacing.combine's anchor-to-point mapping
-    ambiguous (which anchor's timestamp belongs to which point?), so that
-    coincidence is rejected here instead — mirroring how
+    Two anchors at the same distance would later make pacing.combine's
+    anchor-to-point mapping ambiguous (which anchor's timestamp belongs to
+    which point?), so that coincidence is rejected here instead — mirroring how
     pacing.stops.resolve_stops guards stop distances against `hard_anchors`.
 
     Args:
-        track: Track the anchors belong to, used for lat/lon resolution and
-            bounds validation.
-        raw_anchors: Frontend-provided anchor candidates.
+        track: Track the anchors belong to, for the bounds check.
+        raw_anchors: Frontend-provided anchors.
         existing_anchors: Anchors already fixed for this conversion (for
             example the boundary anchors from add_start_end_anchors),
-            checked only to reject a raw anchor whose resolved distance
-            coincides with one of them.
+            checked only to reject a raw anchor whose distance coincides
+            with one of them.
 
     Returns:
         One Anchor per raw anchor, sorted by (distance_from_start, timestamp).
     Raises:
-        ValueError: If a raw anchor provides neither distance_from_start nor
-            lat/lon, or if a resolved distance falls outside
-            [0, track.total_distance].
-        InputError: If a raw anchor's resolved distance coincides with
-            another raw anchor's or an existing anchor's distance — a
-            user-fixable problem (e.g. two anchors placed on top of each
-            other), unlike the ValueError cases above.
+        ValueError: If a distance falls outside [0, track.total_distance].
+        InputError: If a raw anchor's distance coincides with another raw
+            anchor's or an existing anchor's — a user-fixable problem (e.g.
+            two anchors placed on top of each other), unlike the ValueError.
     """
     anchors: list[Anchor] = []
     # Distance → source of whatever already sits there, so a collision with
     # the start or finish can be named as such.
     seen_distances: dict[float, AnchorSource] = {a.distance_from_start: a.source for a in (existing_anchors or [])}
     for raw in raw_anchors:
-        if raw.distance_from_start is not None:
-            distance = raw.distance_from_start
-        elif raw.lat is not None and raw.lon is not None:
-            distance = nearest_point_distance_from_start(track, raw.lat, raw.lon)
-        else:
-            raise ValueError("Each raw anchor must provide distance_from_start or lat/lon.")
-
+        distance = raw.distance_from_start
         if distance < 0 or distance > track.total_distance:
             raise ValueError("Anchor distance_from_start is outside track bounds.")
         if distance in seen_distances:

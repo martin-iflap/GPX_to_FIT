@@ -118,23 +118,19 @@ class Track:
 
 @dataclass
 class RawAnchor:
-    """A frontend-provided anchor candidate before normalization.
+    """A frontend-provided anchor before validation.
 
-    Exactly one of `distance_from_start` or (`lat`, `lon`) must be provided;
-    `pacing.anchors.build_user_anchors` resolves whichever is given into a
-    concrete `Anchor`.
+    `pacing.anchors.build_user_anchors` checks it against the route and the
+    other anchors and turns it into an `Anchor`. It is placed by distance
+    along the route.
 
     Attributes:
         timestamp: The known time at this point along the route.
-        distance_from_start: Distance in meters from the track start, if known directly.
-        lat: Latitude of the anchor, used for nearest-point resolution when distance_from_start isn't given.
-        lon: Longitude of the anchor, used the same way as lat.
+        distance_from_start: Distance in meters from the track start.
         source: A map click or a photo.
     """
     timestamp: datetime
-    distance_from_start: float | None = None
-    lat: float | None = None
-    lon: float | None = None
+    distance_from_start: float
     source: UserAnchorSource = "user"
 
 
@@ -162,9 +158,8 @@ class RawStop:
     """A frontend-provided stop candidate before normalization.
 
     A stop is a real pause at one location: distinct arrival and departure
-    timestamps at the same distance_from_start. Exactly one of
-    `distance_from_start` or (`lat`, `lon`) must be given (resolved the same
-    way as `RawAnchor`). Exactly one of `duration` (Mode A: duration-only —
+    timestamps at the same distance_from_start. Like a `RawAnchor`, it is
+    placed by distance only. Exactly one of `duration` (Mode A: duration-only —
     the arrival time is derived from the normal pacing model, departure is
     arrival + duration) or (`start_timestamp`, `end_timestamp`) (Mode B:
     explicit arrival and departure) must be given.
@@ -172,16 +167,12 @@ class RawStop:
     `ResolvedStop`.
 
     Attributes:
-        distance_from_start: Distance in meters from the track start, if known directly.
-        lat: Latitude of the stop, used for nearest-point resolution when distance_from_start isn't given.
-        lon: Longitude of the stop, used the same way as lat.
+        distance_from_start: Distance in meters from the track start.
         duration: Length of the pause, for Mode A (duration-only).
         start_timestamp: Arrival time, for Mode B (explicit start/end).
         end_timestamp: Departure time, for Mode B (explicit start/end).
     """
-    distance_from_start: float | None = None
-    lat: float | None = None
-    lon: float | None = None
+    distance_from_start: float
     duration: timedelta | None = None
     start_timestamp: datetime | None = None
     end_timestamp: datetime | None = None

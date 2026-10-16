@@ -38,6 +38,13 @@ TOBLER_THRESHOLDS = {
     SportType.HIKING: ToblerThresholds(flat_equivalent_mps=2.2, verticality=0.10),
 }
 
+# The weight for a track too degenerate to judge (no distance or no active
+# time): the sport's own gait.
+DEFAULT_TOBLER_WEIGHT = {
+    SportType.RUNNING: 0.0,
+    SportType.HIKING: 1.0,
+}
+
 # Half-width of the transition band around each threshold above: the criterion
 # ramps smoothly across threshold ± band rather than flipping at it, so one
 # second of duration can't swap the whole activity's pacing character.
@@ -180,11 +187,11 @@ def resolve_tobler_weight(
         0.0 for pure Minetti, 1.0 for pure Tobler, or anything in between —
         passed to pacing.gradient.blended_speeds_from_gradients. A track with
         no distance or no active time falls back to the sport's own default
-        (Tobler for hiking, Minetti for running) rather than raising: pacing
-        a degenerate track is still better than refusing to convert it.
+        (DEFAULT_TOBLER_WEIGHT) rather than raising: pacing a degenerate
+        track is still better than refusing to convert it.
     """
     thresholds = TOBLER_THRESHOLDS[sport]
-    default_weight = 1.0 if sport == SportType.HIKING else 0.0
+    default_weight = DEFAULT_TOBLER_WEIGHT[sport]
 
     total_distance = sum(leg_distances)
     if total_distance <= 0 or active_seconds <= 0:
