@@ -5,7 +5,7 @@
 // gets split into its own module rather than growing this file.
 
 import {
-  parseGpx, convert, resolveAnchorCandidates, resolvePhotoAnchors, warmUpPyodide,
+  parseGpx, convert, resolveAnchorCandidates, resolvePhotoAnchors, startPyodide, warmUpPyodide,
 } from './bridge/pyodideBridge.js';
 import * as mapModule from './route/map.js';
 import { createAppState } from './state/appState.js';
@@ -23,7 +23,7 @@ import { initDevicePicker } from './devices/devicePicker.js';
 import { createAnchorPlacer } from './placement/anchorPopovers.js';
 import { createPopoverHost } from './placement/popoverHost.js';
 import { createPhotoDrop, photoAcceptFor } from './placement/photoAnchors.js';
-import { wireDropzone } from './inputs/dropzone.js';
+import { createUploadLabel, UPLOAD_STAGE_TEXT, wireDropzone } from './inputs/dropzone.js';
 import { wireSegmented } from './inputs/segmented.js';
 import { createProfilePanel } from './profile/profilePanel.js';
 import {
@@ -280,15 +280,28 @@ const photoDrop = createPhotoDrop({
 
 /* ---------- file upload ---------- */
 
+const uploadLabel = createUploadLabel({
+  dropzoneEl: dropzone,
+  nameEl: fileNameEl,
+  progressEl: requireElement('fileProgress'),
+});
+
+/** @param {File|undefined} file */
 async function handleFile(file) {
   if (!file) {
     return;
   }
+  const upload = uploadLabel.begin(file.name);
+  /** @param {import('./inputs/dropzone.js').UploadStage} stage */
+  const showStage = (stage) => {
+    upload.setStage(stage);
+    setStatus(UPLOAD_STAGE_TEXT[stage]);
+  };
   try {
-    setStatus('Parsing GPX…');
+    showStage('queued');
 
     const bytes = new Uint8Array(await file.arrayBuffer());
-    const { points, summary, warnings } = await parseGpx(bytes);
+    const { points, summary, warnings } = await parseGpx(bytes, showStage);
 
     // Anchors/stops/photo rows reference distances along the *previous*
     // route — a new upload invalidates all of them, so drop them before
@@ -300,9 +313,8 @@ async function handleFile(file) {
 
     appState.setRoute({ points, totalDistance: summary.total_distance, fileName: file.name });
     // Only now: a file that fails to parse leaves the previous route loaded,
-    // and it should still show that route's name.
-    fileNameEl.textContent = file.name;
-    fileNameEl.hidden = false;
+    // and the file line goes back to that route's name.
+    upload.succeed();
 
     summaryDistanceEl.textContent = formatDistanceKm(summary.total_distance);
     summaryElevationEl.textContent = `${Math.round(summary.total_elevation_gain)} m`;
@@ -322,6 +334,7 @@ async function handleFile(file) {
     );
     setStatus(loaded.message, loaded.kind);
   } catch (error) {
+    upload.fail();
     console.error(error);
     const { message, kind } = describeError(error);
     setStatus(message, kind);
@@ -331,7 +344,9 @@ async function handleFile(file) {
 
 // handleFile is async but fire-and-forget here: it reports its own errors via
 // setStatus and never rejects, so there's nothing for the caller to await.
-wireDropzone(dropzone, gpxFileInput, (files) => void handleFile(files[0]));
+// Heading for the box starts the runtime if the page-load warm-up didn't
+// (save-data mode) or failed.
+wireDropzone(dropzone, gpxFileInput, (files) => void handleFile(files[0]), { onIntent: startPyodide });
 
 /* ---------- convert ---------- */
 

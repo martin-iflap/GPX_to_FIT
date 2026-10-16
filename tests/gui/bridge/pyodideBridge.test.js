@@ -8,6 +8,7 @@ import {
   parseGpx,
   resolveAnchorCandidates,
   resolvePhotoAnchors,
+  startPyodide,
   warmUpPyodide,
 } from '../../../src/gpx2fit/gui/js/bridge/pyodideBridge.js';
 
@@ -144,14 +145,24 @@ describe('loading the runtime', () => {
   let originalDocument;
   let originalNavigator;
   let originalWarn;
+  let originalFetch;
+  let fetchedUrls;
 
   beforeEach(() => {
     originalDocument = globalThis.document;
     originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
     originalWarn = console.warn;
+    originalFetch = globalThis.fetch;
+    // core/ is fetched alongside the runtime, so every load here fetches it.
+    fetchedUrls = [];
+    globalThis.fetch = async (url) => {
+      fetchedUrls.push(String(url));
+      return { ok: true, text: async () => '' };
+    };
   });
 
   afterEach(() => {
+    globalThis.fetch = originalFetch;
     delete globalThis.loadPyodide;
     delete globalThis.requestIdleCallback;
     globalThis.document = originalDocument;
@@ -216,36 +227,94 @@ describe('loading the runtime', () => {
     await assert.rejects(secondTry, /stop here/);
   });
 
-  it('warms up when the page is idle, and only logs a failure', async () => {
+  it('warms up straight away, not once the page is idle, and only logs a failure', async () => {
     let attempts = 0;
     globalThis.loadPyodide = async () => {
       attempts += 1;
       throw new TypeError('Failed to fetch');
     };
-    const idle = [];
-    globalThis.requestIdleCallback = (callback) => idle.push(callback);
+    // An idle callback that never comes: a warm-up waiting for one never starts.
+    globalThis.requestIdleCallback = () => {};
     const logged = [];
     console.warn = (...args) => logged.push(args);
 
     warmUpPyodide();
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(attempts, 0, 'nothing loads before the page is idle');
-    assert.equal(idle.length, 1);
-    idle.forEach((callback) => callback());
     await new Promise((resolve) => setImmediate(resolve));
 
     assert.equal(attempts, 1);
     assert.equal(logged.length, 1);
   });
 
-  it('does not warm up when the browser asks to save data', () => {
+  it('does not warm up when the browser asks to save data, but loads once the user is about to upload', async () => {
     Object.defineProperty(globalThis, 'navigator', { value: { connection: { saveData: true } }, configurable: true });
-    const idle = [];
-    globalThis.requestIdleCallback = (callback) => idle.push(callback);
+    let attempts = 0;
+    globalThis.loadPyodide = async () => {
+      attempts += 1;
+      throw new TypeError('Failed to fetch');
+    };
+    const logged = [];
+    console.warn = (...args) => logged.push(args);
 
     warmUpPyodide();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(attempts, 0);
 
-    assert.equal(idle.length, 0);
+    startPyodide();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(attempts, 1);
+    assert.equal(logged.length, 1);
+  });
+
+  it('starts one load however often the user hovers the dropzone while it runs', async () => {
+    let attempts = 0;
+    let failLoad;
+    globalThis.loadPyodide = () => {
+      attempts += 1;
+      return new Promise((_, reject) => {
+        failLoad = reject;
+      });
+    };
+    console.warn = () => {};
+
+    startPyodide();
+    startPyodide();
+    const parsed = parseGpx(new Uint8Array([1]));
+    await new Promise((resolve) => setImmediate(resolve));
+    const attemptsWhileLoading = attempts;
+
+    // Settled before asserting: a load left pending would block every later test's call.
+    failLoad?.(new Error('stop here'));
+    await assert.rejects(parsed, /stop here/);
+    assert.equal(attemptsWhileLoading, 1);
+  });
+
+  it('fetches core/ while the runtime is still downloading, not after it', async () => {
+    let failLoad;
+    globalThis.loadPyodide = () => new Promise((_, reject) => {
+      failLoad = reject;
+    });
+
+    const parsed = parseGpx(new Uint8Array([1]));
+    await new Promise((resolve) => setImmediate(resolve));
+    const fetchedWhileLoading = [...fetchedUrls];
+
+    failLoad(new Error('stop here'));
+    await assert.rejects(parsed, /stop here/);
+    assert.ok(
+      fetchedWhileLoading.some((url) => url.endsWith('/core/bridge_api.py')),
+      `fetched only ${fetchedWhileLoading.join(', ')}`,
+    );
+  });
+
+  it('says the parse is waiting for the runtime, and never that it parses when the runtime failed', async () => {
+    globalThis.loadPyodide = async () => {
+      throw new TypeError('Failed to fetch');
+    };
+    const stages = [];
+
+    await assert.rejects(parseGpx(new Uint8Array([1]), (stage) => stages.push(stage)), /Failed to fetch/);
+
+    assert.deepEqual(stages, ['engine']);
   });
 });
 
@@ -299,6 +368,15 @@ describe('the bridge calls', () => {
 
     assert.deepEqual(await parseGpx(bytes), parsed);
     assert.deepEqual(callsTo('parse'), [{ name: 'parse', args: [bytes] }]);
+  });
+
+  it('says only that it parses once the runtime is loaded', async () => {
+    fakeRuntime.responses.parse = { points: [], summary: {}, warnings: [] };
+    const stages = [];
+
+    await parseGpx(new Uint8Array([1]), (stage) => stages.push(stage));
+
+    assert.deepEqual(stages, ['parse']);
   });
 
   it('resolveAnchorCandidates asks nearest_candidates() for the clicked spot', async () => {

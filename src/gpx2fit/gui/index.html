@@ -3,12 +3,15 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <link rel="icon" href="img/logo.svg" type="image/svg+xml" />
     <!-- Tints a phone browser's toolbar; theme.js keeps it at --bg-base. -->
     <meta name="theme-color" content="#f5f5f7" />
     <!-- The title and description are what a search result shows: keep the
          title under ~60 characters and the description under ~160. -->
     <title>GPX to FIT Converter – Realistic Pacing</title>
     <meta name="description" content="Turn a planned GPX route into a FIT activity for Strava or Garmin Connect, paced by gradient, surface and stops. Free, no sign-up, runs in your browser." />
+    <!-- Google Search Console ownership proof; must stay as long as the site is verified. -->
+    <meta name="google-site-verification" content="p6LdZ4Phge6pu2TRZimN6NKPW82rs33zIPDFMdCwbMU" />
     <!-- Link previews (chat apps, social). No og:image until there's a logo. -->
     <meta property="og:type" content="website" />
     <meta property="og:title" content="GPX to FIT Converter with Realistic Pacing" />
@@ -154,7 +157,7 @@
             <!-- A button to assistive tech (dropzone.js opens the input on Enter or
                  Space). The inputs it wraps are out of the tab order, so Tab
                  doesn't stop on an invisible control right after it. -->
-            <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Choose a GPX file" aria-describedby="fileName">
+            <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Choose a GPX file" aria-describedby="fileName fileProgress">
               <input id="gpxFileInput" type="file" accept=".gpx" class="visually-hidden" tabindex="-1" />
               <div class="dropzone-content">
                 <!-- The macOS blue folder: a darker back with its tab, a
@@ -179,6 +182,8 @@
                 <!-- .copy-pointer / .copy-touch: css/responsive.css shows one or the other. -->
                 <p class="dropzone-text"><span class="copy-pointer">Drag &amp; drop a GPX file, or <span class="dropzone-link">browse</span></span><span class="copy-touch"><span class="dropzone-link">Tap to choose a GPX file</span></span></p>
                 <p id="fileName" class="dropzone-filename" hidden></p>
+                <!-- What an upload is doing while it loads (createUploadLabel in dropzone.js). -->
+                <p id="fileProgress" class="dropzone-progress" hidden></p>
               </div>
             </div>
             <p class="privacy-note">

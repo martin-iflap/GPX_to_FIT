@@ -62,7 +62,7 @@ flowchart TD
     seg["segmented.js<br/>radio groups and tabs"]
     fd["focusDropdown.js<br/>quick-pick lists"]
     num["numericInput.js<br/>digits-only boxes, Up/Down"]
-    dz["dropzone.js<br/>drop + click-to-browse"]
+    dz["dropzone.js<br/>drop + click-to-browse,<br/>the GPX upload's file line"]
     dates["dates.js<br/>calendar-day arithmetic"]
     st["storage.js<br/>remembered settings"]
     css["cssVars.js<br/>theme colour tokens"]
@@ -386,7 +386,13 @@ pins.add(..., {draggable})          (the anchor list's pin layer; markerList's i
     boxes with digits-only entry and Up/Down stepping (see CLAUDE.md for why
     they aren't `type="number"`).
   - `dropzone.js`: `wireDropzone`/`wireFileInput` for the GPX and photo
-    dropzones.
+    dropzones (`wireDropzone`'s `onIntent` fires on a hover, focus or drag
+    over the box; `main.js` starts Pyodide with it), and
+    `createUploadLabel`, the GPX dropzone's file line. It names the chosen
+    file and its upload's stage (`UPLOAD_STAGE_TEXT`) the moment it's
+    chosen, because the parse can wait seconds for the runtime and the
+    status line is at the bottom of the sidebar. A failed upload goes back
+    to the name of the route still loaded.
   - `dates.js`: `dayOffsetBetween`, `computeDayCount`, `toDateInputValue`.
   - `dom.js`: `requireElement(id, type)` and `requireChild(parent,
     selector, type)`, element lookups that are typed by `type` and throw

@@ -91,6 +91,41 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   color: var(--text-primary);
 }
 
+/* An upload still loading: the first one can wait seconds for the runtime. */
+.dropzone.is-busy {
+  cursor: progress;
+}
+
+.dropzone-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-1) 0 0;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.dropzone-progress[hidden] {
+  display: none;
+}
+
+.dropzone-progress::before {
+  content: "";
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border-subtle);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 700ms linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dropzone-progress::before {
+    animation-duration: 2s;
+  }
+}
+
 /* Deliberately quiet: tertiary text, so it reassures without competing with
    the dropzone. The full story lives on about.html#privacy. */
 .privacy-note {

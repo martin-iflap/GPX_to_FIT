@@ -1,10 +1,11 @@
 // Checks on the two HTML pages themselves, for the mistakes nothing else
 // would catch until the page looked wrong in a browser: a stylesheet in css/
 // that no page links (or a link to one that doesn't exist), the cascade order
-// the overrides rely on, and a CDN file loaded without its integrity hash.
+// the overrides rely on, a CDN file loaded without its integrity hash, and a
+// favicon link left pointing at a moved file.
 
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -48,6 +49,16 @@ describe('stylesheets', () => {
 
   it('the about page loads the tokens, the base and its own file, in that order', () => {
     assert.deepEqual(about, ['css/tokens.css', 'css/base.css', 'css/about.css']);
+  });
+});
+
+describe('favicon', () => {
+  it('every page links exactly one icon, and it exists', () => {
+    for (const name of ['index.html', 'about.html']) {
+      const hrefs = [...page(name).querySelectorAll('link[rel="icon"]')].map((el) => el.getAttribute('href'));
+      assert.equal(hrefs.length, 1, `${name} links ${hrefs.length} icons`);
+      assert.ok(existsSync(`${GUI}${hrefs[0]}`), `${name}'s icon ${hrefs[0]} does not exist`);
+    }
   });
 });
 

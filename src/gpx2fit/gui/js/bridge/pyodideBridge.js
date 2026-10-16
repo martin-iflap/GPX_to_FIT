@@ -173,6 +173,18 @@ function writeSourceFile(runtime, relativePath, text) {
   runtime.FS.writeFile(path, text);
 }
 
+// The runtime with gpxpy installed, before any of core/ is written into it.
+async function loadRuntime() {
+  const loadPyodide = await loadPyodideScript();
+  const runtime = await loadPyodide({ indexURL: PYODIDE_BASE_URL });
+  await runtime.loadPackage(['micropip']);
+  await runtime.runPythonAsync(`
+    import micropip
+    await micropip.install('gpxpy==${GPXPY_VERSION}')
+    `);
+  return runtime;
+}
+
 async function ensurePyodide() {
   if (pyodide) {
     return pyodide;
@@ -182,15 +194,9 @@ async function ensurePyodide() {
   }
 
   pyodidePromise = (async () => {
-    const loadPyodide = await loadPyodideScript();
-    const runtime = await loadPyodide({ indexURL: PYODIDE_BASE_URL });
-    await runtime.loadPackage(['micropip']);
-    await runtime.runPythonAsync(`
-    import micropip
-    await micropip.install('gpxpy==${GPXPY_VERSION}')
-    `);
-
-    const sources = await Promise.all(CORE_FILES.map(fetchCoreFile));
+    // core/ comes from our own server and needs no runtime, so it's fetched
+    // while the runtime downloads rather than after it.
+    const [runtime, sources] = await Promise.all([loadRuntime(), Promise.all(CORE_FILES.map(fetchCoreFile))]);
     for (const packageDir of ['gpx2fit', 'gpx2fit/core', 'gpx2fit/core/pacing']) {
       writeSourceFile(runtime, `${packageDir}/__init__.py`, '');
     }
@@ -213,24 +219,30 @@ async function ensurePyodide() {
 }
 
 /**
- * Starts loading Pyodide once the page is idle, so the first upload doesn't
- * wait several seconds for it. Skipped when the browser asks to save data:
- * the runtime is then loaded on the first upload, as before. A failed warm-up
- * is only logged, and the upload tries again.
+ * Starts loading Pyodide now, unless it is loaded or loading already, for a
+ * user about to upload a GPX (hovering or focusing the dropzone). Unlike
+ * `warmUpPyodide` it ignores the save-data hint: the upload needs the runtime
+ * anyway, and this only starts it a moment sooner. A failure is only logged,
+ * and the upload tries again.
+ */
+export function startPyodide() {
+  ensurePyodide().catch((error) => console.warn('Loading Pyodide failed; it is retried on upload.', error));
+}
+
+/**
+ * Starts loading Pyodide on page load, so the first upload doesn't wait
+ * several seconds for it. Not deferred to an idle moment: the load is mostly
+ * network and off-thread WASM compiling, and every second of delay is one an
+ * early upload may wait. Skipped when the browser asks to save data: the
+ * runtime is then loaded once the user heads for the dropzone (`startPyodide`)
+ * or on the first upload.
  */
 export function warmUpPyodide() {
   // navigator.connection is Chromium-only, so the DOM types don't have it.
   if (/** @type {any} */ (globalThis.navigator)?.connection?.saveData) {
     return;
   }
-  const start = () => {
-    ensurePyodide().catch((error) => console.warn('Pyodide warm-up failed; it is retried on upload.', error));
-  };
-  if (typeof globalThis.requestIdleCallback === 'function') {
-    globalThis.requestIdleCallback(start, { timeout: 5000 });
-  } else {
-    setTimeout(start, 1000);
-  }
+  startPyodide();
 }
 
 /**
@@ -282,18 +294,27 @@ function callBridge(name, ...args) {
  * stays loaded then.
  *
  * @param {Uint8Array} bytes - raw contents of the uploaded .gpx file
+ * @param {(stage: ParseStage) => void} [onStage] - told what the parse is
+ *   doing once its turn in the queue comes: `'engine'` while it waits for the
+ *   runtime to finish loading (only if it hasn't yet), then `'parse'`
  * @returns {Promise<{
  *   points: {lat: number, lon: number}[],
  *   summary: {total_distance: number, total_elevation_gain: number},
  *   warnings: string[],
  * }>}
  */
-export async function parseGpx(bytes) {
+export async function parseGpx(bytes, onStage = () => {}) {
   return enqueue(async () => {
+    if (!pyodide) {
+      onStage('engine');
+    }
     await ensurePyodide();
+    onStage('parse');
     return callBridge('parse', bytes);
   });
 }
+
+/** @typedef {'engine'|'parse'} ParseStage */
 
 /**
  * Finds the track point(s) nearest to a map click. Returns more than one

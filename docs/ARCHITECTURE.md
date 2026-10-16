@@ -77,6 +77,7 @@ src/gpx2fit/
     ├── css/                      one stylesheet per component, linked in cascade order:
     │                             tokens, base, layout, forms, time, lists, buttons, map,
     │                             profile, dialogs, responsive, glass (+ about.css)
+    ├── img/                      logo.svg: the favicon, linked by both pages
     └── js/                       plain ES modules, no build (GUI_ARCHITECTURE.md)
         ├── main.js               entry point and wiring
         ├── config.js             Thunderforest key (gitignored; the deploy writes it here)
@@ -135,7 +136,7 @@ flowchart TB
     api --- track
   end
 
-  CDN["jsdelivr / unpkg / PyPI<br/>Pyodide, Leaflet, exifr,<br/>gpxpy"] -. "page load (Pyodide once idle)" .-> Browser
+  CDN["jsdelivr / unpkg / PyPI<br/>Pyodide, Leaflet, exifr,<br/>gpxpy"] -. "page load" .-> Browser
   TF["Thunderforest tiles"] -. "map.js" .-> ui
   VH["Valhalla trace_attributes<br/>(optional)"] <-. "convert(): route shape → edges" .-> bridge
   Static["static file server<br/>(repo root)"] -. "fetch ../../../core/*.py" .-> bridge
@@ -172,15 +173,16 @@ so pytest and pyrefly cover it like any other `core/` module
 numbers, strings and bytes. Its dict keys are the GUI's camelCase, except a
 nearest-point candidate's, which is `nearest_point_candidates`' own dict.
 
-| Export                              | `bridge_api` call                                                            | Returns                                                   |
-|-------------------------------------|------------------------------------------------------------------------------|-----------------------------------------------------------|
-| `parseGpx(bytes)`                   | `parse(bytes)`, which keeps the route as `_track`                            | `{points, summary, warnings}` for the map and sidebar     |
-| `resolveAnchorCandidates(lat, lon)` | `nearest_candidates(lat, lon)`                                               | 1–4 candidates                                            |
-| `resolvePhotoAnchors(readings)`     | `resolve_photos(readings)`, with no activity window                          | status per photo                                          |
-| `convert({...})`                    | `trace_payload`, and `store_surface_response` once per route, then `convert` | `{fitBytes, profile, warnings}`                           |
-| `warmUpPyodide()`                   | none                                                                         | starts loading the runtime once the page is idle          |
-| `classifyPyError(err)`              | none                                                                         | tags `InputError`s ([§6](#6-errors))                      |
-| `describeSurfaceFailure(err)`       | none                                                                         | the warning for a failed surface lookup ([§6](#6-errors)) |
+| Export                              | `bridge_api` call                                                            | Returns                                                                                                                   |
+|-------------------------------------|------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------|
+| `parseGpx(bytes, onStage?)`         | `parse(bytes)`, which keeps the route as `_track`                            | `{points, summary, warnings}` for the map and sidebar; `onStage` hears `'engine'` (waiting for the runtime) and `'parse'` |
+| `resolveAnchorCandidates(lat, lon)` | `nearest_candidates(lat, lon)`                                               | 1–4 candidates                                                                                                            |
+| `resolvePhotoAnchors(readings)`     | `resolve_photos(readings)`, with no activity window                          | status per photo                                                                                                          |
+| `convert({...})`                    | `trace_payload`, and `store_surface_response` once per route, then `convert` | `{fitBytes, profile, warnings}`                                                                                           |
+| `warmUpPyodide()`                   | none                                                                         | starts loading the runtime on page load, unless the browser asks to save data                                             |
+| `startPyodide()`                    | none                                                                         | starts loading it now (the user heads for the dropzone); a no-op once loaded or loading                                   |
+| `classifyPyError(err)`              | none                                                                         | tags `InputError`s ([§6](#6-errors))                                                                                      |
+| `describeSurfaceFailure(err)`       | none                                                                         | the warning for a failed surface lookup ([§6](#6-errors))                                                                 |
 
 `parse` sends back only the GPX's own points, as `{lat, lon}`, for the map
 line. The route it keeps is densified (legs ≤ `MAX_LEG_M`), but the added
@@ -191,16 +193,21 @@ its 2,000, each drawn twice and scanned on every mouse move.
 Four mechanisms keep the bridge working:
 
 1. **Startup (`ensurePyodide`).** `main.js` calls `warmUpPyodide()` on
-   page load, which starts this once the page is idle (`requestIdleCallback`,
-   skipped when the browser asks to save data), so the first upload rarely
-   waits. Otherwise, the first call does it. The setup:
+   page load, which starts this straight away (not when the browser asks to
+   save data). Hovering, focusing or dragging over the GPX dropzone calls
+   `startPyodide()`, which starts it if it isn't loaded or loading, so
+   save-data mode or a failed warm-up still gets a head start. Otherwise,
+   the first call does it. An upload that does wait says so on the dropzone
+   (`parseGpx`'s `onStage`, shown by `dropzone.js`'s `createUploadLabel`).
+   The setup:
    - add Pyodide's `<script>` from jsdelivr, pinned by `PYODIDE_VERSION`
      (the only place the version is written; `index.html` has no tag for it)
    - `micropip.install` `gpxpy`, pinned to the `uv.lock` version
      (`GPXPY_VERSION`)
-   - fetch every file in `CORE_FILES` over HTTP from `../../../core/`, resolved
-     against the bridge module's own URL (`import.meta.url`), so the site
-     works whether the repo root or `src/gpx2fit/` is served
+   - meanwhile, fetch every file in `CORE_FILES` over HTTP from
+     `../../../core/`, resolved against the bridge module's own URL
+     (`import.meta.url`), so the site works whether the repo root or
+     `src/gpx2fit/` is served
    - write them into `/workspace/src` in Pyodide's virtual filesystem
      (`FS.writeFile`), prepend that directory to `sys.path`, and
      `pyimport` `gpx2fit.core.bridge_api`
@@ -260,9 +267,10 @@ sequenceDiagram
 
   Note over Main: page load: init lists, map, theme, profile panel,<br/>shortcuts, time toggle, anchor placer, photo drop
   Main->>B: warmUpPyodide()
-  B->>B: once idle: ensurePyodide()<br/>load runtime, micropip, fetch core/*.py, import bridge_api
+  B->>B: ensurePyodide()<br/>load runtime + micropip while fetching core/*.py, import bridge_api
   U->>Main: drop GPX
-  Main->>B: parseGpx(bytes)
+  Main->>Main: dropzone shows the file name and stage at once
+  Main->>B: parseGpx(bytes, onStage)
   B->>Py: bridge_api.parse(bytes) keeps _track, densified, and clears _surface
   Py-->>Main: the GPX's own {lat, lon} + {total_distance, total_elevation_gain} + warnings
   Main->>Main: reset anchors/stops/photos, profilePanel.hide(),<br/>renderRoute, refresh time toggle
