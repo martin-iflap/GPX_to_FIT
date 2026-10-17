@@ -53,11 +53,14 @@ describe('stylesheets', () => {
 });
 
 describe('favicon', () => {
-  it('every page links exactly one icon, and it exists', () => {
-    for (const name of ['index.html', 'about.html']) {
-      const hrefs = [...page(name).querySelectorAll('link[rel="icon"]')].map((el) => el.getAttribute('href'));
-      assert.equal(hrefs.length, 1, `${name} links ${hrefs.length} icons`);
-      assert.ok(existsSync(`${GUI}${hrefs[0]}`), `${name}'s icon ${hrefs[0]} does not exist`);
+  it('both pages link the same icons, and each exists', () => {
+    const icons = (name) => [...page(name).querySelectorAll('link[rel="icon"], link[rel="apple-touch-icon"]')]
+      .map((el) => el.getAttribute('href'));
+    const index = icons('index.html');
+    assert.ok(index.length > 0, 'index.html links no icon');
+    assert.deepEqual(icons('about.html'), index);
+    for (const href of index) {
+      assert.ok(existsSync(`${GUI}${href}`), `icon ${href} does not exist`);
     }
   });
 });
