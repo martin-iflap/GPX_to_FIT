@@ -183,6 +183,65 @@ describe('segmented keyboard model', () => {
   });
 });
 
+describe('thumb', () => {
+  // jsdom lays nothing out, so the layout is faked: a 400 px control whose
+  // options sit at 4, 134 and 264 px, each 132 px wide.
+  function laidOut(value) {
+    const control = createSegmented({ options: THREE, value: 'a', onSelect: () => {} });
+    Object.defineProperty(control.el, 'clientWidth', { value: 400 });
+    options(control.el).forEach((button, i) => {
+      Object.defineProperty(button, 'offsetLeft', { value: 4 + i * 130 });
+      Object.defineProperty(button, 'offsetWidth', { value: 132 });
+    });
+    control.select(value);
+    return control;
+  }
+
+  const edges = (el) => [el.style.getPropertyValue('--thumb-left'), el.style.getPropertyValue('--thumb-right')];
+
+  it('sits under the active option, its edges in percent of the control', () => {
+    const { el } = laidOut('b');
+    assert.deepEqual(edges(el), ['33.5%', '33.5%']);
+    assert.ok(el.classList.contains('has-thumb'));
+  });
+
+  it('records which way it moves, so the right edge leads', () => {
+    const control = laidOut('a');
+    assert.deepEqual(edges(control.el), ['1%', '66%']);
+    control.buttonFor('c').click();
+    assert.deepEqual(edges(control.el), ['66%', '1%']);
+    assert.equal(control.el.dataset.thumbMoving, 'right');
+    control.select('b');
+    assert.equal(control.el.dataset.thumbMoving, 'left');
+  });
+
+  it('keeps the direction when the choice does not move it', () => {
+    const control = laidOut('a');
+    control.select('c');
+    control.select('c');
+    assert.equal(control.el.dataset.thumbMoving, 'right');
+  });
+
+  it('is not placed before the control is laid out, so the active background shows', () => {
+    const control = createSegmented({ options: THREE, value: 'b', onSelect: () => {} });
+    assert.equal(control.el.classList.contains('has-thumb'), false);
+    assert.deepEqual(edges(control.el), ['', '']);
+  });
+
+  it('goes away when no option is active', () => {
+    const control = laidOut('b');
+    control.select('none of them');
+    assert.equal(control.el.classList.contains('has-thumb'), false);
+  });
+
+  it('goes away when the active option is hidden', () => {
+    const control = laidOut('b');
+    control.buttonFor('b').hidden = true;
+    control.select('b');
+    assert.equal(control.el.classList.contains('has-thumb'), false);
+  });
+});
+
 describe('linkPanel', () => {
   it('ties a tab to the panel it shows, both ways', () => {
     const control = createSegmented({ options: SPORTS, value: 'hiking', onSelect: () => {}, kind: 'tabs' });

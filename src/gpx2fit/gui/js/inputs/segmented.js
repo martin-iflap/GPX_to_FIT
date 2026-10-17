@@ -14,6 +14,10 @@
 //   `linkPanel` ties each tab to its panel.
 // Both take the same keys: only the chosen option is in the tab order, and
 // the arrows (wrapping), Home and End move the choice along with the focus.
+//
+// The blue fill is not the active option's background but one thumb under
+// all of them (`.segmented.has-thumb::before` in forms.css), so a new choice
+// slides it across. This module measures where it goes.
 
 const ROLES = {
   radio: { group: 'radiogroup', option: 'radio', state: 'aria-checked' },
@@ -60,6 +64,36 @@ export function wireSegmented(control, onSelect, { kind = 'radio' } = {}) {
       button.setAttribute(roles.state, String(active));
       button.tabIndex = button === tabbable ? 0 : -1;
     });
+    placeThumb();
+  }
+
+  /**
+   * Puts the thumb under the active option. Its edges are percentages of the
+   * control, so a resize keeps it roughly in place until the observer below
+   * remeasures (options that don't share the width evenly). Which way it moves
+   * picks which edge leads (forms.css).
+   */
+  function placeThumb() {
+    const active = buttons().find((button) => button.classList.contains('is-active') && !button.hidden);
+    if (!active) {
+      control.classList.remove('has-thumb');
+      return;
+    }
+    const width = control.clientWidth;
+    // Not laid out (not mounted yet, or in a hidden panel): the observer
+    // places it once it is.
+    if (width === 0 || active.offsetWidth === 0) {
+      return;
+    }
+    const left = (active.offsetLeft / width) * 100;
+    const right = ((width - active.offsetLeft - active.offsetWidth) / width) * 100;
+    const previous = Number.parseFloat(control.style.getPropertyValue('--thumb-left'));
+    if (!Number.isNaN(previous) && left !== previous) {
+      control.dataset.thumbMoving = left > previous ? 'right' : 'left';
+    }
+    control.style.setProperty('--thumb-left', `${left}%`);
+    control.style.setProperty('--thumb-right', `${right}%`);
+    control.classList.add('has-thumb');
   }
 
   function getValue() {
@@ -78,6 +112,14 @@ export function wireSegmented(control, onSelect, { kind = 'radio' } = {}) {
     });
   });
   select(getValue());
+
+  // Mounting, showing a hidden panel, a resize and hiding an option all move
+  // the active option without a select(). jsdom has no ResizeObserver.
+  if (typeof ResizeObserver !== 'undefined') {
+    const observer = new ResizeObserver(() => placeThumb());
+    observer.observe(control);
+    buttons().forEach((button) => observer.observe(button));
+  }
 
   control.addEventListener('keydown', (event) => {
     const options = buttons().filter((button) => !button.hidden);

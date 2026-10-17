@@ -350,14 +350,53 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 /* ---------- segmented control ---------- */
 
 .segmented {
+  /* The thumb's containing block, and the offsetParent segmented.js
+     measures the options against. */
+  position: relative;
   display: flex;
   gap: 2px;
   padding: 3px;
   border-radius: var(--radius-pill);
   background: var(--bg-elevated-3);
+  /* segmented.js overrides these inline before it adds .has-thumb, the only
+     state that draws the thumb; declared here so the stylesheet is
+     self-describing. */
+  --thumb-left: 0%;
+  --thumb-right: 0%;
+  --thumb-lead: 220ms cubic-bezier(0.3, 0.7, 0.4, 1);
+  --thumb-trail: 300ms cubic-bezier(0.6, 0, 0.3, 1) 70ms;
+  --thumb-left-timing: var(--thumb-lead);
+  --thumb-right-timing: var(--thumb-lead);
+}
+
+/* The edge facing the new option leads and the other follows a moment
+   later, so the fill stretches across and gathers there like a drop of
+   liquid instead of sliding as a rigid block. */
+.segmented[data-thumb-moving="right"] {
+  --thumb-left-timing: var(--thumb-trail);
+}
+
+.segmented[data-thumb-moving="left"] {
+  --thumb-right-timing: var(--thumb-trail);
+}
+
+/* The sliding fill; segmented.js sets its edges. Without it (before the
+   first measurement) the active option's own background shows instead. */
+.segmented.has-thumb::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: var(--thumb-left);
+  right: var(--thumb-right);
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  transition: left var(--thumb-left-timing), right var(--thumb-right-timing);
 }
 
 .segmented-option {
+  /* Positioned so the label paints above the thumb. */
+  position: relative;
   flex: 1;
   border: none;
   background: transparent;
@@ -368,13 +407,25 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   padding: 0.5rem 0.6rem;
   border-radius: var(--radius-pill);
   cursor: pointer;
-  transition: background var(--transition), color var(--transition);
+  /* The colour waits a little so the label turns white as the fill
+     arrives, not before. */
+  transition: background var(--transition), color var(--transition) 80ms;
 }
 
 .segmented-option.is-active {
   background: var(--accent);
   color: var(--accent-contrast);
   font-weight: 600;
+}
+
+.segmented.has-thumb .segmented-option.is-active {
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .segmented.has-thumb::before {
+    transition: none;
+  }
 }
 
 /* The arrow keys move focus here (segmented.js). The chosen option is

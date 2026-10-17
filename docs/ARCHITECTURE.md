@@ -77,7 +77,7 @@ src/gpx2fit/
     ├── css/                      one stylesheet per component, linked in cascade order:
     │                             tokens, base, layout, forms, time, lists, buttons, map,
     │                             profile, dialogs, responsive, glass (+ about.css)
-    ├── img/                      logo.svg: the favicon, linked by both pages
+    ├── img/                      favicons (SVG, 144 px PNG) and apple-touch-icon, linked by both pages
     └── js/                       plain ES modules, no build (GUI_ARCHITECTURE.md)
         ├── main.js               entry point and wiring
         ├── config.js             Thunderforest key (gitignored; the deploy writes it here)
